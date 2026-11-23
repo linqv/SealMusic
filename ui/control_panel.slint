@@ -1,6 +1,6 @@
 import { Theme } from "theme.slint";
 import { Slider } from "std-widgets.slint";
-import { SongInfo, PlayMode } from "types.slint";
+import { SongInfo, LoopMode } from "types.slint";
 import { IconDisplay, IconSet } from "@lucide";
 
 export component SkipButton inherits Rectangle {
@@ -73,7 +73,7 @@ export component PlayPauseButton inherits Rectangle {
     }
 }
 
-export component PlayModeButton inherits Rectangle {
+export component LoopModeButton inherits Rectangle {
     in-out property <bool> selected;
     in-out property <bool> recursive: false;
     callback clicked();
@@ -97,13 +97,13 @@ export component PlayModeButton inherits Rectangle {
 
 
 export component OverlapButton inherits Rectangle {
-    in-out property <PlayMode> mode;
+    in-out property <LoopMode> mode;
     callback clicked();
-    PlayModeButton {
+    LoopModeButton {
         width: 100%;
         height: 100%;
-        recursive: mode == PlayMode.Recursive;
-        selected: mode == PlayMode.Recursive || mode == PlayMode.InOrder;
+        recursive: mode == LoopMode.Track;
+        selected: mode == LoopMode.Track || mode == LoopMode.Playlist;
         clicked => {
             root.clicked();
         }
@@ -172,7 +172,7 @@ export component ControlPanel inherits Rectangle {
     in-out property <float> progress;
     in property <float> duration;
     in property <bool> paused;
-    in property <PlayMode> play_mode;
+    in property <LoopMode> loop_mode;
     in-out property <bool> dragging;
     in property <SongInfo> current_song;
     in property <image> album_image;
@@ -180,9 +180,12 @@ export component ControlPanel inherits Rectangle {
 
     callback change-progress(float);
     callback toggle-play();
+    callback stop();
     callback play-next();
     callback play-prev();
-    callback switch-mode(PlayMode);
+    in property <bool> shuffle;
+    callback set-shuffle(bool);
+    callback switch-mode(LoopMode);
     callback change-volume(float);
     callback double-clicked();
     pure callback format-duration(float) -> string;
@@ -207,7 +210,7 @@ export component ControlPanel inherits Rectangle {
             height: 80%;
             alignment: center;
             TouchArea {
-                width: 35%;
+                width: 30%;
                 height: 100%;
                 double-clicked => {
                     root.double-clicked()
@@ -260,12 +263,14 @@ export component ControlPanel inherits Rectangle {
                     y: parent.height / 2 - self.height / 2;
                     width: 20px;
                     height: 20px;
-                    mode: root.play_mode;
+                    mode: root.loop_mode;
                     clicked => {
-                        if (root.play_mode == PlayMode.InOrder) {
-                            root.switch_mode(PlayMode.Recursive);
+                        if (root.loop_mode == LoopMode.Playlist) {
+                            root.switch_mode(LoopMode.Track);
+                        } else if (root.loop_mode == LoopMode.Track) {
+                            root.switch_mode(LoopMode.None);
                         } else {
-                            root.switch_mode(PlayMode.InOrder);
+                            root.switch_mode(LoopMode.Playlist);
                         }
                     }
                 }
@@ -300,6 +305,22 @@ export component ControlPanel inherits Rectangle {
             }
 
             Rectangle {
+                width: 5%;
+                TouchArea {
+                    accessible-role: button;
+                    accessible-label: @tr("Stop");
+                    clicked => { root.stop(); }
+                    IconDisplay {
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        icon: IconSet.Square;
+                        size: 16px;
+                        stroke: Theme.text;
+                    }
+                }
+            }
+
+            Rectangle {
                 width: 6%;
                 SkipButton {
                     forward: true;
@@ -319,11 +340,11 @@ export component ControlPanel inherits Rectangle {
                 RandomButton {
                     x: parent.width / 2 - self.width / 2;
                     y: parent.height / 2 - self.height / 2;
-                    selected: root.play_mode == PlayMode.Random;
+                    selected: root.shuffle;
                     width: 20px;
                     height: 20px;
                     clicked => {
-                        root.switch_mode(PlayMode.Random);
+                        root.set-shuffle(!root.shuffle);
                     }
                 }
             }

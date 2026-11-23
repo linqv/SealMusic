@@ -180,15 +180,5 @@ export component Sidebar inherits Rectangle {
                 root.change_page(3);
             }
         }
-
-        SidebarNavItem {
-            icon: IconSet.CircleHelp;
-            label: @tr("About");
-            selected: root.current_page == 4;
-            expanded: root.expanded;
-            clicked => {
-                root.change_page(4);
-            }
-        }
     }
 }

@@ -1,10 +1,10 @@
 ---
 name: i18n-update
-description: "Update and validate Zeedle i18n changes for Slint/gettext. Use when adding or editing UI text, changing labels/messages, syncing lang/zeedle.pot and lang/*/LC_MESSAGES/zeedle.po, or reviewing translation completeness."
-argument-hint: "Describe the UI text changes and target languages, for example: add 2 playback labels and update zh_CN, fr"
+description: "Update and validate SealMusic i18n changes for Slint/gettext. Use when adding or editing UI text, changing labels/messages, syncing lang/sealmusic.pot and lang/*/LC_MESSAGES/sealmusic.po, or reviewing translation completeness."
+argument-hint: "Describe the UI text changes and target languages, for example: add 2 playback labels and update zh_CN"
 ---
 
-# Zeedle i18n Update
+# SealMusic i18n Update
 
 ## When to Use
 - You changed user-visible text in Slint UI files under ui/.
@@ -36,21 +36,17 @@ Typical triggers:
 - Always ensure English source strings are final before touching translations.
 
 3. Sync message source.
-- Update message template at [lang/zeedle.pot](../../../lang/zeedle.pot).
+- Update message template at [lang/sealmusic.pot](../../../lang/sealmusic.pot).
 - Keep msgid stable when possible; avoid unnecessary rewrites that invalidate existing translations.
 
 4. Update locale catalogs.
 - Update impacted locale files under [lang](../../../lang/) such as:
-  - [lang/zh_CN/LC_MESSAGES/zeedle.po](../../../lang/zh_CN/LC_MESSAGES/zeedle.po)
-  - [lang/fr/LC_MESSAGES/zeedle.po](../../../lang/fr/LC_MESSAGES/zeedle.po)
-  - [lang/de/LC_MESSAGES/zeedle.po](../../../lang/de/LC_MESSAGES/zeedle.po)
-  - [lang/es/LC_MESSAGES/zeedle.po](../../../lang/es/LC_MESSAGES/zeedle.po)
-  - [lang/ru/LC_MESSAGES/zeedle.po](../../../lang/ru/LC_MESSAGES/zeedle.po)
+  - [lang/zh_CN/LC_MESSAGES/sealmusic.po](../../../lang/zh_CN/LC_MESSAGES/sealmusic.po)
 - For each changed msgid, ensure msgstr is translated or intentionally marked pending.
 
 5. Verify runtime wiring and packaging assumptions.
 - Confirm bundled translation setup still points to lang in [build.rs](../../../build.rs).
-- Confirm runtime language selection path remains valid in [src/main.rs](../../../src/main.rs).
+- Confirm runtime language selection path remains valid in [src/app.rs](../../../src/app.rs).
 
 6. Run validation checks.
 - Build/test cycle:
@@ -80,7 +76,7 @@ Typical triggers:
   - Allow partial only with explicit pending list and follow-up issue.
 
 ## Completion Criteria
-- All changed UI source strings are reflected in [lang/zeedle.pot](../../../lang/zeedle.pot).
+- All changed UI source strings are reflected in [lang/sealmusic.pot](../../../lang/sealmusic.pot).
 - Required locale .po files are updated with no missing required entries.
 - App can switch languages and render updated text correctly.
 - Build and tests pass.
@@ -89,5 +85,5 @@ Typical triggers:
 ## Project References
 - Overview and usage: [README.md](../../../README.md), [README-zh.md](../../../README-zh.md)
 - Build-time translation bundling: [build.rs](../../../build.rs)
-- App runtime orchestration: [src/main.rs](../../../src/main.rs)
+- App runtime orchestration: [src/app.rs](../../../src/app.rs)
 - UI source: [ui/app.slint](../../../ui/app.slint)

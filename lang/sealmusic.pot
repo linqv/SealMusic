@@ -1,0 +1,172 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"POT-Creation-Date: 2026-10-01 13:38+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: \n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+#: ui/app.slint:76
+msgctxt "AppTray"
+msgid "Show Window"
+msgstr ""
+
+#: ui/app.slint:81
+msgctxt "AppTray"
+msgid "Play / Pause"
+msgstr ""
+
+#: ui/app.slint:85
+msgctxt "AppTray"
+msgid "Stop"
+msgstr ""
+
+#: ui/app.slint:89
+msgctxt "AppTray"
+msgid "Previous"
+msgstr ""
+
+#: ui/app.slint:93
+msgctxt "AppTray"
+msgid "Next"
+msgstr ""
+
+#: ui/app.slint:97
+msgctxt "AppTray"
+msgid "Rescan Songs"
+msgstr ""
+
+#: ui/app.slint:102
+msgctxt "AppTray"
+msgid "Exit"
+msgstr ""
+
+#: ui/lyrics_panel.slint:72
+msgctxt "LyricsPanel"
+msgid "Artist: {}"
+msgstr ""
+
+#: ui/lyrics_panel.slint:81
+msgctxt "LyricsPanel"
+msgid "Title: {}"
+msgstr ""
+
+#: ui/search_panel.slint:63
+msgctxt "SearchPanel"
+msgid "Search songs or artists..."
+msgstr ""
+
+#: ui/search_panel.slint:85
+msgctxt "SearchPanel"
+msgid "No results found"
+msgstr ""
+
+#: ui/search_panel.slint:86
+msgctxt "SearchPanel"
+msgid "{} result(s) found"
+msgstr ""
+
+#: ui/search_panel.slint:128
+msgctxt "SearchPanel"
+msgid "Type to search songs"
+msgstr ""
+
+#: ui/settings_panel.slint:69
+msgctxt "SettingsPanel"
+msgid "Playback"
+msgstr ""
+
+#: ui/settings_panel.slint:85
+msgctxt "SettingsPanel"
+msgid "Music directory"
+msgstr ""
+
+#: ui/settings_panel.slint:112
+msgctxt "SettingsPanel"
+msgid "Browse..."
+msgstr ""
+
+#: ui/settings_panel.slint:135
+msgctxt "SettingsPanel"
+msgid "Appearance"
+msgstr ""
+
+#: ui/settings_panel.slint:149
+msgctxt "SettingsPanel"
+msgid "Follow system theme"
+msgstr ""
+
+#: ui/settings_panel.slint:160
+msgctxt "SettingsPanel"
+msgid "Language"
+msgstr ""
+
+#: ui/settings_panel.slint:180
+msgctxt "SettingsPanel"
+msgid "SealMusic {} · GPL-3.0"
+msgstr ""
+
+#: ui/settings_panel.slint:185
+msgctxt "SettingsPanel"
+msgid "Upstream project"
+msgstr ""
+
+#: ui/sidebar.slint:137
+msgctxt "Sidebar"
+msgid "Gallery"
+msgstr ""
+
+#: ui/sidebar.slint:147
+msgctxt "Sidebar"
+msgid "Search"
+msgstr ""
+
+#: ui/sidebar.slint:157
+msgctxt "Sidebar"
+msgid "Lyrics"
+msgstr ""
+
+#: ui/sidebar.slint:176
+msgctxt "Sidebar"
+msgid "Settings"
+msgstr ""
+
+#: ui/song_list.slint:84
+msgctxt "SortBar"
+msgid "Title"
+msgstr ""
+
+#: ui/song_list.slint:94
+msgctxt "SortBar"
+msgid "Artist"
+msgstr ""
+
+#: ui/song_list.slint:104
+msgctxt "SortBar"
+msgid "Duration"
+msgstr ""
+
+#: ui/song_list.slint:167
+msgctxt "SongItem"
+msgid "Title: {}\nArtist: {}\nDuration: {}"
+msgstr ""
+
+#: ui/song_list.slint:193
+msgctxt "MessagePopup"
+msgid "Operation failed"
+msgstr ""
+
+#: ui/song_list.slint:209
+msgctxt "MessagePopup"
+msgid "Close"
+msgstr ""
+
+#: ui/control_panel.slint
+msgctxt "ControlPanel"
+msgid "Stop"
+msgstr ""

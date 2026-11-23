@@ -1,91 +1,39 @@
-<p align="center">
-  <picture align="center">
-    <img alt="logo" width="80px" src="ui/cover.svg">
-  </picture>
-</p>
-<p align="center"> 
-    <b>Zeedle</b></br>
-    即刻的音乐体验，为纯粹的简约而设计</br>
-    基于 <a href="https://github.com/RustAudio/rodio">Rodio</a> 和 <a href="https://slint.dev">Slint UI</a> 构建
-</p>
+# SealMusic
 
-在 0.5 秒内享受音乐：
-- ⚡ 即刻启动 — 点开就能听。
-- 💾 内存占用低 — Windows 11 实测约 10 MB。
-- 🎶 本地专注 — 轻量、无干扰。
-- ✨ 极简暗色界面 — 只留下音乐，清晰纯粹。
-- 🦜 多语言 — 英语/汉语/西班牙语/法语/德语/俄语支持。
-- ⌨️ 快捷键支持 — 随心所欲、无需鼠标。
-- 🎵 频谱可视化 — 实时音频频谱显示。
-- 📃 歌词跳转 — 一键跳转到上一句/下一句/任意一句歌词。
-- 🖊️ 歌曲元信息编辑 — 右键歌曲条目即可编辑元数据。
+基于 Rust、Rodio 和 Slint 的本地音乐播放器。在设置中选择音乐目录即可扫描其中的 MP3、FLAC、WAV 和 OGG 文件。双击曲库或搜索结果中的歌曲开始播放。播放器只读歌曲标签和封面，歌词页优先显示内嵌的带时间戳歌词，也支持同名 UTF-8 `.lrc` 文件。
 
-## 安装
+SealMusic 是 [Zeedle](https://github.com/Jordan-Haidee/zeedle) 的 fork，采用 GPL-3.0 许可证。
 
-### Windows、macOS 和 Linux
+## 播放与桌面控制
 
-下载对应平台的预编译发行版：
-- Windows：NSIS 安装包、MSI 安装包（x64 与 ARM64）
-- macOS：DMG
-- Linux：deb、AppImage（amd64 与 arm64）
+- 点击列标题按歌名、歌手或时长排序。文本使用普通字符串顺序。排序后保留当前歌曲和播放历史。
+- 循环按钮依次切换列表循环、单曲循环、关闭循环。随机播放可独立开关。
+- 空格播放或暂停，上下键切换歌曲，左右键快退或快进 15 秒。在歌词页，左右键跳到上一句或下一句。F1 至 F4 打开曲库、搜索、歌词和设置。
+- 托盘或 Linux 桌面控制可用时，关闭窗口后仍可播放。托盘的“退出”和 Ctrl+Q 会结束进程。
+- 设置页提供中英文切换、系统或手动主题、版本、许可证和上游项目入口。
 
-### 从源码构建
+在 Linux 上可以通过媒体键、Waybar 或 `playerctl` 控制播放。
 
-应当支持 Slint 和 Rodio 支持的主流平台，如 Windows、Linux 和 MacOS。
-
-在 Windows 10/11 上测试通过：
-
-```shell
-./packager/pack-nsis.ps1
-./packager/pack-msi.ps1
+```sh
+playerctl -p sealmusic play-pause
+playerctl -p sealmusic metadata
+playerctl -p sealmusic position 10+
 ```
-
-在 macOS 上构建 DMG 安装包：
-
-```shell
-./packager/pack-dmg.sh
-```
-
-在 Ubuntu 24.04 LTS 上测试通过：
-
-```shell
-# deb包
-./packager/pack-deb.sh
-
-# 或者appimage包
-./packager/pack-appimage.sh
-```
-
-在 x64 或 ARM64 Linux 环境中运行时，会为当前架构生成对应安装包。
-
-构建好的安装包可以在 `target/release` 目录中找到。
 
 ## 配置
-选择你的音乐目录路径：
-![p3](assets/p3-zh.png)
 
-## 享受
-![p1](assets/p1-zh.png)
+配置保存在 `$XDG_CONFIG_HOME/sealmusic/config.toml`，默认位置是 `~/.config/sealmusic/config.toml`。如需导入上游设置，在播放器退出后将旧 TOML 复制到此位置。InOrder 映射为列表循环，Recursive 映射为单曲循环，Random 映射为列表循环并开启随机。旧“关于”页映射为设置页，已移除的语言回退到英语。
 
-歌词显示：
+![设置页](assets/settings-zh.png)
 
-![p1](assets/p2-zh.png)
+## 构建与打包
 
-本地音乐库搜索：
+开发运行使用 `cargo run`，发布构建使用 `cargo build --locked --release`。打包脚本使用 cargo-packager，产物位于 `target/release`。
 
-![p4](assets/p4-zh.png)
+| 平台 | 命令 |
+| --- | --- |
+| Linux | `./packager/pack-deb.sh`、`./packager/pack-appimage.sh` |
+| Windows | `./packager/pack-nsis.ps1`、`./packager/pack-msi.ps1` |
+| macOS | `./packager/pack-dmg.sh` |
 
-## 元信息编辑
-
-![p5](assets/p5-zh.png)
-
-
-## 备注
-Zeedle 也是 Rust GUI 初学者的理想入门项目。
-它轻量、实用、足够简单，可以帮助初学者在做出有用东西的同时获得真实的上手体验。🤗🤗🤗
-
-动手实践之后，可以学习到：
-- 如何使用 Rodio 播放库来播放音频
-- 如何在 UI 和后台线程之间通信
-- 如何在 Slint UI 中添加快捷键绑定
-- 如何在 Slint UI 中支持多语言
+Linux 包中的桌面入口和可执行文件使用 `sealmusic`。[P0 实施与实测记录](P0_PLAN.md)

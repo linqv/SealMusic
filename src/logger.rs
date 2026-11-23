@@ -25,7 +25,7 @@ impl Write for MultiWriter {
 }
 
 fn get_log_path() -> PathBuf {
-    let f_name = ".zeedle.log";
+    let f_name = ".sealmusic.log";
     if let Some(mut p) = home::home_dir() {
         p.push(f_name);
         p
@@ -64,7 +64,8 @@ pub fn init_default_logger(path: Option<impl AsRef<Path>>) {
                 record.args()
             )
         })
-        .filter(None, LevelFilter::Info) // 设置日志级别为Info
+        .filter(None, LevelFilter::Info)
+        .filter_module("zbus", LevelFilter::Warn)
         .target(Target::Pipe(log_target))
         .init();
 }

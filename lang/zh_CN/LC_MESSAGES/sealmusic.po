@@ -1,0 +1,173 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: \n"
+"POT-Creation-Date: 2026-10-01 13:38+0000\n"
+"PO-Revision-Date: 2025-09-28 23:07+0800\n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"X-Generator: Poedit 3.7\n"
+
+#: ui/app.slint:76
+msgctxt "AppTray"
+msgid "Show Window"
+msgstr "显示窗口"
+
+#: ui/app.slint:81
+msgctxt "AppTray"
+msgid "Play / Pause"
+msgstr "播放 / 暂停"
+
+#: ui/app.slint:85
+msgctxt "AppTray"
+msgid "Stop"
+msgstr "停止"
+
+#: ui/app.slint:89
+msgctxt "AppTray"
+msgid "Previous"
+msgstr "上一首"
+
+#: ui/app.slint:93
+msgctxt "AppTray"
+msgid "Next"
+msgstr "下一首"
+
+#: ui/app.slint:97
+msgctxt "AppTray"
+msgid "Rescan Songs"
+msgstr "重新扫描歌曲"
+
+#: ui/app.slint:102
+msgctxt "AppTray"
+msgid "Exit"
+msgstr "退出"
+
+#: ui/lyrics_panel.slint:72
+msgctxt "LyricsPanel"
+msgid "Artist: {}"
+msgstr "艺术家：{}"
+
+#: ui/lyrics_panel.slint:81
+msgctxt "LyricsPanel"
+msgid "Title: {}"
+msgstr "歌曲：{}"
+
+#: ui/search_panel.slint:63
+msgctxt "SearchPanel"
+msgid "Search songs or artists..."
+msgstr "搜索歌曲或艺术家..."
+
+#: ui/search_panel.slint:85
+msgctxt "SearchPanel"
+msgid "No results found"
+msgstr "未找到结果"
+
+#: ui/search_panel.slint:86
+msgctxt "SearchPanel"
+msgid "{} result(s) found"
+msgstr "找到 {} 个结果"
+
+#: ui/search_panel.slint:128
+msgctxt "SearchPanel"
+msgid "Type to search songs"
+msgstr "输入关键词搜索歌曲"
+
+#: ui/settings_panel.slint:69
+msgctxt "SettingsPanel"
+msgid "Playback"
+msgstr "播放"
+
+#: ui/settings_panel.slint:85
+msgctxt "SettingsPanel"
+msgid "Music directory"
+msgstr "音乐文件夹"
+
+#: ui/settings_panel.slint:112
+msgctxt "SettingsPanel"
+msgid "Browse..."
+msgstr "浏览..."
+
+#: ui/settings_panel.slint:135
+msgctxt "SettingsPanel"
+msgid "Appearance"
+msgstr "外观"
+
+#: ui/settings_panel.slint:149
+msgctxt "SettingsPanel"
+msgid "Follow system theme"
+msgstr "跟随系统主题"
+
+#: ui/settings_panel.slint:160
+msgctxt "SettingsPanel"
+msgid "Language"
+msgstr "语言"
+
+#: ui/settings_panel.slint:180
+msgctxt "SettingsPanel"
+msgid "SealMusic {} · GPL-3.0"
+msgstr "SealMusic {} · GPL-3.0"
+
+#: ui/settings_panel.slint:185
+msgctxt "SettingsPanel"
+msgid "Upstream project"
+msgstr "上游项目"
+
+#: ui/sidebar.slint:137
+msgctxt "Sidebar"
+msgid "Gallery"
+msgstr "音乐列表"
+
+#: ui/sidebar.slint:147
+msgctxt "Sidebar"
+msgid "Search"
+msgstr "搜索"
+
+#: ui/sidebar.slint:157
+msgctxt "Sidebar"
+msgid "Lyrics"
+msgstr "歌词"
+
+#: ui/sidebar.slint:176
+msgctxt "Sidebar"
+msgid "Settings"
+msgstr "设置"
+
+#: ui/song_list.slint:84
+msgctxt "SortBar"
+msgid "Title"
+msgstr "歌曲"
+
+#: ui/song_list.slint:94
+msgctxt "SortBar"
+msgid "Artist"
+msgstr "艺术家"
+
+#: ui/song_list.slint:104
+msgctxt "SortBar"
+msgid "Duration"
+msgstr "时长"
+
+#: ui/song_list.slint:167
+msgctxt "SongItem"
+msgid "Title: {}\nArtist: {}\nDuration: {}"
+msgstr "标题：{}\n艺术家：{}\n时长：{}"
+
+#: ui/song_list.slint:193
+msgctxt "MessagePopup"
+msgid "Operation failed"
+msgstr "操作失败"
+
+#: ui/song_list.slint:209
+msgctxt "MessagePopup"
+msgid "Close"
+msgstr "关闭"
+
+#: ui/control_panel.slint
+msgctxt "ControlPanel"
+msgid "Stop"
+msgstr "停止"

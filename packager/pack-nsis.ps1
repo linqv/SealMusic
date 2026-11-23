@@ -5,7 +5,7 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $ReleaseDir = Join-Path $ProjectRoot "target\release"
 $ManifestPath = Join-Path $ProjectRoot "Cargo.toml"
 $ConfigPath = Join-Path $PSScriptRoot "Packager.windows.toml"
-$PackageArch = $env:ZEEDLE_PACKAGE_ARCH
+$PackageArch = $env:SEALMUSIC_PACKAGE_ARCH
 if (-not $PackageArch) {
     $PackageArch = if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq [Runtime.InteropServices.Architecture]::Arm64) { "arm64" } else { "x64" }
 }
@@ -36,9 +36,9 @@ if (-not $Version) {
     throw "Could not read the package version from $ManifestPath"
 }
 
-$Installer = Join-Path $ReleaseDir "Zeedle_${Version}_${PackageArch}-setup.exe"
+$Installer = Join-Path $ReleaseDir "SealMusic_${Version}_${PackageArch}-setup.exe"
 $StagingDir = Join-Path $ReleaseDir ".nsis-staging-$([guid]::NewGuid().ToString('N'))"
-$StagedInstaller = Join-Path $StagingDir "zeedle_${Version}_${PackageArch}-setup.exe"
+$StagedInstaller = Join-Path $StagingDir "sealmusic_${Version}_${PackageArch}-setup.exe"
 $VersionedConfigPath = Join-Path $PSScriptRoot ".Packager.windows.$([guid]::NewGuid().ToString('N')).toml"
 $BuildCompleted = $false
 
@@ -50,7 +50,7 @@ try {
     [IO.File]::WriteAllText($VersionedConfigPath, $ConfigWithVersion, [Text.UTF8Encoding]::new($false))
     New-Item -ItemType Directory -Path $StagingDir -Force | Out-Null
 
-    Write-Host "Building Zeedle $Version NSIS installer..."
+    Write-Host "Building SealMusic $Version NSIS installer..."
     & cargo packager --config $VersionedConfigPath --out-dir $StagingDir
     if ($LASTEXITCODE -ne 0) {
         throw "cargo packager failed with exit code $LASTEXITCODE"

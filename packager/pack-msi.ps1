@@ -5,7 +5,7 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $ReleaseDir = Join-Path $ProjectRoot "target\release"
 $ManifestPath = Join-Path $ProjectRoot "Cargo.toml"
 $ConfigPath = Join-Path $PSScriptRoot "Packager.windows.toml"
-$PackageArch = $env:ZEEDLE_PACKAGE_ARCH
+$PackageArch = $env:SEALMUSIC_PACKAGE_ARCH
 if (-not $PackageArch) {
     $PackageArch = if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq [Runtime.InteropServices.Architecture]::Arm64) { "arm64" } else { "x64" }
 }
@@ -61,9 +61,9 @@ elseif ($Version -notmatch '^\d+\.\d+\.\d+(?:-\d+)?(?:\+\d+)?$') {
     throw "MSI packaging supports numeric versions and alpha.N, beta.N, or rc.N prerelease versions; got '$Version'."
 }
 
-$Installer = Join-Path $ReleaseDir "Zeedle_${Version}_${PackageArch}.msi"
+$Installer = Join-Path $ReleaseDir "SealMusic_${Version}_${PackageArch}.msi"
 $StagingDir = Join-Path $ReleaseDir ".msi-staging-$([guid]::NewGuid().ToString('N'))"
-$StagedInstaller = Join-Path $StagingDir "Zeedle_${Version}_${PackageArch}.msi"
+$StagedInstaller = Join-Path $StagingDir "SealMusic_${Version}_${PackageArch}.msi"
 $VersionedConfigPath = Join-Path $PSScriptRoot ".Packager.windows.$([guid]::NewGuid().ToString('N')).toml"
 $BuildCompleted = $false
 
@@ -79,7 +79,7 @@ try {
     [IO.File]::WriteAllText($VersionedConfigPath, $ConfigWithVersion, [Text.UTF8Encoding]::new($false))
     New-Item -ItemType Directory -Path $StagingDir -Force | Out-Null
 
-    Write-Host "Building Zeedle $Version MSI installer..."
+    Write-Host "Building SealMusic $Version MSI installer..."
     & cargo packager --config $VersionedConfigPath --out-dir $StagingDir --formats wix
     if ($LASTEXITCODE -ne 0) {
         throw "cargo packager failed with exit code $LASTEXITCODE"

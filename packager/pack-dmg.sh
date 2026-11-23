@@ -58,10 +58,10 @@ TEMP_CONFIG_BASE=""
 
 mkdir -p -- "$RELEASE_DIR"
 STAGING_DIR="$(mktemp -d "$RELEASE_DIR/.dmg-staging.XXXXXX")"
-OUTPUT_DMG="$RELEASE_DIR/Zeedle_${VERSION}_${PACKAGE_ARCH}.dmg"
+OUTPUT_DMG="$RELEASE_DIR/SealMusic_${VERSION}_${PACKAGE_ARCH}.dmg"
 PACKAGER_LOG="$STAGING_DIR/cargo-packager.log"
 
-printf 'Building Zeedle %s macOS DMG (%s)...\n' "$VERSION" "$PACKAGE_ARCH"
+printf 'Building SealMusic %s macOS DMG (%s)...\n' "$VERSION" "$PACKAGE_ARCH"
 
 MAX_DMG_ATTEMPTS=5
 for attempt in $(seq 1 "$MAX_DMG_ATTEMPTS"); do

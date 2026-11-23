@@ -2,32 +2,26 @@ import { Theme } from "theme.slint";
 import { Palette } from "std-widgets.slint";
 import { ControlPanel } from "control_panel.slint";
 import { Sidebar } from "sidebar.slint";
-import { SpectrumView } from "spectrum.slint";
 import { LyricsPanel } from "lyrics_panel.slint";
 import {
-    SongItem,
     SongListView,
-    SongEditPopup,
     MessagePopup,
-    DeleteConfirmPopup,
 } from "song_list.slint";
 import { TitleBar } from "title_bar.slint";
 import { SettingsPanel } from "settings_panel.slint";
 import { SearchPanel } from "search_panel.slint";
 import {
-    PlayMode,
+    LoopMode,
     LyricItem,
     SongInfo,
     SortKey,
-    TriggerSource,
 } from "types.slint";
 
 export {
-    PlayMode,
+    LoopMode,
     LyricItem,
     SongInfo,
     SortKey,
-    TriggerSource,
 }
 
 // === Group 1: Audio playback engine state ===
@@ -36,11 +30,9 @@ export global PlaybackGlobal {
     in-out property <float> duration;
     in-out property <bool> paused;
     in-out property <bool> dragging;
-    in-out property <PlayMode> play_mode;
-    in property <bool> user_listening;
+    in-out property <LoopMode> loop_mode;
+    in-out property <bool> shuffle;
     in-out property <float> volume;
-    in-out property <[float]> spectrum;
-    in-out property <bool> show_spectrum: true;
 }
 
 // === Group 2: All display & settings state ===
@@ -50,10 +42,8 @@ export global DisplayGlobal {
     in property <length> lyric_viewport_y;
     in-out property <length> lyric_line_height: 40px;
     in property <image> album_image;
-    in property <[SongInfo]> play_history;
-    in property <int> history_index: 0;
     in-out property <string> song_dir;
-    in property <styled-text> about_info;
+
     in-out property <SortKey> sort_key;
     in-out property <SortKey> last_sort_key;
     in-out property <bool> sort_ascending: true;
@@ -69,10 +59,14 @@ export global DisplayGlobal {
 
 export component AppTray inherits SystemTrayIcon {
     icon: @image-url("cover.svg");
-    tooltip: "Zeedle";
+    tooltip: "SealMusic";
 
     callback show-window();
     callback rescan-songs();
+    callback toggle-play();
+    callback stop();
+    callback next();
+    callback previous();
     callback exit-app();
 
     clicked => { root.show-window(); }
@@ -83,6 +77,22 @@ export component AppTray inherits SystemTrayIcon {
             activated => { root.show-window(); }
         }
 
+        MenuItem {
+            title: @tr("Play / Pause");
+            activated => { root.toggle-play(); }
+        }
+        MenuItem {
+            title: @tr("Stop");
+            activated => { root.stop(); }
+        }
+        MenuItem {
+            title: @tr("Previous");
+            activated => { root.previous(); }
+        }
+        MenuItem {
+            title: @tr("Next");
+            activated => { root.next(); }
+        }
         MenuItem {
             title: @tr("Rescan Songs");
             activated => { root.rescan-songs(); }
@@ -102,31 +112,28 @@ export component MainWindow inherits Window {
     preferred-height: 510px;
     min-width: 850px;
     min-height: 500px;
-    title: "Zeedle";
+    title: "SealMusic";
     icon: @image-url("cover.svg");
     no-frame: true;
     resize-border-width: root.maximized ? 0px : 5px;
     background: transparent;
     forward-focus: content-pane;
     callback toggle_play();
-    callback play(SongInfo, TriggerSource);
+    callback play(SongInfo);
+    callback stop();
     callback play_next();
     callback play_prev();
     callback change_progress(float);
-    callback switch_mode(PlayMode);
-    callback refresh_song_list(string);
+    callback seek_relative(int);
+    callback quit();
+    callback set_shuffle(bool);
+    callback switch_mode(LoopMode);
     callback sort_song_list(SortKey, bool);
     callback set_lang(string);
     callback change_volume(float);
-    callback set_show_spectrum(bool);
     callback set_follow_system_theme(bool);
     callback select_song_dir();
     callback search_songs(string);
-    callback delete_song(SongInfo);
-    callback load_song_edit_metadata(SongInfo);
-    callback save_song_metadata(SongInfo, string, string, string, string, string);
-    callback select_song_cover();
-    callback select_song_lyrics();
     pure callback format_duration(float) -> string;
     callback window_minimize();
     callback window_maximize();
@@ -135,24 +142,10 @@ export component MainWindow inherits Window {
     pure callback open_url_in_browser(string);
     pure callback prev-lyric-time(float, [LyricItem]) -> float;
     pure callback next-lyric-time(float, [LyricItem]) -> float;
+    in property <string> version;
     in-out property <int> current_page: 0;
     in-out property <bool> sidebar_expanded: false;
-    in-out property <SongInfo> editing_song: { id: -1, song_name: "", singer: "", duration: "", song_path: "" };
-    in-out property <bool> edit_popup_saving: false;
-    in-out property <string> edit_popup_error: "";
-    in-out property <bool> edit_popup_invalid_input: false;
-    in-out property <bool> edit_popup_song_missing: false;
-    in-out property <string> edit_album: "";
-    in-out property <image> edit_cover_preview;
-    in-out property <bool> edit_has_cover: false;
-    in-out property <string> edit_cover_name: "";
-    in-out property <string> edit_cover_path: "";
-    in-out property <bool> edit_has_lyrics: false;
-    in-out property <string> edit_lyrics_name: "";
-    in-out property <string> edit_lyrics_path: "";
-    in-out property <string> edit_lyrics_preview: "";
     in-out property <string> operation_error_message: "";
-    in-out property <SongInfo> pending_delete_song: { id: -1, song_name: "", singer: "", duration: "", song_path: "" };
     public function set_light_theme(yes: bool) {
         DisplayGlobal.light_ui = yes;
         Theme.is-dark = !yes;
@@ -165,17 +158,6 @@ export component MainWindow inherits Window {
     public function show_operation_error() {
         operation-popup.show();
     }
-    public function metadata_saved() {
-        edit-popup.close();
-        root.edit_popup_saving = false;
-        root.edit_popup_error = "";
-        root.edit_popup_invalid_input = false;
-        root.edit_popup_song_missing = false;
-    }
-    public function show_song_edit_popup() {
-        edit-popup.show();
-    }
-
     window-frame := Rectangle {
         width: 100%;
         height: 100%;
@@ -231,19 +213,6 @@ export component MainWindow inherits Window {
                     border-top-left-radius: 10px;
                     clip: true;
 
-                    spectrum-bg := Rectangle {
-                        width: 100%;
-                        height: 100%;
-                        z: 5;
-                        visible: PlaybackGlobal.show_spectrum;
-                        SpectrumView {
-                            width: parent.width;
-                            height: 60px;
-                            y: parent.height - self.height;
-                            bins: PlaybackGlobal.spectrum;
-                        }
-                    }
-
                     if root.current_page == 0: VerticalLayout {
                         width: 100%;
                         height: 100%;
@@ -257,28 +226,8 @@ export component MainWindow inherits Window {
                             sort-songs(key, asc) => {
                                 root.sort_song_list(key, asc);
                             }
-                            play-song(info, src) => {
-                                root.play(info, src);
-                            }
-                            edit-song(info) => {
-                                root.editing_song = info;
-                                root.edit_popup_saving = false;
-                                root.edit_popup_error = "";
-                                root.edit_popup_invalid_input = false;
-                                root.edit_popup_song_missing = false;
-                                root.edit_album = "";
-                                root.edit_cover_name = "";
-                                root.edit_cover_path = "";
-                                root.edit_has_cover = false;
-                                root.edit_lyrics_name = "";
-                                root.edit_lyrics_path = "";
-                                root.edit_has_lyrics = false;
-                                root.edit_lyrics_preview = "";
-                                root.load_song_edit_metadata(info);
-                            }
-                            delete-song(info) => {
-                                root.pending_delete_song = info;
-                                delete-confirm-popup.show();
+                            play-song(info) => {
+                                root.play(info);
                             }
                         }
 
@@ -290,7 +239,9 @@ export component MainWindow inherits Window {
                             duration <=> PlaybackGlobal.duration;
                             paused <=> PlaybackGlobal.paused;
                             dragging <=> PlaybackGlobal.dragging;
-                            play_mode <=> PlaybackGlobal.play_mode;
+                            shuffle: PlaybackGlobal.shuffle;
+                            set-shuffle(s) => { root.set_shuffle(s); }
+                            loop_mode <=> PlaybackGlobal.loop_mode;
                             current_song <=> DisplayGlobal.current_song;
                             album_image <=> DisplayGlobal.album_image;
                             volume <=> PlaybackGlobal.volume;
@@ -301,6 +252,7 @@ export component MainWindow inherits Window {
                             toggle-play() => {
                                 root.toggle_play();
                             }
+                            stop => { root.stop(); }
                             play-next() => {
                                 root.play_next();
                             }
@@ -329,34 +281,13 @@ export component MainWindow inherits Window {
                         width: 100%;
                         height: 100%;
                         search-query <=> DisplayGlobal.search_query;
-                        all-songs <=> DisplayGlobal.song_list;
                         search-results <=> DisplayGlobal.search_results;
                         current-song <=> DisplayGlobal.current_song;
                         search(query) => {
                             root.search_songs(query);
                         }
-                        play-song(info, src) => {
-                            root.play(info, src);
-                        }
-                        edit-song(info) => {
-                            root.editing_song = info;
-                            root.edit_popup_saving = false;
-                            root.edit_popup_error = "";
-                            root.edit_popup_invalid_input = false;
-                            root.edit_popup_song_missing = false;
-                            root.edit_album = "";
-                            root.edit_cover_name = "";
-                            root.edit_cover_path = "";
-                            root.edit_has_cover = false;
-                            root.edit_lyrics_name = "";
-                            root.edit_lyrics_path = "";
-                            root.edit_has_lyrics = false;
-                            root.edit_lyrics_preview = "";
-                            root.load_song_edit_metadata(info);
-                        }
-                        delete-song(info) => {
-                            root.pending_delete_song = info;
-                            delete-confirm-popup.show();
+                        play-song(info) => {
+                            root.play(info);
                         }
                     }
 
@@ -395,21 +326,16 @@ export component MainWindow inherits Window {
                         SettingsPanel {
                             width: 100%;
                             height: 100%;
+                            version: root.version;
+                            open-upstream => { root.open_url_in_browser("https://github.com/Jordan-Haidee/zeedle"); }
                             song_dir <=> DisplayGlobal.song_dir;
                             lang <=> DisplayGlobal.lang;
                             follow_system_theme <=> DisplayGlobal.follow_system_theme;
-                            show_spectrum <=> PlaybackGlobal.show_spectrum;
-                            refresh_song_list(p) => {
-                                root.refresh_song_list(p);
-                            }
                             set_lang(l) => {
                                 root.set_lang(l);
                             }
                             set_follow_system_theme(yes) => {
                                 root.set_follow_system_theme(yes);
-                            }
-                            set_show_spectrum(yes) => {
-                                root.set_show_spectrum(yes);
                             }
                             select_song_dir => {
                                 root.select_song_dir();
@@ -417,33 +343,11 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    if root.current_page == 4: Rectangle {
-                        width: 100%;
-                        height: 100%;
-                        background: Theme.surface;
+                }
 
-                        VerticalLayout {
-                            width: 100%;
-                            height: 100%;
-                            alignment: center;
-                            spacing: 10px;
-                            HorizontalLayout {
-                                alignment: center;
-                                Image {
-                                    source: @image-url("cover.svg");
-                                    width: 120px;
-                                    height: 120px;
-                                }
-                            }
-
-                            StyledText {
-                                text: DisplayGlobal.about_info;
-                                link-color: Theme.accent;
-                                horizontal-alignment: center;
-                                link-clicked(link) => { open_url_in_browser(link) }
-                            }
-                        }
-                    }
+                KeyBinding {
+                    keys: @keys(Control + Q);
+                    activated => { root.quit(); }
                 }
 
                 KeyBinding {
@@ -457,7 +361,7 @@ export component MainWindow inherits Window {
                         if (root.current_page == 2 && DisplayGlobal.lyrics.length > 0) {
                             root.change_progress(root.next-lyric-time(PlaybackGlobal.progress, DisplayGlobal.lyrics));
                         } else {
-                            root.change_progress(min(PlaybackGlobal.progress + 15, PlaybackGlobal.duration));
+                            root.seek_relative(15);
                         }
                         root.focus();
                     }
@@ -474,7 +378,7 @@ export component MainWindow inherits Window {
                         if (root.current_page == 2 && DisplayGlobal.lyrics.length > 0) {
                             root.change_progress(root.prev-lyric-time(PlaybackGlobal.progress, DisplayGlobal.lyrics));
                         } else {
-                            root.change_progress(max(PlaybackGlobal.progress - 15, 0));
+                            root.seek_relative(-15);
                         }
                         root.focus();
                     }
@@ -505,60 +409,6 @@ export component MainWindow inherits Window {
                     activated => { root.current_page = 3; root.focus(); }
                 }
 
-                KeyBinding {
-                    keys: @keys(F5);
-                    activated => { root.current_page = 4; root.focus(); }
-                }
-            }
-        }
-
-        edit-popup-anchor := Rectangle {
-            x: (root.width - 520px) / 2;
-            y: (root.height - 450px) / 2;
-            width: 1px;
-            height: 1px;
-            edit-popup := PopupWindow {
-                width: 520px;
-                height: 450px;
-                close-policy: no-auto-close;
-                SongEditPopup {
-                    song: root.editing_song;
-                    saving: root.edit_popup_saving;
-                    error-message: root.edit_popup_error;
-                    invalid-input: root.edit_popup_invalid_input;
-                    song-missing: root.edit_popup_song_missing;
-                    album: root.edit_album;
-                    cover-preview: root.edit_cover_preview;
-                    has-cover: root.edit_has_cover;
-                    cover-name: root.edit_cover_name;
-                    cover-path: root.edit_cover_path;
-                    has-lyrics: root.edit_has_lyrics;
-                    lyrics-name: root.edit_lyrics_name;
-                    lyrics-path: root.edit_lyrics_path;
-                    lyrics-preview: root.edit_lyrics_preview;
-                    save(title, artist, album, cover_path, lyrics_path) => {
-                        root.edit_popup_saving = true;
-                        root.edit_popup_error = "";
-                        root.edit_popup_invalid_input = false;
-                        root.edit_popup_song_missing = false;
-                        root.save_song_metadata(
-                            root.editing_song,
-                            title,
-                            artist,
-                            album,
-                            cover_path,
-                            lyrics_path,
-                        );
-                    }
-                    select-cover => { root.select_song_cover(); }
-                    select-lyrics => { root.select_song_lyrics(); }
-                    cancel => {
-                        edit-popup.close();
-                        root.edit_popup_error = "";
-                        root.edit_popup_invalid_input = false;
-                        root.edit_popup_song_missing = false;
-                    }
-                }
             }
         }
 
@@ -578,28 +428,5 @@ export component MainWindow inherits Window {
             }
         }
 
-        delete-confirm-popup-anchor := Rectangle {
-            x: (root.width - 400px) / 2;
-            y: (root.height - 200px) / 2;
-            width: 1px;
-            height: 1px;
-            delete-confirm-popup := PopupWindow {
-                width: 400px;
-                height: 200px;
-                close-policy: no-auto-close;
-                DeleteConfirmPopup {
-                    song-name: root.pending_delete_song.song-name;
-                    cancelled => {
-                        delete-confirm-popup.close();
-                        root.pending_delete_song = { id: -1, song_name: "", singer: "", duration: "", song_path: "" };
-                    }
-                    confirmed => {
-                        delete-confirm-popup.close();
-                        root.delete_song(root.pending_delete_song);
-                        root.pending_delete_song = { id: -1, song_name: "", singer: "", duration: "", song_path: "" };
-                    }
-                }
-            }
-        }
     }
 }

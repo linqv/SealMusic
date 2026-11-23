@@ -2,24 +2,21 @@ import { Theme } from "theme.slint";
 import { LineEdit } from "std-widgets.slint";
 import { ListView } from "std-widgets.slint";
 import { SongItem } from "song_list.slint";
-import { SongInfo, TriggerSource } from "types.slint";
+import { SongInfo } from "types.slint";
 import { IconDisplay, IconSet } from "@lucide";
 
 export component SearchPanel inherits Rectangle {
     in-out property <string> search-query;
-    in property <[SongInfo]> all-songs;
     in property <[SongInfo]> search-results;
     in property <SongInfo> current-song;
     callback search(string);
-    callback play-song(SongInfo, TriggerSource);
-    callback edit-song(SongInfo);
-    callback delete-song(SongInfo);
+    callback play-song(SongInfo);
 
     background: Theme.surface;
 
     // Intercept global shortcuts when the search input has focus,
     // so they don't bubble up to the parent FocusScope and trigger actions.
-    // Space/arrows are naturally consumed by LineEdit; only F1-F5 need blocking.
+    // Space/arrows are naturally consumed by LineEdit; only F1-F4 need blocking.
     // Must use key-released (not KeyBinding) to conditionally intercept only
     // when search-input has focus, so shortcuts reach the parent otherwise.
     key-handler := FocusScope {
@@ -34,8 +31,7 @@ export component SearchPanel inherits Rectangle {
             if event.text == Key.F1
                 || event.text == Key.F2
                 || event.text == Key.F3
-                || event.text == Key.F4
-                || event.text == Key.F5 {
+                || event.text == Key.F4 {
                 return accept;
             }
             return reject;
@@ -101,12 +97,10 @@ export component SearchPanel inherits Rectangle {
 
                 for item in root.search-results: SongItem {
                     info: item;
-                    playing: item.song-path == root.current-song.song-path;
+                    playing: item.id == root.current-song.id;
                     double_clicked => {
-                        root.play-song(item, TriggerSource.ClickItem);
+                        root.play-song(item);
                     }
-                    edit-requested(info) => { root.edit-song(info); }
-                    delete-requested(info) => { root.delete-song(info); }
                 }
             }
 

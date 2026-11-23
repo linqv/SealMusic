@@ -1,16 +1,22 @@
 # pack-deb.sh and pack-appimage.sh supply this package version from Cargo.toml at runtime.
-product-name = "Zeedle"
-name = "Zeedle"
+product-name = "SealMusic"
+name = "sealmusic"
 before-packaging-command = "cargo build --release --manifest-path ../Cargo.toml"
 formats = ["deb"]
 out-dir = "../target/release"
 binaries-dir = "../target/release"
 icons = ["../ui/cover.png"]
-authors = ["Jordan Haidee"]
-identifier = "dev.zeedle"
-copyright = "Copyright © 2025 Zeedle Dev. All rights reserved."
+authors = ["Jordan Haidee", "linqv"]
+identifier = "dev.sealmusic"
+copyright = "Copyright © 2025 Zeedle Dev, 2026 SealMusic contributors."
 category = "Music"
+description = "Local music player with lyrics and desktop media controls"
+long-description = "Play local audio files, search a read-only library and control playback through MPRIS."
 
 [[binaries]]
-path = "zeedle"
+path = "sealmusic"
 main = true
+
+[deb]
+desktop-template = "sealmusic.desktop"
+package-name = "sealmusic"

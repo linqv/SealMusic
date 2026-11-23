@@ -2,7 +2,6 @@ import { Theme } from "theme.slint";
 import {
     Button,
     CheckBox,
-    Palette,
 } from "std-widgets.slint";
 
 component LangButton inherits Rectangle {
@@ -37,11 +36,10 @@ export component SettingsPanel inherits Rectangle {
     in-out property <string> song_dir;
     in-out property <string> lang;
     in-out property <bool> follow_system_theme;
-    in-out property <bool> show_spectrum;
-    callback refresh_song_list(string);
     callback set_lang(string);
     callback set_follow_system_theme(bool);
-    callback set_show_spectrum(bool);
+    in property <string> version;
+    callback open-upstream();
     callback select_song_dir();
     background: Theme.surface;
 
@@ -119,14 +117,6 @@ export component SettingsPanel inherits Rectangle {
                         }
                     }
 
-                    // Spectrum display
-                    CheckBox {
-                        text: @tr("Spectrum display");
-                        checked <=> root.show_spectrum;
-                        toggled => {
-                            root.set_show_spectrum(self.checked);
-                        }
-                    }
                 }
             }
 
@@ -174,19 +164,26 @@ export component SettingsPanel inherits Rectangle {
 
                         HorizontalLayout {
                             spacing: 8px;
-                            for lc[i] in ["", "zh_CN", "es", "fr", "de", "ru"]: LangButton {
+                            for lc[i] in ["", "zh_CN"]: LangButton {
                                 lang-code: lc;
                                 current-lang: root.lang;
-                                text: lc == "" ? "English" :
-                                    lc == "zh_CN" ? "中文" :
-                                    lc == "es" ? "Español" :
-                                    lc == "fr" ? "Français" :
-                                    lc == "de" ? "Deutsch" :
-                                    "Русский";
+                                text: lc == "" ? "English" : "中文";
                                 clicked(code) => { root.lang = code; root.set_lang(code); }
                             }
                         }
                     }
+                }
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                Text {
+                    text: @tr("SealMusic {} · GPL-3.0", root.version);
+                    color: Theme.text-secondary;
+                    vertical-alignment: center;
+                }
+                Button {
+                    text: @tr("Upstream project");
+                    clicked => { root.open-upstream(); }
                 }
             }
         }

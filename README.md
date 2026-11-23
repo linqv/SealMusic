@@ -1,93 +1,41 @@
-<p align="center">
-  <picture align="center">
-    <img alt="logo" width="80px" src="ui/cover.svg">
-  </picture>
-</p>
-<p align="center"> 
-    <b>Zeedle</b></br>
-    Music at the speed of a blink, designed for pure simplicity</br>
-    Built by <a href="https://github.com/RustAudio/rodio">Rodio</a> and <a href="https://slint.dev">Slint UI</a></br>
-</p>
+# SealMusic
 
-Enjoy your music in less than 0.5s:
-- ⚡ Instant startup — your music begins the moment you click.
-- 💾 Low memory usage — measured at approximately 10 MB on Windows 11.
-- 🎶 Local focus — lightweight and distraction-free.
-- ✨ Minimal Dark UI — nothing but your music, beautifully clear.
-- 🦜 Multiple language support — English/Chinese/Spanish/French/German/Russian.
-- ⌨️ Hotkey support — total freedom, no mouse needed.
-- 🎵 Spectrum visualization — real-time audio spectrum display.
-- 📃 Lyric seek — snap to previous/next/any lyric line.
-- 🖊️ Song metadata editing — right-click a song to edit its metadata.
+A local music player built with Rust, Rodio and Slint. Choose a music directory in Settings to scan its MP3, FLAC, WAV and OGG files. Double-click a song in the library or search results to play it. Metadata is read-only. The lyrics page supports embedded timed lyrics and UTF-8 sidecar files with the same basename and the extension `.lrc`.
 
-<a href="README-zh.md">中文介绍</a> can be seen here.
+SealMusic is a fork of [Zeedle](https://github.com/Jordan-Haidee/zeedle), licensed under GPL-3.0.
 
-## Installation
+[中文介绍](README-zh.md)
 
-### Windows, macOS, and Linux
+## Playback
 
-Download prebuilt releases for your platform:
-- Windows: NSIS installer, MSI installer (x64 & ARM64)
-- macOS: DMG
-- Linux: deb, AppImage (amd64 & arm64)
+- Click a column heading to sort by title, artist or duration. Text uses ordinary string order. Sorting preserves the current track and playback history.
+- Repeat cycles through playlist, track and off. Shuffle can be enabled independently.
+- Space toggles playback. Up and Down select the previous and next track. Left and Right seek 15 seconds, or jump between timed lines on the lyrics page. F1–F4 open the library, search, lyrics and settings.
+- Closing the window keeps playback available through the tray or Linux desktop controls when available. Choose Exit from the tray or press Ctrl+Q to quit.
+- Settings includes English and Simplified Chinese, automatic or manual theme selection, the version, license and upstream project.
 
-### Build from source
+On Linux, MPRIS clients can control playback and query metadata. For example:
 
-It's expected to work well on main platforms that Slint and Rodio support, such as Windows, Linux and MacOS.
-
-Tested in Windows 10/11:
-
-```shell
-./packager/pack-nsis.ps1
-./packager/pack-msi.ps1
+```sh
+playerctl -p sealmusic play-pause
+playerctl -p sealmusic metadata
+playerctl -p sealmusic position 10+
 ```
 
-On macOS, build the DMG package with:
+## Configuration
 
-```shell
-./packager/pack-dmg.sh
-```
+The fork stores its configuration in `$XDG_CONFIG_HOME/sealmusic/config.toml`, defaulting to `~/.config/sealmusic/config.toml`. To import an upstream configuration, copy its TOML file there while the player is closed. InOrder becomes playlist repeat, Recursive becomes track repeat and Random enables shuffle with playlist repeat. The former About page opens Settings. Unsupported languages fall back to English.
 
-Tested in Ubuntu 22.04 LTS:
+![Settings](assets/settings-en.png)
 
-```shell
-# deb package
-./packager/pack-deb.sh
+## Build and package
 
-# or appimage package
-./packager/pack-appimage.sh
-```
+Run `cargo run` for development, or `cargo build --locked --release` for a release binary. The packaging scripts use cargo-packager and write their output to `target/release`.
 
-On x64 and ARM64 Linux hosts, these scripts build packages for the current architecture.
+| Platform | Commands |
+| --- | --- |
+| Linux | `./packager/pack-deb.sh`, `./packager/pack-appimage.sh` |
+| Windows | `./packager/pack-nsis.ps1`, `./packager/pack-msi.ps1` |
+| macOS | `./packager/pack-dmg.sh` |
 
-The built installer packages can be found in `target/release`.
-
-## Config
-Select your music directory:
-![settings](assets/p3.png)
-
-## Enjoy
-![p1](assets/p1.png)
-
-Lyrics Display:
-
-![p1](assets/p2.png)
-
-Local search:
-
-![p4](assets/p4.png)
-
-## Edit metadata
-
-![p5](assets/p5.png)
-
-
-## Note
-Zeedle is also an ideal starter project for anyone new to Rust GUI development.
-It’s lightweight, practical, and simple enough to help beginners gain real hands-on experience while building something useful. 🤗🤗🤗
-
-After typing it, you can get: 
-- how to use Rodio playback library to play audios
-- how to communicate between UI and backend threads
-- how to add hotkey bindings in Slint UI
-- how to support multiple languages in Slint UI
+The Linux packages install the desktop entry and executable as `sealmusic`. [P0 implementation and measurements](P0_PLAN.md)

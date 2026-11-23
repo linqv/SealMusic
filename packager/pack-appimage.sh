@@ -5,14 +5,13 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 RELEASE_DIR="$PROJECT_ROOT/target/release"
 CONFIG="$SCRIPT_DIR/Packager.linux.toml"
-APPIMAGE_DIR="$RELEASE_DIR/.cargo-packager/appimage"
 cd "$PROJECT_ROOT"
 
 VERSION="$(awk -F= '
     /^\[package\][[:space:]]*$/ { in_package = 1; next }
     /^\[/ { in_package = 0 }
     in_package && $1 ~ /^[[:space:]]*version[[:space:]]*$/ {
-        gsub(/[[:space:]\"]/, "", $2)
+        gsub(/[[:space:]"]/, "", $2)
         print $2
         exit
     }
@@ -39,35 +38,11 @@ trap 'rm -f -- "$VERSIONED_CONFIG"' EXIT
     cat "$CONFIG"
 } > "$VERSIONED_CONFIG"
 
-GENERATED_APPIMAGE="$RELEASE_DIR/zeedle_${VERSION}_${APPIMAGE_ARCH}.AppImage"
-OUTPUT_APPIMAGE="$RELEASE_DIR/Zeedle_${VERSION}_${OUTPUT_ARCH}.AppImage"
-DESKTOP_FILES=(
-    "$RELEASE_DIR/.cargo-packager/appimage_deb/data/usr/share/applications/zeedle.desktop"
-    "$APPIMAGE_DIR/zeedle.AppDir/usr/share/applications/zeedle.desktop"
-)
-
-printf 'Building Zeedle %s AppImage (%s)...\n' "$VERSION" "$OUTPUT_ARCH"
-unset all_proxy ALL_PROXY
-cargo packager --config "$VERSIONED_CONFIG" --formats appimage
-
-for desktop_file in "${DESKTOP_FILES[@]}"; do
-    [[ -f "$desktop_file" ]] || continue
-
-    if grep -q '^StartupNotify=' "$desktop_file"; then
-        sed -i 's/^StartupNotify=.*/StartupNotify=true/' "$desktop_file"
-    else
-        printf 'StartupNotify=true\n' >> "$desktop_file"
-    fi
-    if ! grep -q '^StartupWMClass=' "$desktop_file"; then
-        printf 'StartupWMClass=Zeedle\n' >> "$desktop_file"
-    fi
-done
-
-if [[ ! -f "$APPIMAGE_DIR/build_appimage.sh" ]]; then
-    printf 'AppImage build script was not created: %s\n' "$APPIMAGE_DIR/build_appimage.sh" >&2
-    exit 1
-fi
-(cd "$APPIMAGE_DIR" && bash build_appimage.sh)
+GENERATED_APPIMAGE="$RELEASE_DIR/sealmusic_${VERSION}_${APPIMAGE_ARCH}.AppImage"
+OUTPUT_APPIMAGE="$RELEASE_DIR/SealMusic_${VERSION}_${OUTPUT_ARCH}.AppImage"
+printf 'Building SealMusic %s AppImage (%s)...\n' "$VERSION" "$OUTPUT_ARCH"
+# The release binary is already stripped. Older linuxdeploy strip cannot read modern ELF RELR sections.
+NO_STRIP=1 cargo packager --config "$VERSIONED_CONFIG" --formats appimage
 
 if [[ ! -f "$GENERATED_APPIMAGE" ]]; then
     printf 'Expected AppImage was not created: %s\n' "$GENERATED_APPIMAGE" >&2

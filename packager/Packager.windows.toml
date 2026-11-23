@@ -1,17 +1,17 @@
 # The Windows packaging scripts supply this package version from Cargo.toml at runtime.
-product-name = "Zeedle"
-name = "Zeedle"
+product-name = "SealMusic"
+name = "SealMusic"
 before-packaging-command = "cargo build --release --manifest-path ../Cargo.toml"
 formats = ["nsis"]
 out-dir = "../target/release"
 binaries-dir = "../target/release"
 resources = ["DLLs/*.dll"]
-authors = ["Jordan Haidee"]
-identifier = "dev.zeedle"
-copyright = "Copyright © 2025 Zeedle Dev. All rights reserved."
+authors = ["Jordan Haidee", "linqv"]
+identifier = "dev.sealmusic"
+copyright = "Copyright © 2025 Zeedle Dev, 2026 SealMusic contributors."
 
 [[binaries]]
-path = "zeedle"
+path = "sealmusic"
 main = true
 
 [nsis]

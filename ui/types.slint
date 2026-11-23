@@ -1,9 +1,8 @@
 export struct SongInfo {
-    id: int,
+    id: string,
     song_name: string,
     singer: string,
     duration: string,
-    song_path: string,
 }
 
 @rust-attr(derive(serde::Serialize, serde::Deserialize))
@@ -14,20 +13,14 @@ export enum SortKey {
 }
 
 @rust-attr(derive(serde::Serialize, serde::Deserialize))
-export enum PlayMode {
-    InOrder,
-    Recursive,
-    Random,
+export enum LoopMode {
+    None,
+    Track,
+    Playlist,
 }
 
 export struct LyricItem {
     time: float,
     duration: float,
     text: string,
-}
-
-export enum TriggerSource {
-    ClickItem,
-    Prev,
-    Next,
 }

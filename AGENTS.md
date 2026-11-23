@@ -2,89 +2,80 @@
 
 Instructions for AI coding agents working in this repository.
 
-## Quick Start
-- Dev run (with console): `cargo run`
-- Release build (no console): `cargo build --release`
-- Tests: `cargo test`
-- fmt (requires nightly): `cargo +nightly fmt`
-- clippy: `cargo clippy --all-targets --all-features -- -D warnings`
-- Pre-commit hooks: `cargo +nightly fmt && cargo clippy --all-targets --all-features -- -D warnings`
+## Build Policy (Linux Only)
+- **Target Linux only — do not package or build for other platforms (只构建 Linux，不打包和构建其他平台).**
+- Only build, test, and verify on Linux (`cargo run`, `cargo build`, `cargo build --release`, `cargo test`, `cargo clippy`).
+- **Do not package:** never run `./packager/*` scripts, `cargo packager`, `.deb`, `.AppImage`, NSIS, MSI, or DMG builds unless the user explicitly overrides this rule.
+- **Do not build or cross-check other platforms:** never run Windows/macOS builds or `--target` cross-compilation checks. Existing `#[cfg(...)]` boundaries stay intact in source code, but CI/agent verification stays strictly Linux-only.
 
-## Distribution
-- Windows NSIS: `./packager/pack-nsis.ps1`
-- Windows MSI: `./packager/pack-msi.ps1`
-- macOS DMG: `./packager/pack-dmg.sh`
-- Linux deb (amd64/arm64): `./packager/pack-deb.sh`
-- Linux AppImage (amd64/arm64): `./packager/pack-appimage.sh`
-- All use `cargo packager` under the hood — see `packager/` for configs.
+## Quick Start
+- Dev run: `cargo run`
+- Release build: `cargo build --release`
+- Runtime smoke check: `./target/release/sealmusic --check-runtime`
+- Unit tests: `cargo test`
+- MPRIS live D-Bus test: `dbus-run-session -- cargo test mpris_dbus_roundtrip -- --ignored`
+- Library benchmark: `SEALMUSIC_BENCH_DIR=<dir> cargo test --release measure_library -- --ignored --nocapture`
+- Format (requires nightly): `cargo +nightly fmt`
+- Lint: `cargo clippy --all-targets --all-features -- -D warnings`
+- Pre-commit check: `cargo +nightly fmt --check && cargo clippy --all-targets --all-features -- -D warnings`
 
 ## Project Map
-- Single binary crate, no workspace. Entrypoint: [src/main.rs](src/main.rs)
-- Backend (worker thread, rodio playback): [src/main.rs](src/main.rs#L201)
-- UI bridge types (generated from Slint): [src/slint_types.rs](src/slint_types.rs)
-- Config load/save (TOML): [src/config.rs](src/config.rs)
-- Logger (stdout + file): [src/logger.rs](src/logger.rs)
-- Media metadata/lyrics/sorting: [src/utils.rs](src/utils.rs)
-- FFT spectrum analysis: [src/spectrum.rs](src/spectrum.rs)
-- Slint UI root: [ui/app.slint](ui/app.slint)
-- Slint UI types: [ui/types.slint](ui/types.slint) (structs, enums)
-- Slint custom theme: [ui/theme.slint](ui/theme.slint) (light/dark palette)
-- Reusable Slint components: `ui/control_panel.slint`, `ui/song_list.slint`, `ui/lyrics_panel.slint`, `ui/settings_panel.slint`, `ui/sidebar.slint`, `ui/title_bar.slint`, `ui/spectrum.slint`
-- Example: [examples/rodio_usage.rs](examples/rodio_usage.rs)
+- `src/main.rs`: `APP_ID = "sealmusic"`, `--check-runtime` fast exit, `single-instance` lock, logger init.
+- `src/app.rs`: Slint UI setup (`set_xdg_app_id`), callbacks, tray actions, theme/progress timers, state projection.
+- `src/player/`: `command.rs` (`PlayerCommand`, `Controls`), `state.rs` (`PlaybackState`, `PlaybackEvent`, `Queue`), `local.rs` (`decode`), `mod.rs` (`PlayerCore` + Rodio worker).
+- `src/library/`: `mod.rs` (`Track`, `TrackId`, `TrackOrigin`), `scan.rs` (`scan`, `sort`, `search`), `metadata.rs` (`read_meta_info`, `read_details`), `lyrics.rs` (`read_lyrics`, `parse_lyrics`).
+- `src/integrations/mpris.rs`: `#[cfg(target_os = "linux")]` MPRIS2 D-Bus server (`org.mpris.MediaPlayer2.sealmusic`), cover cache (`cache_cover`).
+- `src/config.rs` & `src/logger.rs`: TOML persistence (with legacy migration) and file/stdout logging.
+- `ui/` & `src/slint_types.rs`: Slint UI components (`ui/app.slint`, `ui/theme.slint`, etc.) and generated bindings.
 
 ## Architecture Rules
-- UI → backend communication: `mpsc::channel<PlayerCommand>` [src/main.rs](src/main.rs#L42). Variants: `Play`, `Pause`, `ChangeProgress`, `PlayNext`, `PlayPrev`, `SwitchMode`, `RefreshSongList`, `SortSongList`, `SetLang`, `ChangeVolume`, `SetShowSpectrum`.
-- Backend → UI updates: must use `slint::invoke_from_event_loop` — never block the UI path.
-- Audio playback lives in the worker thread via `rodio::Player` (wrapped in `Arc<Mutex<...>>`).
-- Spectrum: `TapSource` taps audio samples in the playback thread, sends chunks to a separate FFT worker thread via `mpsc::sync_channel`, results polled by a Slint `Timer`.
-- Window is `no-frame: true` — custom `TitleBar` with native OS drag via `winit::window().drag_window()`, with manual `set_position()` fallback.
-- 5-page navigation: 0=Gallery (song list), 1=Search, 2=Lyrics, 3=Settings, 4=About.
-- Two-phase init: (1) `set_start_ui_state` restores UI from config, (2) `set_start_player_state` starts playback.
+- **Single source of truth:** `PlayerCore` owns Rodio, queue, history, and `PlaybackState`. UI, tray, and MPRIS only send `PlayerCommand` through `Controls` and project `PlaybackEvent` / `SharedState`.
+- **Distinct playback commands:** `Play`, `Pause`, `TogglePlayPause`, and `Stop` have separate semantics (never alias `Pause` to toggle). `LoopMode` (`None`, `Track`, `Playlist`) and `shuffle` (`bool`) are independent.
+- **Stable track identity:** Use `TrackId` (`/dev/sealmusic/track/local_<hex>`) for track selection and `SeekTo` / MPRIS `SetPosition` validation — never list indices.
+- **GUI thread safety:** Update Slint properties only via `slint::invoke_from_event_loop`. Keep queue/history in Rust.
+- **MPRIS isolation:** Keep Linux-only dependencies (`mpris-server`, `futures-channel`, `futures-lite`, `url`, `tempfile`) under `[target.'cfg(target_os = "linux")'.dependencies]` and isolate code behind `#[cfg(target_os = "linux")]`. Startup must still succeed when no D-Bus session bus is available (MPRIS disables itself and sets `can_run_hidden = false`).
+- **Scope guardrails:** Metadata and library scanning are strictly read-only — no tag editing, no file deletion, no spectrum/FFT, and no pinyin sorting (plain deterministic string order).
+- **Navigation pages:** `0 = Gallery`, `1 = Search`, `2 = Lyrics`, `3 = Settings` (About info is integrated into Settings).
 
-## Hotkeys (defined in `ui/app.slint` FocusScope)
+## Hotkeys (`ui/app.slint` `FocusScope`)
 | Key | Action |
-|-----|--------|
+|---|---|
 | `Space` | Play/pause toggle |
-| `←` | Seek backward 15s; on lyrics page (page 2), snap to previous lyric line |
-| `→` | Seek forward 15s; on lyrics page (page 2), snap to next lyric line |
+| `←` | Seek backward 15s; on Lyrics page (`2`), snap to previous timed lyric line |
+| `→` | Seek forward 15s; on Lyrics page (`2`), snap to next timed lyric line |
 | `↑` | Previous song |
 | `↓` | Next song |
-| `F1` | Gallery (song list, page 0) |
-| `F2` | Search (page 1) |
-| `F3` | Lyrics (page 2) |
-| `F4` | Settings (page 3) |
-| `F5` | About (page 4) |
+| `F1`–`F4` | Switch pages (`0` Gallery, `1` Search, `2` Lyrics, `3` Settings) |
+| `Ctrl+Q` | Quit and save state |
 
-## Theme
-- Custom `Theme` global in [ui/theme.slint](ui/theme.slint) with 11 fully opaque color tokens (panel, surface, text, accent, etc.).
-- Light/dark controlled by `Theme.is-dark`, set via `set_light_theme()` alongside `Palette.color-scheme` for std widgets.
-- `dark-light` crate polls system theme every 1s (timer); `dark_light::Mode::Light` checks if light.
+## Theme & Localization
+- Custom `Theme` global in [ui/theme.slint](ui/theme.slint); light/dark controlled by `Theme.is-dark` via `set_light_theme()` alongside Slint `Palette.color-scheme`.
+- `dark-light` polls the system theme every 1s when `follow_system_theme` is enabled.
+- Only English (`""`) and Simplified Chinese (`"zh_CN"`) are bundled (`lang/sealmusic.pot`, `lang/zh_CN/LC_MESSAGES/sealmusic.po`); unsupported codes in config fall back to `""`.
 
 ## Conventions
-- Logging: `env_logger` with level `Info` by default, writes to stdout + `~/.zeedle.log` (auto-trim at 10MB).
-- Config: `~/.config/zeedle/config.toml` (serde TOML).
-- Supported audio extensions: `mp3`, `flac`, `wav`, `ogg`.
-- Metadata: `lofty` for reading tags + cover art; `pinyin` for Chinese sorting.
-- Album cover: falls back to `ui/cover.svg`.
-- Font: auto-selects per platform (Windows: `Microsoft YaHei UI`, Linux: `Noto Sans CJK SC`, macOS: `PingFang SC`).
+- **Logging:** `env_logger` at `Info` (`zbus` filtered to `Warn`), writing to stdout + `~/.sealmusic.log` (auto-removed when > 10 MiB on startup).
+- **Config:** `$XDG_CONFIG_HOME/sealmusic/config.toml` (fallback `~/.config/sealmusic/config.toml`), saved atomically via temp file + rename.
+- **Cover cache:** MPRIS exports embedded cover art as PNG under `$XDG_CACHE_HOME/sealmusic/art` (fallback `~/.cache/sealmusic/art`) via `tempfile::NamedTempFile`, cleaned up on track change/exit.
+- **Audio & tags:** Supported extensions `mp3`, `flac`, `wav`, `ogg`; `lofty` reads tags/covers; cover falls back to `ui/cover.svg`; Linux font defaults to `Noto Sans CJK SC`.
 
 ## Pitfalls
-- Slint pinned to `=1.17.1` in both `[dependencies]` and `[build-dependencies]` — keep versions aligned.
-- Build-time: `build.rs` uses `slint_build::CompilerConfiguration` with style `fluent` and `with_bundled_translations("lang")`. UI/i18n changes may fail if translations inconsistent.
-- Windows icon embedding via `winresource` in `build.rs` (Windows-only build dep).
-- Debug builds have a visible console window; release builds use `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]` (Windows only).
-- `single-instance` prevents multiple instances — do not remove.
-- Release profile: `lto=true`, `codegen-units=1`, `strip=true`, `panic="abort"`.
-- Rust edition is `2024` — `cargo +nightly fmt` is required for formatting (`use_small_heuristics = "Off"`, `imports_granularity = "Crate"`, `group_imports = "StdExternalCrate"`).
-- Slint types are auto-generated via `slint::include_modules!()` in `src/slint_types.rs`. Add `#[allow(unused_imports)]` as needed.
+- Slint is pinned to `=1.19.0` in both `[dependencies]` and `[build-dependencies]` — keep versions aligned.
+- `mpris-server` is pinned to `"0.9"` (Linux-only); check `mpris_dbus_roundtrip` after any MPRIS or `TrackId` changes.
+- `build.rs` uses `slint_build::CompilerConfiguration` with style `fluent` and `with_bundled_translations("lang")`. Run `i18n-update` whenever Slint `@tr(...)` text changes.
+- `single-instance` (`APP_ID = "sealmusic"`) prevents duplicate instances — do not remove.
+- Rust edition is `2024` with `.rustfmt.toml` nightly rules (`use_small_heuristics = "Off"`, `imports_granularity = "Crate"`, `group_imports = "StdExternalCrate"`) — always run `cargo +nightly fmt`.
+- Release profile uses `lto = true`, `codegen-units = 1`, `strip = true`, `panic = "abort"`.
+- Slint bindings are generated in `src/slint_types.rs` via `slint::include_modules!()`.
 
 ## Change Playbooks
-- **Add a player command:** 1) Add variant to `PlayerCommand` enum, 2) Handle in `start_player_backend_thread` match, 3) Wire UI callback sender in `register_ui_callbacks`.
-- **Add audio format:** Update glob in `src/utils.rs` line 62.
-- **Add/edit UI text:** Update Slint files, then run the i18n-update workflow (skill at `.agents/skills/i18n-update/SKILL.md`).
-- **Add Slint component:** Create file in `ui/`, import in `ui/app.slint`, add slint_types export and Rust wiring.
+- **Add a player command:** Add variant to `PlayerCommand` in `src/player/command.rs`, handle it in `PlayerCore::handle` in `src/player/mod.rs`, then wire UI (`src/app.rs`), tray, or MPRIS (`src/integrations/mpris.rs`).
+- **Add audio format:** Update extension filter in `src/library/scan.rs` and verify both `rodio` decoding and `lofty` tag reading.
+- **Add/edit UI text:** Update `.slint` files under `ui/`, then follow [.agents/skills/i18n-update/SKILL.md](.agents/skills/i18n-update/SKILL.md).
+- **Add Slint component:** Create file in `ui/`, import in `ui/app.slint`, check `src/slint_types.rs` exports and `src/app.rs` wiring.
 
 ## Existing Docs
+- [P0_PLAN.md](P0_PLAN.md) — P0 trimming, refactoring, MPRIS2 design, and benchmark/verification record
 - [README.md](README.md) — English overview
 - [README-zh.md](README-zh.md) — Chinese overview
 - [.agents/skills/i18n-update/SKILL.md](.agents/skills/i18n-update/SKILL.md) — i18n workflow

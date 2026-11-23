@@ -11,7 +11,7 @@ VERSION="$(awk -F= '
     /^\[package\][[:space:]]*$/ { in_package = 1; next }
     /^\[/ { in_package = 0 }
     in_package && $1 ~ /^[[:space:]]*version[[:space:]]*$/ {
-        gsub(/[[:space:]\"]/, "", $2)
+        gsub(/[[:space:]"]/, "", $2)
         print $2
         exit
     }
@@ -44,10 +44,10 @@ trap cleanup EXIT
     cat "$CONFIG"
 } > "$VERSIONED_CONFIG"
 
-DEB_FILE="$RELEASE_DIR/zeedle_${VERSION}_${DEBIAN_ARCH}.deb"
-OUTPUT_FILE="$RELEASE_DIR/Zeedle_${VERSION}_${DEBIAN_ARCH}.deb"
+DEB_FILE="$RELEASE_DIR/sealmusic_${VERSION}_${DEBIAN_ARCH}.deb"
+OUTPUT_FILE="$RELEASE_DIR/SealMusic_${VERSION}_${DEBIAN_ARCH}.deb"
 
-printf 'Building Zeedle %s Debian package (%s)...\n' "$VERSION" "$DEBIAN_ARCH"
+printf 'Building SealMusic %s Debian package (%s)...\n' "$VERSION" "$DEBIAN_ARCH"
 cargo packager --config "$VERSIONED_CONFIG" --formats deb
 
 if [[ ! -f "$DEB_FILE" ]]; then
@@ -62,7 +62,7 @@ dpkg-deb --raw-extract "$DEB_FILE" "$WORK_DIR/package"
 cp "$SCRIPT_DIR/debian/postinst" "$WORK_DIR/package/DEBIAN/postinst"
 cp "$SCRIPT_DIR/debian/postrm" "$WORK_DIR/package/DEBIAN/postrm"
 chmod 755 "$WORK_DIR/package/DEBIAN/postinst" "$WORK_DIR/package/DEBIAN/postrm"
-dpkg-deb --build "$WORK_DIR/package" "$WORK_DIR/package.deb"
+dpkg-deb --root-owner-group --build "$WORK_DIR/package" "$WORK_DIR/package.deb"
 
 mv -f -- "$WORK_DIR/package.deb" "$OUTPUT_FILE"
 if [[ "$DEB_FILE" != "$OUTPUT_FILE" ]]; then

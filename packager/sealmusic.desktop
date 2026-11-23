@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=SealMusic
+Comment=Local music player
+Comment[zh_CN]=本地音乐播放器
+Exec=sealmusic
+Icon=sealmusic
+StartupWMClass=sealmusic
+Categories=AudioVideo;Audio;Music;Player;
+Terminal=false
