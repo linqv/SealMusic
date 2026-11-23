@@ -7,7 +7,7 @@ use std::{
 use reqwest::{Client, Response, StatusCode, Url};
 use rodio::Decoder;
 
-use super::{OnlineTrack, Result, Script, read_script, sanitize_log};
+use super::{Result, Script, sanitize_log};
 use crate::slint_types::OnlineIssue;
 
 const LIMIT: u64 = 256 * 1024 * 1024;
@@ -172,10 +172,16 @@ async fn download_and_decode(
     })?
 }
 
-pub async fn prepare(script: Script, track: OnlineTrack) -> Result<Decoder<BufReader<File>>> {
-    let script_path = script.path()?;
-    let action = track.action();
-    let context = format!("{} · {}", action["source"].as_str().unwrap_or(""), track.quality);
+pub async fn prepare(
+    script: Script,
+    action: serde_json::Value,
+    alert: lx_probe::AlertHandler,
+) -> Result<Decoder<BufReader<File>>> {
+    let source = action["source"].as_str().unwrap_or_default();
+    let context = action["info"]["type"]
+        .as_str()
+        .map(|q| format!("{source} · {q}"))
+        .unwrap_or_else(|| source.to_owned());
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(15))
         .read_timeout(Duration::from_secs(30))
@@ -187,16 +193,7 @@ pub async fn prepare(script: Script, track: OnlineTrack) -> Result<Decoder<BufRe
 
     // Drop the script worker subprocess as soon as we have a non-expired media response.
     let response = {
-        let raw = tokio::task::spawn_blocking(move || read_script(&script_path)).await.map_err(
-            |e| {
-                log::warn!("LX source read task failed: {e}");
-                (OnlineIssue::ScriptFile, String::new())
-            },
-        )??;
-        let session = lx_probe::Session::initialize(raw, "--lx-worker").await.map_err(|e| {
-            log::warn!("LX source initialization failed: {}", sanitize_log(&e.to_string()));
-            (OnlineIssue::Initialization, String::new())
-        })?;
+        let session = script.session(alert).await?;
         fetch_response(
             &client,
             &context,

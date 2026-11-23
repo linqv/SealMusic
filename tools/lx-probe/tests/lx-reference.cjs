@@ -45,8 +45,10 @@ app.whenReady().then(async () => {
   ipcMain.on('userApi_response', (_, msg) => {
     if (msg.data.requestKey !== String(id)) return app.exit(1)
     if (!msg.status) return record({error: msg.message})
-    const url = new URL(msg.data.result.data.url)
-    record(fullUrl ? {url: msg.data.result.data.url} : {origin: url.origin})
+    const {action, data} = msg.data.result
+    if (action === 'lyric') return record({lyric: data})
+    const url = action === 'pic' ? data : data.url
+    record(fullUrl ? {url} : {origin: new URL(url).origin})
   })
   const html = fs.readFileSync(path.join(entry, 'dist/userApi/renderer/user-api.html'), 'utf8')
   await win.loadURL('data:text/html;charset=UTF-8,' + encodeURIComponent(html))

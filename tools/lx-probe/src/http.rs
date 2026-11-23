@@ -66,7 +66,9 @@ pub async fn request(client: &Client, msg: &Value) -> Result<Value> {
     }
     let non_empty = |v: &&Value| !v.is_null() && v.as_str() != Some("");
     let body = options.get("body").filter(non_empty);
-    let data = body.or_else(|| options.get("form").filter(non_empty));
+    let data = body
+        .or_else(|| options.get("form").filter(non_empty))
+        .or_else(|| options.get("formData").filter(non_empty));
     let json_body = body.is_some() && is_json_content_type(content_type.as_deref());
     let get_str_query = if method == Method::GET && !json_body {
         data.and_then(Value::as_str)
@@ -88,26 +90,29 @@ pub async fn request(client: &Client, msg: &Value) -> Result<Value> {
     for (name, value) in req_headers {
         req = req.header(name, value);
     }
-    if get_str_query.is_none() {
-        if let Some(data) = data {
-            if method == Method::GET && !json_body {
-                req = req.query(data);
-            } else if let Some(text) = data.as_str() {
-                if content_type.is_none() {
-                    req = req.header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
-                }
-                req = req.body(text.to_owned());
-            } else if json_body {
-                req = req.json(data);
-            } else {
-                req = req.form(data);
+    if get_str_query.is_none()
+        && let Some(data) = data
+    {
+        if method == Method::GET && !json_body {
+            req = req.query(data);
+        } else if let Some(text) = data.as_str() {
+            if content_type.is_none() {
+                req = req.header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
             }
-        } else if options.get("formData").is_some_and(|v| !v.is_null()) {
-            bail!("unsupported lx.request formData");
+            req = req.body(text.to_owned());
+        } else if json_body {
+            req = req.json(data);
+        } else {
+            req = req.form(data);
         }
     }
     let mut resp = req.send().await.map_err(transport_error)?;
     let status = resp.status();
+    let reason = resp
+        .extensions()
+        .get::<hyper::ext::ReasonPhrase>()
+        .map(|phrase| String::from_utf8_lossy(phrase.as_bytes()).into_owned())
+        .unwrap_or_else(|| status.canonical_reason().unwrap_or_default().to_owned());
     let mut headers = Map::new();
     for name in resp.headers().keys() {
         let values: Vec<_> = resp
@@ -130,8 +135,6 @@ pub async fn request(client: &Client, msg: &Value) -> Result<Value> {
         ensure!(chunk.len() <= BODY_LIMIT - raw.len(), "HTTP response exceeds 512 KiB");
         raw.extend_from_slice(&chunk);
     }
-    Ok(
-        json!({"statusCode":status.as_u16(), "statusMessage":status.canonical_reason().unwrap_or(""),
-              "headers":headers, "bytes":raw.len(), "raw":STANDARD.encode(raw)}),
-    )
+    Ok(json!({"statusCode":status.as_u16(), "statusMessage":reason,
+              "headers":headers, "bytes":raw.len(), "raw":STANDARD.encode(raw)}))
 }

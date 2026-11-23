@@ -319,6 +319,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         self.state.duration = Duration::ZERO;
         #[cfg(target_os = "linux")]
         {
+            self.online.cancel_details();
             self.artwork = None;
             self.state.art_url = None;
             self.state.synced_lyrics = None;
@@ -376,8 +377,14 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         }
         self.reset_and_restore_local(startup)
     }
-    fn details(&mut self, t: &Track) {
+    fn details(&mut self, t: &Arc<Track>) {
         let details = t.local_path().map(metadata::read_details).unwrap_or_default();
+        #[cfg(target_os = "linux")]
+        self.enhance_details(t, &details);
+        self.project_details(&t.id, details);
+    }
+
+    fn project_details(&mut self, _id: &crate::library::TrackId, details: metadata::TrackDetails) {
         #[cfg(target_os = "linux")]
         if self.mpris_available.load(Ordering::Acquire) {
             self.artwork = if let Some(raw) = &details.raw_cover {
@@ -405,7 +412,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                 .and_then(|f| url::Url::from_file_path(f.path()).ok())
                 .map(|u| Arc::<str>::from(u.as_str()));
             self.state.synced_lyrics =
-                crate::integrations::mpris::encode_synced_lyrics(&t.id, &details.lyrics);
+                crate::integrations::mpris::encode_synced_lyrics(_id, &details.lyrics);
         } else {
             self.artwork = None;
             self.state.art_url = None;
@@ -666,6 +673,23 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             Cmd::ImportScript(path) => self.import_script(path),
             #[cfg(target_os = "linux")]
             Cmd::EnableScript(enabled) => self.enable_script(enabled),
+            #[cfg(target_os = "linux")]
+            Cmd::PlayLocalSource(id) => {
+                if let Some(track) = self.queue.get(&id).filter(|t| t.local_path().is_some())
+                    && let Err(err) = self.begin_online(
+                        track,
+                        Status::Playing,
+                        None,
+                        0,
+                        false,
+                        false,
+                        Duration::ZERO,
+                    )
+                {
+                    self.stop_if_drained();
+                    self.online_failure(err);
+                }
+            }
             #[cfg(target_os = "linux")]
             Cmd::PlayLink(query, quality) => {
                 if let Err(err) = self.play_link(query, quality) {
@@ -931,6 +955,7 @@ mod tests {
                 enabled,
                 metadata: BTreeMap::new(),
                 platforms,
+                local_actions: vec![],
             }
         }
 
@@ -952,6 +977,36 @@ mod tests {
             let fixture =
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tagged.flac");
             Box::new(local::decode(&fixture).unwrap())
+        }
+
+        #[test]
+        fn local_details_require_the_current_request_and_track() {
+            let mut h = TestHarness::new(2);
+            let first = h.tracks[0].clone();
+            let second = h.tracks[1].clone();
+            let mut script = fake_script(true);
+            script.local_actions.push("lyric".into());
+            h.core.cfg.lx_script = Some(script);
+            h.core.handle(Cmd::PlayTrack(first.id.clone())).unwrap();
+            // Both embedded fields exist, so this commit needed no worker.
+            assert!(h.core.online.details_id().is_none());
+            let missing = metadata::TrackDetails::default();
+            h.core.enhance_details(&first, &missing);
+            let stale = h.core.online.details_id().unwrap();
+            h.core.enhance_details(&first, &missing);
+            let latest = h.core.online.details_id().unwrap();
+            let reply = |id, track: &Track| {
+                online::Completion::Details(id, track.id.clone(), Some(Default::default()))
+            };
+            h.events.lock().unwrap().clear();
+            h.core.complete_online(reply(stale, &first));
+            assert!(h.events.lock().unwrap().is_empty());
+            h.core.handle(Cmd::PlayTrack(second.id.clone())).unwrap();
+            h.events.lock().unwrap().clear();
+            h.core.complete_online(reply(latest, &first));
+            assert!(h.events.lock().unwrap().is_empty());
+            assert!(h.core.state.synced_lyrics.is_some());
+            assert_eq!(h.core.state.status, Status::Playing);
         }
 
         #[test]
@@ -1208,6 +1263,71 @@ mod tests {
             assert_eq!(
                 h.core.cfg.lx_script.as_ref().map(|s| s.id.as_str()),
                 Some("1".repeat(64).as_str())
+            );
+        }
+
+        #[test]
+        fn import_drain_delivers_late_alert_once_and_discards_after_disable() {
+            let mut h = TestHarness::new(1);
+            h.core.handle(Cmd::ImportScript(PathBuf::from("/nonexistent/good.js"))).unwrap();
+            let import_id = h.core.online.import_id().unwrap();
+            h.events.lock().unwrap().clear();
+
+            h.core.complete_online(online::Completion::Imported(import_id, Ok(fake_script(true))));
+            // Import completed immediately without blocking for background drain.
+            assert!(h.core.online.import_id().is_none());
+            assert!(h.core.cfg.lx_script.as_ref().is_some_and(|s| s.enabled));
+
+            let alert = lx_probe::UpdateAlert {
+                log: "New version".into(),
+                url: Some("https://example.invalid/update".into()),
+            };
+            h.core.complete_online(online::Completion::Alert(import_id, alert.clone()));
+            h.core.complete_online(online::Completion::Alert(import_id, alert.clone()));
+            assert_eq!(
+                h.events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|ev| matches!(ev, Event::UpdateAlert(_)))
+                    .count(),
+                1
+            );
+
+            // Disabling the script cancels background drain and drops stale alerts.
+            h.core.handle(Cmd::ImportScript(PathBuf::from("/nonexistent/second.js"))).unwrap();
+            let second_id = h.core.online.import_id().unwrap();
+            h.core.complete_online(online::Completion::Imported(second_id, Ok(fake_script(true))));
+            h.core.handle(Cmd::EnableScript(false)).unwrap();
+            h.events.lock().unwrap().clear();
+            h.core.complete_online(online::Completion::Alert(second_id, alert));
+            assert!(!h.events.lock().unwrap().iter().any(|ev| matches!(ev, Event::UpdateAlert(_))));
+        }
+
+        #[test]
+        fn play_local_source_error_stops_when_sink_already_drained() {
+            let mut h = TestHarness::new(1);
+            // Script enabled but does NOT declare local.musicUrl.
+            h.core.cfg.lx_script = Some(fake_script(true));
+            let local = h.tracks[0].clone();
+
+            h.core.handle(Cmd::PlayTrack(local.id.clone())).unwrap();
+            h.core.handle(Cmd::PlayLink(wy_link(510, "Pending"), "128k".into())).unwrap();
+            h.core.player.clear();
+            h.core.tick();
+            assert!(h.core.state.sink_empty);
+            assert_eq!(h.core.state.status, Status::Playing);
+
+            h.events.lock().unwrap().clear();
+            h.core.handle(Cmd::PlayLocalSource(local.id.clone())).unwrap();
+            assert!(!h.core.online.loading());
+            assert_eq!(h.core.state.status, Status::Stopped);
+            assert!(
+                h.events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|ev| matches!(ev, Event::OnlineFailure((OnlineIssue::NoQuality, _))))
             );
         }
 

@@ -1,7 +1,9 @@
+import { OnlineGlobal } from "online.slint";
 import { Theme } from "theme.slint";
 import {
     Button,
     ListView,
+    ScrollView,
 } from "std-widgets.slint";
 import { SongInfo, SortKey } from "types.slint";
 import { IconDisplay, IconSet } from "@lucide";
@@ -172,10 +174,21 @@ export component SongItem inherits Rectangle {
         }
     }
 
+    if OnlineGlobal.local-playback: ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: @tr("Play using LX source");
+                activated => { OnlineGlobal.play-local-source(root.info.id); }
+            }
+        }
+    }
 }
 
 export component MessagePopup inherits Rectangle {
+    in property <string> heading: @tr("Operation failed");
     in property <string> message;
+    in property <string> update-url;
+    callback open-update();
     callback dismissed();
     width: 100%;
     height: 100%;
@@ -190,21 +203,34 @@ export component MessagePopup inherits Rectangle {
         padding: 20px;
         spacing: 12px;
         Text {
-            text: @tr("Operation failed");
+            text: root.heading;
             color: Theme.text;
             font-size: 18px;
             font-weight: 600;
         }
 
-        Text {
-            text: root.message;
-            color: Theme.text-secondary;
-            font-size: 12px;
-            wrap: word-wrap;
+        message-scroll := ScrollView {
+            vertical-stretch: 1;
+            content-width: self.visible-width;
+            content-height: message-text.preferred-height;
+            message-text := Text {
+                x: 0px;
+                y: 0px;
+                width: message-scroll.visible-width;
+                text: root.message;
+                color: Theme.text-secondary;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
         }
 
         HorizontalLayout {
             alignment: end;
+            spacing: 8px;
+            if root.update-url != "": Button {
+                text: @tr("Open update link");
+                clicked => { root.open-update(); }
+            }
             Button {
                 text: @tr("Close");
                 clicked => { root.dismissed(); }

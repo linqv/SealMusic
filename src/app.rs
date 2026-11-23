@@ -232,6 +232,7 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
             lx.set_installed(script.is_some());
             lx.set_enabled(script.as_ref().is_some_and(|s| s.enabled));
             lx.set_importing(importing);
+            lx.set_local_playback(script.as_ref().is_some_and(|s| s.supports_local("musicUrl")));
             lx.set_script_summary(script.map(|s| s.summary()).unwrap_or_default().into());
         }
         #[cfg(target_os = "linux")]
@@ -250,6 +251,18 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
             let lx = ui.global::<OnlineGlobal>();
             lx.set_loading(label.into());
             lx.set_loading_paused(paused);
+        }
+        #[cfg(target_os = "linux")]
+        Event::UpdateAlert(alert) => {
+            let url = alert.url.unwrap_or_default();
+            let message = if url.is_empty() {
+                alert.log
+            } else {
+                format!("{}\n\n{url}", alert.log)
+            };
+            ui.set_update_message(message.into());
+            ui.set_update_url(url.into());
+            ui.invoke_show_source_update();
         }
         #[cfg(target_os = "linux")]
         Event::OnlineFailure((issue, detail)) => {
@@ -609,6 +622,10 @@ fn register_callbacks(
             }
         });
         let tx = controls.clone();
+        lx.on_play_local_source(move |id| {
+            tx.send(Cmd::PlayLocalSource(crate::library::TrackId(id.into())))
+        });
+        let tx = controls.clone();
         lx.on_enable_script(move |enabled| tx.send(Cmd::EnableScript(enabled)));
         let tx = controls.clone();
         lx.on_play_link(move |link, quality| tx.send(Cmd::PlayLink(link.into(), quality.into())));
@@ -719,9 +736,10 @@ fn register_callbacks(
         format!("{:02}:{:02}", (dura as u32) / 60, (dura as u32) % 60).to_shared_string()
     });
 
-    ui.on_open_url_in_browser(|url| match open::that(&url) {
-        Ok(()) => log::info!("Opened '{}' successfully.", url),
-        Err(err) => log::warn!("An error occurred when opening '{}': {}", url, err),
+    ui.on_open_url_in_browser(|url| {
+        if let Err(err) = open::that(&url) {
+            log::warn!("Could not open browser: {}", err.kind());
+        }
     });
 }
 

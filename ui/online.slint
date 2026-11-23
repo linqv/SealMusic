@@ -13,6 +13,8 @@ export global OnlineGlobal {
     in property <string> loading;
     in property <bool> loading-paused;
     pure callback is-link(string) -> bool;
+    in property <bool> local-playback;
+    callback play-local-source(string);
     callback import-script();
     callback enable-script(bool);
     callback play-link(string, string);

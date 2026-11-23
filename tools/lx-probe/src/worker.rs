@@ -17,10 +17,12 @@ use crate::FRAME_LIMIT;
 
 const BASE64_DECODE: GeneralPurpose = GeneralPurpose::new(
     &alphabet::STANDARD,
-    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
+    GeneralPurposeConfig::new()
+        .with_decode_allow_trailing_bits(true)
+        .with_decode_padding_mode(DecodePaddingMode::Indifferent),
 );
 
-fn js_error(message: &str) -> Error {
+pub(super) fn js_error(message: &str) -> Error {
     Error::new_from_js_message("lx", "host", message)
 }
 
@@ -31,8 +33,24 @@ fn bytes_from<'js>(
 ) -> rquickjs::Result<TypedArray<'js, u8>> {
     let bytes = match encoding.to_ascii_lowercase().as_str() {
         "utf8" | "utf-8" => text.into_bytes(),
-        "base64" => {
-            let compact: Vec<u8> = text.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+        "utf16le" | "utf-16le" | "ucs2" | "ucs-2" => {
+            text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+        }
+        "ascii" | "latin1" | "binary" => text.encode_utf16().map(|c| c as u8).collect(),
+        "base64" | "base64url" => {
+            let mut compact: Vec<u8> = text
+                .bytes()
+                .take_while(|b| *b != b'=')
+                .filter_map(|b| match b {
+                    b'-' => Some(b'+'),
+                    b'_' => Some(b'/'),
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'+' => Some(b),
+                    _ => None,
+                })
+                .collect();
+            if compact.len() % 4 == 1 {
+                compact.pop();
+            }
             BASE64_DECODE.decode(compact).map_err(|_| js_error("invalid base64"))?
         }
         "hex" => text
@@ -52,6 +70,12 @@ fn bytes_to_string(array: TypedArray<u8>, encoding: String) -> rquickjs::Result<
     let bytes = unsafe { array.as_bytes() }.ok_or_else(|| js_error("detached Uint8Array"))?;
     match encoding.to_ascii_lowercase().as_str() {
         "utf8" | "utf-8" => Ok(String::from_utf8_lossy(bytes).into_owned()),
+        "utf16le" | "utf-16le" | "ucs2" | "ucs-2" => Ok(String::from_utf16_lossy(
+            &bytes.as_chunks::<2>().0.iter().copied().map(u16::from_le_bytes).collect::<Vec<_>>(),
+        )),
+        "latin1" | "binary" => Ok(bytes.iter().map(|b| char::from(*b)).collect()),
+        "ascii" => Ok(bytes.iter().map(|b| char::from(b & 127)).collect()),
+        "base64url" => Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)),
         "base64" => Ok(STANDARD.encode(bytes)),
         "hex" => Ok(bytes.iter().map(|b| format!("{b:02x}")).collect()),
         _ => Err(js_error("unsupported lx.utils.buffer.bufToString encoding")),
@@ -74,6 +98,7 @@ fn drive<'js>(ctx: Ctx<'js>, deadline: &Cell<Instant>) -> Result<()> {
         Function::new(ctx.clone(), emit)?,
         Function::new(ctx.clone(), bytes_from)?,
         Function::new(ctx.clone(), bytes_to_string)?,
+        super::utils::native(ctx.clone())?,
     ))?;
     let mut input = io::stdin().lock();
     let mut frame = String::new();
@@ -101,6 +126,9 @@ fn drive<'js>(ctx: Ctx<'js>, deadline: &Cell<Instant>) -> Result<()> {
                     return Err(js_error("script execution deadline exceeded"));
                 }
             }
+            let flush = Object::new(ctx.clone())?;
+            flush.set("event", "flush")?;
+            dispatch.call::<_, ()>((flush,))?;
             Ok(())
         })()
         .catch(&ctx);

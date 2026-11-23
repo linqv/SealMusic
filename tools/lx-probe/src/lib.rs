@@ -1,4 +1,5 @@
 mod http;
+mod utils;
 mod worker;
 use std::{
     collections::HashMap, env, fs::File, io::Read, path::Path, process::Stdio, time::Duration,
@@ -31,7 +32,16 @@ pub fn read_input(path: impl AsRef<Path>) -> Result<String> {
 
 type Job = BoxFuture<'static, (u64, Value)>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateAlert {
+    pub log: String,
+    pub url: Option<String>,
+}
+
+pub type AlertHandler = Box<dyn Fn(UpdateAlert) + Send + Sync>;
+
 pub struct Session {
+    on_alert: AlertHandler,
     _child: tokio::process::Child,
     pub sources: Value,
     pub metadata: Value,
@@ -101,6 +111,11 @@ impl Session {
                         Some("result") if id == expected => return Ok(msg["value"].clone()),
                         Some("error") if id == expected => bail!("{}", msg["error"].as_str().unwrap_or("script error")),
                         Some("http" | "timer") => self.start_job(id, msg)?,
+                        Some("updateAlert") => {
+                            let log = msg["log"].as_str().context("invalid update log")?;
+                            ensure!(log.len() <= 4096 + 3, "oversized update log");
+                            (self.on_alert)(UpdateAlert { log: log.to_owned(), url: http::http_url(&msg["url"]).ok().map(Into::into) });
+                        }
                         Some("cancel") => if let Some(handle) = self.pending.get(&id) { handle.abort(); },
                         _ => bail!("unexpected host event"),
                     }
@@ -109,27 +124,38 @@ impl Session {
         }
     }
 
+    async fn phase_with_timeout(&mut self, command: Value, limit: Duration) -> Result<Value> {
+        timeout(limit, self.exchange(command)).await.context("script host deadline exceeded")?
+    }
+
     async fn phase(&mut self, command: Value) -> Result<Value> {
-        timeout(Duration::from_secs(12), self.exchange(command))
-            .await
-            .context("script host deadline exceeded")?
+        self.phase_with_timeout(command, Duration::from_secs(12)).await
     }
 
     pub async fn initialize(script: String, worker_arg: &str) -> Result<Self> {
+        Self::initialize_with_alert(script, worker_arg, Box::new(|_| {})).await
+    }
+
+    pub async fn initialize_with_alert(
+        script: String,
+        worker_arg: &str,
+        on_alert: AlertHandler,
+    ) -> Result<Self> {
         let client = Client::builder().redirect(reqwest::redirect::Policy::none()).build()?;
-        Self::initialize_with_client(script, worker_arg, client).await
+        Self::initialize_with_client(script, worker_arg, client, on_alert).await
     }
 
     pub async fn initialize_direct(script: String, worker_arg: &str) -> Result<Self> {
         let client =
             Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build()?;
-        Self::initialize_with_client(script, worker_arg, client).await
+        Self::initialize_with_client(script, worker_arg, client, Box::new(|_| {})).await
     }
 
     async fn initialize_with_client(
         script: String,
         worker_arg: &str,
         client: Client,
+        on_alert: AlertHandler,
     ) -> Result<Self> {
         let mut child = Command::new(env::current_exe()?)
             .arg(worker_arg)
@@ -142,6 +168,7 @@ impl Session {
             input: FramedWrite::new(child.stdin.take().context("worker stdin")?, codec()),
             output: FramedRead::new(child.stdout.take().context("worker stdout")?, codec()),
             client,
+            on_alert,
             _child: child,
             sources: Value::Null,
             metadata: Value::Null,
@@ -159,25 +186,52 @@ impl Session {
         Ok(session)
     }
 
-    pub async fn resolve(&mut self, action: &Value) -> Result<String> {
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    /// Give callbacks started by the initialization script one bounded phase to
+    /// deliver an update notice before the import worker is dropped.
+    pub async fn finish_import(&mut self) -> Result<()> {
+        if !self.has_pending() {
+            return Ok(());
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.phase_with_timeout(json!({"event":"idle","id":id}), Duration::from_secs(5)).await?;
+        Ok(())
+    }
+
+    pub async fn action(&mut self, action: &Value) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
         let source = action["source"].as_str().context("missing source")?;
-        let quality = action["info"]["type"].as_str().context("missing quality")?;
+        let name = action["action"].as_str().context("missing action")?;
+        let quality = &action["info"]["type"];
         let supports = |key: &str, target: &str| {
             self.sources[source][key].as_array().is_some_and(|xs| xs.iter().any(|x| x == target))
         };
         ensure!(
-            action["action"] == "musicUrl"
-                && supports("actions", "musicUrl")
-                && supports("qualitys", quality),
-            "undeclared {source}/musicUrl/{quality}"
+            supports("actions", name)
+                && if source == "local" {
+                    name != "musicUrl" || action["info"].get("type").is_some_and(Value::is_null)
+                } else {
+                    name == "musicUrl" && quality.as_str().is_some_and(|q| supports("qualitys", q))
+                },
+            "undeclared {source}/{name}/{}",
+            quality.as_str().unwrap_or("null")
         );
         let result = self
             .phase(json!({"event":"action","id":id,"data":action}))
             .await
             .with_context(|| format!("action {id} ({source}/{quality})"))?;
-        http::http_url(&result)?;
-        Ok(serde_json::from_value(result)?)
+        if name != "lyric" {
+            http::http_url(&result)?;
+        }
+        Ok(result)
+    }
+
+    pub async fn resolve(&mut self, action: &Value) -> Result<String> {
+        Ok(serde_json::from_value(self.action(action).await?)?)
     }
 }

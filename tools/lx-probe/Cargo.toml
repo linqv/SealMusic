@@ -7,6 +7,9 @@ publish = false
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
+flate2 = { version = "1", features = ["zlib"] }
+hyper = { version = "1", features = ["http1"] }
+openssl = "0.10"
 futures-util = { version = "0.3", features = ["sink"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 rquickjs = "0.14"

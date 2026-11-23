@@ -1,5 +1,6 @@
 """Offline P0 checks. Pass --lx-archive PATH to compare the packaged 2.12.6 preload."""
 import argparse
+import gzip
 import hashlib
 import io
 import json
@@ -52,7 +53,14 @@ class FixtureServer(BaseHTTPRequestHandler):
             pass
 
     def do_GET(self):
-        if self.path == '/text':
+        if self.path == '/wire':
+            data = gzip.compress(b'LX', mtime=0)
+            self.send_response(200, 'Fixture status')
+            self.send_header('Content-Encoding', 'gzip')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        elif self.path == '/text':
             self.reply(200, '试听'.encode())
         elif self.path == '/binary':
             self.reply(200, bytes([0, 128, 255]), 'application/octet-stream')
@@ -164,6 +172,44 @@ class Protocol(unittest.TestCase):
                 self.assertIn(error, p.stderr)
         self.assertEqual(self.results('minimal.js', [track])[-1]['url'], 'https://example.invalid/p0.flac')
 
+    def test_local_vectors(self):
+        origin = self.server.origin
+        music = dict(name='Tone', singer='Fixture', ext='wav', filePath='/music/tone.wav',
+                     songmid='/music/tone.wav', fixtureOrigin=origin)
+        actions = [dict(source='local', action=name, info=dict(musicInfo=music, type=quality))
+                   for name, quality in [('musicUrl', None), ('lyric', 'music'), ('pic', 'music')]]
+        for reference in ([True, False] if CONFIG.lx_archive else [False]):
+            with self.subTest(reference=reference):
+                init, audio, lyrics, picture = self.results('local.js', actions, reference)
+                self.assertEqual(init['sources']['local'], dict(type='music', qualitys=[], actions=['musicUrl','lyric','pic']))
+                self.assertEqual(audio['url'], origin + '/tone.wav')
+                self.assertEqual(lyrics['lyric'], dict(lyric='[00:00]Original', tlyric='[00:00]译文',
+                                 rlyric='[00:00]Romaji', lxlyric='[00:00]<0,100>Original'))
+                self.assertEqual(picture['url'], origin + '/cover.png')
+
+    def test_local_result_limits(self):
+        script = Path(self.tmp.name) / 'local-limits.js'
+        script.write_text("""/**
+ * @name P2 optional lyrics
+ */
+lx.on('request', async ({action, info}) => {
+  if (action === 'pic') return 'file:///cover.png'
+  return {lyric: 'x'.repeat(info.musicInfo.size), tlyric: 'x'.repeat(5120)}
+})
+lx.send('inited', {sources: {local: {type: 'music', actions: ['lyric', 'pic'], qualitys: []}}})
+""")
+        request = dict(source='local', action='lyric', info=dict(type='music', musicInfo={}))
+        for reference in ([True, False] if CONFIG.lx_archive else [False]):
+            with self.subTest(reference=reference):
+                request['action'] = 'lyric'
+                request['info']['musicInfo']['size'] = 1
+                self.assertEqual(self.results(script, [request], reference)[1]['lyric'],
+                                 dict(lyric='x', tlyric=None, rlyric=None, lxlyric=None))
+                request['info']['musicInfo']['size'] = 51201
+                self.assertNotEqual(self.probe(script, [request], reference).returncode, 0)
+                request['action'] = 'pic'
+                self.assertNotEqual(self.probe(script, [request], reference).returncode, 0)
+
     def test_molan_live(self):
         if not CONFIG.molan_script:
             self.skipTest('external source and network required')
@@ -261,11 +307,27 @@ lx.on('request', async ({info: {musicInfo: {fixtureOrigin}}}) => {
   const j = await http(fixtureOrigin + '/echo', {
     method: 'post',
     timeout: 1500.5,
-    headers: {'Content-Type': 'Application/JSON; charset=utf-8', 'X-Num': 42},
+    headers: {'Content-Type': ' Application/JSON ; charset=utf-8', 'X-Num': 42},
     body: {nested: {ok: true}},
   })
   if (j.body.mime !== 'application/json' || j.body.value.nested.ok !== true) {
     throw new Error('nested json failed')
+  }
+  const f = await http(fixtureOrigin + '/echo', {
+    method: 'post',
+    formData: {emptyObj: {}, emptyArr: [], kept: 'ok'},
+  })
+  if (f.body.mime !== 'application/x-www-form-urlencoded' || Object.keys(f.body.value).join(',') !== 'kept' || f.body.value.kept[0] !== 'ok') {
+    throw new Error('empty nested formData failed: ' + JSON.stringify(f.body))
+  }
+  const noOpts = await new Promise((resolve, reject) => {
+    lx.request(fixtureOrigin + '/text', undefined, (err, _, body) => err ? reject(err) : resolve(body))
+  })
+  const twoArgs = await new Promise((resolve, reject) => {
+    lx.request(fixtureOrigin + '/text', (err, _, body) => err ? reject(err) : resolve(body))
+  })
+  if (noOpts !== '试听' || twoArgs !== '试听') {
+    throw new Error('omitted request options failed')
   }
   const q = await http(fixtureOrigin + '/query?k=0', {
     method: 'get',

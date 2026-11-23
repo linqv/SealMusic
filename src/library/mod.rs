@@ -43,6 +43,7 @@ pub struct Track {
     pub origin: TrackOrigin,
     pub title: String,
     pub artist: String,
+    pub album: String,
     pub title_lower: String,
     pub artist_lower: String,
     pub duration: Duration,
@@ -65,6 +66,7 @@ impl Track {
             artist,
             title_lower,
             artist_lower,
+            album: String::new(),
             duration,
         }
     }

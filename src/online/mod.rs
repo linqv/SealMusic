@@ -1,7 +1,8 @@
+mod local;
 mod media;
-
 use std::{collections::BTreeMap, io::Write, path::PathBuf, sync::Arc, time::Duration};
 
+pub use local::{enhance, local_action};
 pub use media::prepare;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -167,7 +168,7 @@ impl OnlineTrack {
             .collect()
     }
 
-    fn action(&self) -> Value {
+    pub fn action(&self) -> Value {
         let info = self.info();
         json!({"source":info["source"],"action":"musicUrl","info":{"type":self.quality,"musicInfo":info}})
     }
@@ -186,6 +187,8 @@ pub struct Script {
     pub id: String,
     pub enabled: bool,
     pub metadata: BTreeMap<String, String>,
+    #[serde(default)]
+    pub local_actions: Vec<String>,
     pub platforms: BTreeMap<String, Vec<String>>,
 }
 
@@ -198,6 +201,25 @@ fn scripts_dir() -> PathBuf {
 }
 
 impl Script {
+    pub fn supports_local(&self, action: &str) -> bool {
+        self.enabled && self.local_actions.iter().any(|a| a == action)
+    }
+
+    pub async fn session(&self, alert: lx_probe::AlertHandler) -> Result<lx_probe::Session> {
+        let path = self.path()?;
+        let raw = tokio::task::spawn_blocking(move || read_script(&path))
+            .await
+            .map_err(|_| (OnlineIssue::ScriptFile, String::new()))??;
+        Self::initialize(raw, alert).await
+    }
+
+    async fn initialize(raw: String, alert: lx_probe::AlertHandler) -> Result<lx_probe::Session> {
+        lx_probe::Session::initialize_with_alert(raw, "--lx-worker", alert).await.map_err(|e| {
+            log::warn!("LX source initialization failed: {}", sanitize_log(&e.to_string()));
+            (OnlineIssue::Initialization, String::new())
+        })
+    }
+
     pub fn path(&self) -> Result<PathBuf> {
         if self.id.len() != 64 || !self.id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err((OnlineIssue::ScriptFile, String::new()));
@@ -225,21 +247,25 @@ impl Script {
         lines.extend(
             self.platforms.iter().map(|(platform, qs)| format!("{platform} · {}", qs.join(", "))),
         );
+        if !self.local_actions.is_empty() {
+            lines.push(format!("local · {}", self.local_actions.join(", ")));
+        }
         lines.join("\n")
     }
 
-    pub async fn import(path: PathBuf) -> Result<Self> {
+    pub async fn import(
+        path: PathBuf,
+        alert: lx_probe::AlertHandler,
+    ) -> Result<(Self, Option<lx_probe::Session>)> {
         let raw =
             tokio::task::spawn_blocking(move || read_script(&path)).await.map_err(|e| {
                 log::warn!("LX source read task failed: {e}");
                 (OnlineIssue::ScriptFile, String::new())
             })??;
         let id = format!("{:x}", Sha256::digest(raw.as_bytes()));
-        let session =
-            lx_probe::Session::initialize(raw.clone(), "--lx-worker").await.map_err(|e| {
-                log::warn!("LX source initialization failed: {}", sanitize_log(&e.to_string()));
-                (OnlineIssue::Initialization, String::new())
-            })?;
+        let session = Self::initialize(raw.clone(), alert).await?;
+        let local_actions: Vec<String> =
+            serde_json::from_value(session.sources["local"]["actions"].clone()).unwrap_or_default();
         let metadata = serde_json::from_value(session.metadata.clone()).unwrap_or_default();
         let mut platforms = BTreeMap::new();
         if let Some(sources) = session.sources.as_object() {
@@ -252,7 +278,7 @@ impl Script {
                 }
             }
         }
-        if platforms.is_empty() {
+        if platforms.is_empty() && local_actions.is_empty() {
             log::warn!("LX source declared no supported musicUrl platforms/qualities");
             return Err((OnlineIssue::NoQuality, String::new()));
         }
@@ -261,6 +287,7 @@ impl Script {
             enabled: true,
             metadata,
             platforms,
+            local_actions,
         };
         let target = script.path()?;
         tokio::task::spawn_blocking(move || -> std::io::Result<()> {
@@ -280,7 +307,8 @@ impl Script {
             log::warn!("Could not save LX source: {e}");
             (OnlineIssue::ScriptFile, String::new())
         })?;
-        Ok(script)
+        let drain = session.has_pending().then_some(session);
+        Ok((script, drain))
     }
 }
 

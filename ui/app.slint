@@ -162,6 +162,9 @@ export component MainWindow inherits Window {
             Palette.color-scheme = ColorScheme.dark;
         }
     }
+    in property <string> update-message;
+    in property <string> update-url;
+    public function show-source-update() { update-popup.show(); }
     public function show_operation_error() {
         operation-popup.show();
     }
@@ -438,6 +441,28 @@ export component MainWindow inherits Window {
                     activated => { root.current_page = 3; root.page_changed(3); root.focus(); }
                 }
 
+            }
+        }
+
+        update-popup-anchor := Rectangle {
+            x: (root.width - 380px) / 2;
+            y: (root.height - 240px) / 2;
+            width: 1px;
+            height: 1px;
+            update-popup := PopupWindow {
+                width: 380px;
+                height: 240px;
+                close-policy: close-on-click-outside;
+                MessagePopup {
+                    heading: @tr("LX source update");
+                    message: root.update-message;
+                    update-url: root.update-url;
+                    open-update => {
+                        root.open-url-in-browser(root.update-url);
+                        update-popup.close();
+                    }
+                    dismissed => { update-popup.close(); }
+                }
             }
         }
 

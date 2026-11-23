@@ -250,3 +250,18 @@ msgstr ""
 msgctxt "SettingsPanel"
 msgid "Enabled"
 msgstr ""
+
+#: ui/song_list.slint
+msgctxt "SongItem"
+msgid "Play using LX source"
+msgstr ""
+
+#: ui/song_list.slint
+msgctxt "MessagePopup"
+msgid "Open update link"
+msgstr ""
+
+#: ui/app.slint
+msgctxt "MainWindow"
+msgid "LX source update"
+msgstr ""

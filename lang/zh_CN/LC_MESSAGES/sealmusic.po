@@ -251,3 +251,18 @@ msgstr "导入 JS 音乐源…"
 msgctxt "SettingsPanel"
 msgid "Enabled"
 msgstr "启用"
+
+#: ui/song_list.slint
+msgctxt "SongItem"
+msgid "Play using LX source"
+msgstr "使用 LX 音源播放"
+
+#: ui/song_list.slint
+msgctxt "MessagePopup"
+msgid "Open update link"
+msgstr "打开更新链接"
+
+#: ui/app.slint
+msgctxt "MainWindow"
+msgid "LX source update"
+msgstr "LX 音源更新"

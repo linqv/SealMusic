@@ -1,6 +1,6 @@
 use std::env;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use lx_probe::{Session, read_input};
 use serde_json::{Value, json};
 
@@ -20,12 +20,14 @@ async fn main() -> Result<()> {
     let mut session = Session::initialize_direct(script, "--worker").await?;
     println!("{}", json!({"id":0,"sources":session.sources}));
     for (index, action) in actions.iter().enumerate() {
-        let url = session.resolve(action).await?;
+        let result = session.action(action).await?;
         let id = index + 1;
-        let record = if full_url {
-            json!({"id":id, "url":url})
+        let record = if action["action"] == "lyric" {
+            json!({"id": id, "lyric":result})
+        } else if full_url {
+            json!({"id":id, "url":result})
         } else {
-            json!({"id":id, "origin":reqwest::Url::parse(&url)?.origin().ascii_serialization()})
+            json!({"id":id, "origin":reqwest::Url::parse(result.as_str().context("expected URL")?)?.origin().ascii_serialization()})
         };
         println!("{record}");
     }

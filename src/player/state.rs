@@ -98,6 +98,8 @@ pub enum PlaybackEvent {
     #[cfg(target_os = "linux")]
     Link(String, String, Vec<String>, crate::slint_types::OnlineIssue),
     #[cfg(target_os = "linux")]
+    UpdateAlert(lx_probe::UpdateAlert),
+    #[cfg(target_os = "linux")]
     OnlineFailure(crate::online::Failure),
     #[cfg(target_os = "linux")]
     Loading(String, bool),

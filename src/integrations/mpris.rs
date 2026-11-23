@@ -997,6 +997,7 @@ mod tests {
                 enabled: true,
                 metadata: std::collections::BTreeMap::new(),
                 platforms,
+                local_actions: vec![],
             }),
             progress: 12.5,
             ..Default::default()

@@ -14,7 +14,7 @@ use super::{
     command::{PlayerCommand, Request},
 };
 use crate::{
-    library::{Track, TrackOrigin},
+    library::{Track, TrackId, TrackOrigin, metadata::TrackDetails},
     online::{self, OnlineTrack, Script},
     slint_types::OnlineIssue,
 };
@@ -22,7 +22,10 @@ use crate::{
 type Audio = Decoder<BufReader<File>>;
 
 pub enum Completion {
+    Details(u64, TrackId, Option<TrackDetails>),
+    Alert(u64, lx_probe::UpdateAlert),
     Imported(u64, online::Result<Script>),
+    ImportDrained(u64),
     Prepared(u64, online::Result<Box<Audio>>),
 }
 
@@ -55,6 +58,10 @@ pub(super) struct Online {
     tx: Weak<mpsc::Sender<Request>>,
     seq: u64,
     import: Option<Job>,
+    import_drain: Option<Job>,
+    import_alert: Option<lx_probe::UpdateAlert>,
+    shown_alert: bool,
+    details: Option<Job>,
     pending: Option<Pending>,
     pub tracks: Vec<Arc<Track>>,
 }
@@ -70,9 +77,26 @@ impl Online {
             tx,
             seq: 0,
             import: None,
+            import_drain: None,
+            import_alert: None,
+            shown_alert: false,
+            details: None,
             pending: None,
             tracks: vec![],
         }
+    }
+
+    fn alert_handler(&self, id: u64) -> lx_probe::AlertHandler {
+        let tx = self.tx.clone();
+        Box::new(move |alert| Completion::Alert(id, alert).send(tx.clone()))
+    }
+
+    pub fn cancel_details(&mut self) {
+        self.details.take();
+    }
+    #[cfg(test)]
+    pub fn details_id(&self) -> Option<u64> {
+        self.details.as_ref().map(|j| j.id)
     }
 
     pub fn loading(&self) -> bool {
@@ -154,10 +178,25 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         self.online.seq += 1;
         let id = self.online.seq;
         let tx = self.online.tx.clone();
+        let alert = self.online.alert_handler(id);
         let handle = self.online.runtime.spawn(async move {
-            let result = Script::import(path).await;
-            Completion::Imported(id, result).send(tx);
+            match Script::import(path, alert).await {
+                Ok((script, drain)) => {
+                    Completion::Imported(id, Ok(script)).send(tx.clone());
+                    if let Some(mut session) = drain
+                        && let Err(err) = session.finish_import().await
+                    {
+                        log::debug!(
+                            "LX initialization callbacks: {}",
+                            online::sanitize_log(&err.to_string())
+                        );
+                    }
+                    Completion::ImportDrained(id).send(tx);
+                }
+                Err(err) => Completion::Imported(id, Err(err)).send(tx),
+            }
         });
+        self.online.import_alert = None;
         self.online.import = Some(Job {
             id,
             handle,
@@ -190,9 +229,40 @@ impl<F: FnMut(Event)> PlayerCore<F> {
     }
 
     fn script_changed(&mut self) {
+        self.online.import_drain.take();
+        self.online.shown_alert = false;
+        if let Some(track) = self.state.track.clone().filter(|t| t.local_path().is_some()) {
+            self.details(&track);
+        }
         self.rebuild_order();
         self.script_event();
         self.results();
+    }
+
+    pub(super) fn enhance_details(&mut self, track: &Arc<Track>, details: &TrackDetails) {
+        self.online.details.take();
+        let Some(script) = self.cfg.lx_script.as_ref() else {
+            return;
+        };
+        if track.local_path().is_none()
+            || !(details.lyrics.is_empty() && script.supports_local("lyric")
+                || details.cover.is_none() && script.supports_local("pic"))
+        {
+            return;
+        }
+        self.online.seq += 1;
+        let id = self.online.seq;
+        let tx = self.online.tx.clone();
+        let alert = self.online.alert_handler(id);
+        let (script, track, details) = (script.clone(), track.clone(), details.clone());
+        let handle = self.online.runtime.spawn(async move {
+            let result = online::enhance(script, &track, details, alert).await;
+            Completion::Details(id, track.id.clone(), result).send(tx);
+        });
+        self.online.details = Some(Job {
+            id,
+            handle,
+        });
     }
 
     fn link_info(&self, query: &str) -> online::Result<(OnlineTrack, Arc<Track>, Vec<String>)> {
@@ -241,27 +311,31 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         position: Duration,
     ) -> online::Result<()> {
         self.cancel_load();
-        let TrackOrigin::Online(reference) = &track.origin else {
-            unreachable!()
-        };
         let script = self
             .cfg
             .lx_script
             .as_ref()
             .filter(|s| s.enabled)
             .ok_or((OnlineIssue::NoScript, track.title.clone()))?;
-        if !reference.qualities(Some(script)).contains(&reference.quality) {
-            return Err((OnlineIssue::NoQuality, track.title.clone()));
-        }
-        let label = format!("{} · {}", track.title, reference.quality);
+        let (action, label) = match &track.origin {
+            TrackOrigin::Local(_) if script.supports_local("musicUrl") => {
+                (online::local_action(&track, "musicUrl"), track.title.clone())
+            }
+            TrackOrigin::Online(reference)
+                if reference.qualities(Some(script)).contains(&reference.quality) =>
+            {
+                (reference.action(), format!("{} · {}", track.title, reference.quality))
+            }
+            _ => return Err((OnlineIssue::NoQuality, track.title.clone())),
+        };
         (self.publish)(Event::Loading(label.clone(), status != Status::Playing));
         let script = script.clone();
-        let reference = reference.clone();
         self.online.seq += 1;
         let id = self.online.seq;
         let tx = self.online.tx.clone();
+        let alert = self.online.alert_handler(id);
         let handle = self.online.runtime.spawn(async move {
-            let result = online::prepare(script, reference).await.map(Box::new);
+            let result = online::prepare(script, action, alert).await.map(Box::new);
             Completion::Prepared(id, result).send(tx);
         });
         self.online.pending = Some(Pending {
@@ -282,20 +356,65 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         Ok(())
     }
 
+    fn show_update(&mut self, alert: lx_probe::UpdateAlert) {
+        if !self.online.shown_alert {
+            self.online.shown_alert = true;
+            (self.publish)(Event::UpdateAlert(alert));
+        }
+    }
+
     pub(super) fn complete_online(&mut self, done: Completion) {
         match done {
+            Completion::Alert(id, alert)
+                if self.online.import.as_ref().is_some_and(|j| j.id == id) =>
+            {
+                self.online.import_alert = Some(alert);
+                return;
+            }
+            Completion::Alert(id, alert)
+                if self.online.details.as_ref().is_some_and(|j| j.id == id)
+                    || self.online.pending.as_ref().is_some_and(|p| p.job.id == id)
+                    || self.online.import_drain.as_ref().is_some_and(|j| j.id == id) =>
+            {
+                self.show_update(alert);
+                return;
+            }
+            Completion::ImportDrained(id)
+                if self.online.import_drain.as_ref().is_some_and(|j| j.id == id) =>
+            {
+                self.online.import_drain.take();
+                return;
+            }
+            Completion::Details(id, track_id, result)
+                if self.online.details.as_ref().is_some_and(|j| j.id == id) =>
+            {
+                self.online.details.take();
+                if let Some(details) = result
+                    && self.state.track.as_ref().is_some_and(|t| t.id == track_id)
+                {
+                    self.project_details(&track_id, details);
+                } else {
+                    return;
+                }
+            }
             Completion::Imported(id, result)
                 if self.online.import.as_ref().is_some_and(|j| j.id == id) =>
             {
-                self.online.import.take();
+                let job = self.online.import.take().unwrap();
                 match result {
                     Ok(script) => {
                         self.cancel_load();
                         self.stop_if_drained();
                         self.cfg.lx_script = Some(script);
                         self.script_changed();
+                        if let Some(alert) = self.online.import_alert.take() {
+                            self.show_update(alert);
+                        } else {
+                            self.online.import_drain = Some(job);
+                        }
                     }
                     Err(err) => {
+                        self.online.import_alert = None;
                         self.script_event();
                         self.online_failure(err);
                     }
@@ -306,13 +425,20 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             {
                 let p = self.online.pending.take().unwrap();
                 (self.publish)(Event::Loading(String::new(), false));
+                if p.track.local_path().is_some() && self.queue.get(&p.track.id).is_none() {
+                    self.stop_if_drained();
+                    self.broadcast();
+                    return;
+                }
                 match result {
                     Ok(source) => {
                         let old = self.state.track.clone();
                         match self.commit(p.track.clone(), p.status, *source, p.position) {
                             Ok(()) => {
-                                self.online.upsert(p.track.clone());
-                                self.queue.upsert(p.track.clone());
+                                if p.track.local_path().is_none() {
+                                    self.online.upsert(p.track.clone());
+                                    self.queue.upsert(p.track.clone());
+                                }
                                 self.queue.record_navigation(
                                     old,
                                     &p.track.id,

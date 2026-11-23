@@ -32,6 +32,8 @@ pub enum PlayerCommand {
     #[cfg(target_os = "linux")]
     OnlineDone(super::online::Completion),
     #[cfg(target_os = "linux")]
+    PlayLocalSource(TrackId),
+    #[cfg(target_os = "linux")]
     PlayLink(String, String),
     #[cfg(target_os = "linux")]
     Raise,

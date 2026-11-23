@@ -25,22 +25,25 @@ pub fn read_meta_info(path: &Path) -> Result<Track, LoftyError> {
         .and_then(Accessor::title)
         .map(|s| s.into_owned())
         .unwrap_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().into_owned());
-    Ok(Track::new(
+    let mut track = Track::new(
         TrackId::local(path),
         TrackOrigin::Local(path.to_owned()),
         title,
         tag.and_then(Accessor::artist).map(|s| s.into_owned()).unwrap_or_else(|| "unknown".into()),
         tagged.properties().duration(),
-    ))
+    );
+    track.album = tag.and_then(Accessor::album).map(|s| s.into_owned()).unwrap_or_default();
+    Ok(track)
 }
 
 #[cfg(target_os = "linux")]
+#[derive(Clone)]
 pub struct RawCover {
     pub bytes: Vec<u8>,
     pub extension: &'static str,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct TrackDetails {
     pub cover: Option<image::RgbaImage>,
     #[cfg(target_os = "linux")]
@@ -48,14 +51,30 @@ pub struct TrackDetails {
     pub lyrics: Vec<LyricLine>,
 }
 
+#[cfg(target_os = "linux")]
+pub fn decode_network_cover(bytes: &[u8]) -> Option<image::RgbaImage> {
+    let mut reader =
+        image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    reader.limits(limits);
+    let img = reader.decode().ok()?;
+    Some(resize_cover(img))
+}
+
 fn decode_cover(bytes: &[u8]) -> Option<image::RgbaImage> {
-    let img = image::load_from_memory(bytes).ok()?;
+    Some(resize_cover(image::load_from_memory(bytes).ok()?))
+}
+
+fn resize_cover(img: image::DynamicImage) -> image::RgbaImage {
     let resized = if img.width() > MAX_COVER_DIMENSION || img.height() > MAX_COVER_DIMENSION {
         img.resize(MAX_COVER_DIMENSION, MAX_COVER_DIMENSION, image::imageops::FilterType::Triangle)
     } else {
         img
     };
-    Some(resized.into_rgba8())
+    resized.into_rgba8()
 }
 
 #[cfg(target_os = "linux")]
