@@ -14,6 +14,10 @@ use super::{
     lyrics::{LyricLine, read_lyrics},
 };
 
+pub const MAX_COVER_DIMENSION: u32 = 512;
+#[cfg(target_os = "linux")]
+const MAX_RAW_COVER_BYTES: usize = 512 * 1024;
+
 pub fn read_meta_info(path: &Path) -> Result<Track, LoftyError> {
     let tagged = Probe::open(path)?.options(ParseOptions::new().read_cover_art(false)).read()?;
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
@@ -21,44 +25,86 @@ pub fn read_meta_info(path: &Path) -> Result<Track, LoftyError> {
         .and_then(Accessor::title)
         .map(|s| s.into_owned())
         .unwrap_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().into_owned());
-    Ok(Track {
-        id: TrackId::local(path),
-        origin: TrackOrigin::Local(path.to_owned()),
+    Ok(Track::new(
+        TrackId::local(path),
+        TrackOrigin::Local(path.to_owned()),
         title,
-        artist: tag
-            .and_then(Accessor::artist)
-            .map(|s| s.into_owned())
-            .unwrap_or_else(|| "unknown".into()),
-        duration: tagged.properties().duration(),
-    })
+        tag.and_then(Accessor::artist).map(|s| s.into_owned()).unwrap_or_else(|| "unknown".into()),
+        tagged.properties().duration(),
+    ))
+}
+
+#[cfg(target_os = "linux")]
+pub struct RawCover {
+    pub bytes: Vec<u8>,
+    pub extension: &'static str,
 }
 
 #[derive(Default)]
 pub struct TrackDetails {
     pub cover: Option<image::RgbaImage>,
+    #[cfg(target_os = "linux")]
+    pub raw_cover: Option<RawCover>,
     pub lyrics: Vec<LyricLine>,
 }
 
+fn decode_cover(bytes: &[u8]) -> Option<image::RgbaImage> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let resized = if img.width() > MAX_COVER_DIMENSION || img.height() > MAX_COVER_DIMENSION {
+        img.resize(MAX_COVER_DIMENSION, MAX_COVER_DIMENSION, image::imageops::FilterType::Triangle)
+    } else {
+        img
+    };
+    Some(resized.into_rgba8())
+}
+
+#[cfg(target_os = "linux")]
+fn raw_cover_extension(mime: Option<&lofty::picture::MimeType>) -> Option<&'static str> {
+    use lofty::picture::MimeType;
+    match mime? {
+        MimeType::Png => Some(".png"),
+        MimeType::Jpeg => Some(".jpg"),
+        MimeType::Gif => Some(".gif"),
+        MimeType::Unknown(s) if s.eq_ignore_ascii_case("image/webp") => Some(".webp"),
+        _ => None,
+    }
+}
+
 pub fn read_details(path: &Path) -> TrackDetails {
-    let tagged = lofty::read_from_path(path).ok();
+    let tagged = Probe::open(path)
+        .ok()
+        .and_then(|probe| probe.options(ParseOptions::new().read_properties(false)).read().ok());
     let tag = tagged.as_ref().and_then(|file| file.primary_tag().or_else(|| file.first_tag()));
-    let cover = tag
-        .and_then(|tag| {
-            tag.get_picture_type(PictureType::CoverFront).or_else(|| tag.pictures().first())
+    let picture = tag.and_then(|tag| {
+        tag.get_picture_type(PictureType::CoverFront).or_else(|| tag.pictures().first())
+    });
+    let cover = picture.and_then(|pic| decode_cover(pic.data()));
+    #[cfg(target_os = "linux")]
+    let raw_cover = picture.and_then(|pic| {
+        if cover.is_none() || pic.data().len() > MAX_RAW_COVER_BYTES {
+            return None;
+        }
+        let extension = raw_cover_extension(pic.mime_type())?;
+        Some(RawCover {
+            bytes: pic.data().to_vec(),
+            extension,
         })
-        .and_then(|pic| image::load_from_memory(pic.data()).ok())
-        .map(|img| img.into_rgba8());
+    });
     let embedded = tag.and_then(|tag| {
         tag.get_string(ItemKey::UnsyncLyrics).or_else(|| tag.get_string(ItemKey::Lyrics))
     });
     TrackDetails {
         cover,
+        #[cfg(target_os = "linux")]
+        raw_cover,
         lyrics: read_lyrics(path, embedded),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::*;
     #[test]
     fn reads_audio_properties_tags_lyrics_and_cover() {
@@ -71,5 +117,14 @@ mod tests {
         let details = read_details(&path);
         assert_eq!(details.cover.unwrap().dimensions(), (2, 3));
         assert_eq!(details.lyrics[0].text, "Embedded line");
+    }
+
+    #[test]
+    fn decode_cover_downscales_oversized_images() {
+        let img = image::RgbaImage::new(1024, 512);
+        let mut encoded = Vec::new();
+        img.write_to(&mut Cursor::new(&mut encoded), image::ImageFormat::Png).unwrap();
+        let decoded = decode_cover(&encoded).unwrap();
+        assert_eq!(decoded.dimensions(), (MAX_COVER_DIMENSION, MAX_COVER_DIMENSION / 2));
     }
 }

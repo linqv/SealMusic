@@ -2,6 +2,8 @@ pub mod command;
 mod local;
 pub mod state;
 
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     path::PathBuf,
     sync::{Arc, mpsc},
@@ -19,6 +21,8 @@ use crate::{
     slint_types::LoopMode,
 };
 
+const POSITION_SYNC_TICKS: u8 = 5;
+
 struct PlayerCore<F> {
     cfg: Config,
     state: PlaybackState,
@@ -27,9 +31,12 @@ struct PlayerCore<F> {
     queue: Queue,
     query: String,
     pending_seek: Option<Duration>,
+    tick_count: u8,
     mixer: rodio::mixer::Mixer,
     player: rodio::Player,
     publish: F,
+    #[cfg(target_os = "linux")]
+    mpris_available: Arc<AtomicBool>,
     #[cfg(target_os = "linux")]
     artwork: Option<tempfile::NamedTempFile>,
 }
@@ -38,6 +45,7 @@ pub fn start(
     cfg: Config,
     shared: SharedState,
     rx: mpsc::Receiver<Request>,
+    #[cfg(target_os = "linux")] mpris_available: Arc<AtomicBool>,
     mut publish: impl FnMut(Event) + Send + 'static,
 ) -> thread::JoinHandle<Config> {
     thread::spawn(move || {
@@ -51,7 +59,16 @@ pub fn start(
         device.log_on_drop(false);
         let mixer = device.mixer().clone();
         let player = rodio::Player::connect_new(&mixer);
-        run_worker(cfg, shared, rx, mixer, player, publish)
+        run_worker(
+            cfg,
+            shared,
+            rx,
+            mixer,
+            player,
+            #[cfg(target_os = "linux")]
+            mpris_available,
+            publish,
+        )
     })
 }
 
@@ -62,8 +79,6 @@ pub(crate) fn spawn_test_worker(
     rx: mpsc::Receiver<Request>,
     publish: impl FnMut(Event) + Send + 'static,
 ) -> thread::JoinHandle<Config> {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
     thread::spawn(move || {
         let (mixer, mut output) =
             rodio::mixer::mixer(1.try_into().unwrap(), 8000.try_into().unwrap());
@@ -78,7 +93,8 @@ pub(crate) fn spawn_test_worker(
                 thread::sleep(Duration::from_millis(10));
             }
         });
-        let cfg = run_worker(cfg, shared, rx, mixer, player, publish);
+        let cfg =
+            run_worker(cfg, shared, rx, mixer, player, Arc::new(AtomicBool::new(true)), publish);
         running.store(false, Ordering::Relaxed);
         let _ = audio.join();
         cfg
@@ -91,6 +107,7 @@ fn run_worker(
     rx: mpsc::Receiver<Request>,
     mixer: rodio::mixer::Mixer,
     player: rodio::Player,
+    #[cfg(target_os = "linux")] mpris_available: Arc<AtomicBool>,
     publish: impl FnMut(Event) + Send + 'static,
 ) -> Config {
     player.set_volume(cfg.volume);
@@ -108,9 +125,12 @@ fn run_worker(
         queue: Queue::default(),
         query: String::new(),
         pending_seek: None,
+        tick_count: 0,
         mixer,
         player,
         publish,
+        #[cfg(target_os = "linux")]
+        mpris_available,
         #[cfg(target_os = "linux")]
         artwork: None,
     };
@@ -181,8 +201,13 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             }
             self.broadcast();
         } else {
-            self.sample_position();
-            *self.shared.write().unwrap() = self.state.clone();
+            self.tick_count = (self.tick_count + 1) % POSITION_SYNC_TICKS;
+            if self.tick_count == 0 {
+                self.sample_position();
+                let mut shared = self.shared.write().unwrap();
+                shared.position = self.state.position;
+                shared.sampled_at = self.state.sampled_at;
+            }
         }
     }
     fn sample_position(&mut self) {
@@ -194,13 +219,15 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         self.state.sampled_at = Instant::now();
     }
     fn broadcast(&mut self) {
+        self.tick_count = 0;
         self.sample_position();
         let current = self.state.track.as_ref().map(|t| &t.id);
         self.state.can_next = self.queue.step(current, true, self.state.loop_mode).is_some();
         self.state.can_previous = self.queue.step(current, false, self.state.loop_mode).is_some();
         self.state.can_play = !self.tracks.is_empty();
-        *self.shared.write().unwrap() = self.state.clone();
-        (self.publish)(Event::State(self.state.clone(), self.pending_seek.take()));
+        let snapshot = Arc::new(self.state.clone());
+        *self.shared.write().unwrap() = (*snapshot).clone();
+        (self.publish)(Event::State(snapshot, self.pending_seek.take()));
     }
     fn rebuild_order(&mut self) {
         self.queue.rebuild(
@@ -216,7 +243,9 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             self.cfg.sort_ascending,
             self.tracks.clone(),
         ));
-        self.results();
+        if !self.query.is_empty() {
+            self.results();
+        }
     }
     fn results(&mut self) {
         (self.publish)(Event::Results(scan::search(&self.query, &self.tracks)));
@@ -233,7 +262,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         self.rebuild_order();
         self.library_event();
         if let Some(current) = &self.state.track
-            && let Some(updated) = self.tracks.iter().find(|t| t.id == current.id).cloned()
+            && let Some(updated) = self.queue.get(&current.id)
         {
             self.state.track = Some(updated.clone());
             self.details(&updated);
@@ -246,6 +275,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         {
             self.artwork = None;
             self.state.art_url = None;
+            self.state.synced_lyrics = None;
         }
         (self.publish)(Event::Details(Default::default()));
         let saved = self
@@ -269,8 +299,16 @@ impl<F: FnMut(Event)> PlayerCore<F> {
     fn details(&mut self, t: &Track) {
         let details = metadata::read_details(t.path());
         #[cfg(target_os = "linux")]
-        {
-            self.artwork =
+        if self.mpris_available.load(Ordering::Acquire) {
+            self.artwork = if let Some(raw) = &details.raw_cover {
+                match crate::integrations::mpris::cache_cover_raw(&raw.bytes, raw.extension) {
+                    Ok(f) => Some(f),
+                    Err(e) => {
+                        log::warn!("Cover cache: {e}");
+                        None
+                    }
+                }
+            } else {
                 details.cover.as_ref().and_then(
                     |img| match crate::integrations::mpris::cache_cover(img) {
                         Ok(f) => Some(f),
@@ -279,18 +317,29 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                             None
                         }
                     },
-                );
+                )
+            };
             self.state.art_url = self
                 .artwork
                 .as_ref()
                 .and_then(|f| url::Url::from_file_path(f.path()).ok())
-                .map(Into::into);
+                .map(|u| Arc::<str>::from(u.as_str()));
+            self.state.synced_lyrics =
+                crate::integrations::mpris::encode_synced_lyrics(&t.id, &details.lyrics);
+        } else {
+            self.artwork = None;
+            self.state.art_url = None;
+            self.state.synced_lyrics = None;
         }
         (self.publish)(Event::Details(details));
     }
     fn load(&mut self, t: Arc<Track>, status: Status) -> Result<(), String> {
         let source = local::decode(t.path())?;
         let duration = source.total_duration().unwrap_or(t.duration);
+        let changed = self.state.track.as_ref().is_none_or(|old| old.id != t.id);
+        if !changed && self.state.status != Status::Stopped {
+            self.pending_seek = Some(Duration::ZERO);
+        }
         // A new sink starts at position zero, including while paused or stopped.
         let next = rodio::Player::connect_new(&self.mixer);
         next.pause();
@@ -298,18 +347,13 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         next.append(source);
         self.player = next;
         self.state.duration = duration;
-        if self.state.track.as_ref().is_none_or(|old| old.id != t.id) {
-            self.details(&t);
-        }
-        if self.state.track.as_ref().is_some_and(|old| old.id == t.id)
-            && self.state.status != Status::Stopped
-        {
-            self.pending_seek = Some(Duration::ZERO);
-        }
-        self.state.track = Some(t);
+        self.state.track = Some(t.clone());
         self.state.status = status;
         if status == Status::Playing {
             self.player.play();
+        }
+        if changed {
+            self.details(&t);
         }
         Ok(())
     }
@@ -364,12 +408,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             }
             Cmd::Stop => self.stop(),
             Cmd::PlayTrack(id) => {
-                let t = self
-                    .tracks
-                    .iter()
-                    .find(|t| t.id == id)
-                    .cloned()
-                    .ok_or("Track is no longer in the library")?;
+                let t = self.queue.get(&id).ok_or("Track is no longer in the library")?;
                 let old = self.state.track.clone();
                 self.load(t, Status::Playing)?;
                 self.queue.record(old, &id, None);
@@ -425,6 +464,9 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                 self.library_event();
             }
             Cmd::Search(q) => {
+                if q == self.query {
+                    return Ok(());
+                }
                 self.query = q;
                 self.results();
                 return Ok(());
@@ -524,9 +566,12 @@ mod tests {
                 queue: Queue::default(),
                 query: String::new(),
                 pending_seek: None,
+                tick_count: 0,
                 mixer,
                 player,
                 publish,
+                #[cfg(target_os = "linux")]
+                mpris_available: Arc::new(AtomicBool::new(true)),
                 #[cfg(target_os = "linux")]
                 artwork: None,
             };

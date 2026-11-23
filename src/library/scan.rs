@@ -34,7 +34,11 @@ pub fn scan(dir: &Path) -> std::io::Result<Vec<Arc<Track>>> {
     if paths.len() < 32 {
         return Ok(paths.iter().filter_map(|p| read_track(p)).collect());
     }
-    Ok(paths.par_iter().filter_map(|p| read_track(p)).collect())
+    let threads = std::thread::available_parallelism().map(|n| n.get().min(4)).unwrap_or(2);
+    if let Ok(pool) = rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
+        return Ok(pool.install(|| paths.par_iter().filter_map(|p| read_track(p)).collect()));
+    }
+    Ok(paths.iter().filter_map(|p| read_track(p)).collect())
 }
 
 pub fn sort(tracks: &mut [Arc<Track>], key: SortKey, ascending: bool) {
@@ -59,7 +63,6 @@ pub fn search(query: &str, tracks: &[Arc<Track>]) -> Vec<Arc<Track>> {
         return vec![];
     }
     let score = |value: &str, exact, prefix, partial| {
-        let value = value.to_lowercase();
         if value == query {
             exact
         } else if value.starts_with(&query) {
@@ -73,7 +76,7 @@ pub fn search(query: &str, tracks: &[Arc<Track>]) -> Vec<Arc<Track>> {
     let mut hits: Vec<_> = tracks
         .iter()
         .filter_map(|t| {
-            let rank = score(&t.title, 100, 80, 60) + score(&t.artist, 50, 40, 20);
+            let rank = score(&t.title_lower, 100, 80, 60) + score(&t.artist_lower, 50, 40, 20);
             (rank > 0).then(|| (std::cmp::Reverse(rank), t.clone()))
         })
         .collect();
@@ -89,13 +92,13 @@ mod tests {
     use crate::library::{TrackId, TrackOrigin};
 
     fn make_track(id: &str, title: &str, artist: &str, secs: u64) -> Arc<Track> {
-        Arc::new(Track {
-            id: TrackId(id.into()),
-            origin: TrackOrigin::Local(PathBuf::from(format!("/music/{id}.flac"))),
-            title: title.into(),
-            artist: artist.into(),
-            duration: Duration::from_secs(secs),
-        })
+        Arc::new(Track::new(
+            TrackId(id.into()),
+            TrackOrigin::Local(PathBuf::from(format!("/music/{id}.flac"))),
+            title.into(),
+            artist.into(),
+            Duration::from_secs(secs),
+        ))
     }
 
     #[test]
@@ -151,8 +154,9 @@ mod benchmarks {
     #[test]
     #[ignore = "set SEALMUSIC_BENCH_DIR to a directory of audio files"]
     fn measure_library() {
-        let dir =
-            PathBuf::from(std::env::var_os("SEALMUSIC_BENCH_DIR").expect("set SEALMUSIC_BENCH_DIR"));
+        let dir = PathBuf::from(
+            std::env::var_os("SEALMUSIC_BENCH_DIR").expect("set SEALMUSIC_BENCH_DIR"),
+        );
         let paths = audio_paths(&dir).unwrap();
         for run in 0..6 {
             for parallel in [run % 2 == 0, run % 2 != 0] {

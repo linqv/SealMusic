@@ -76,7 +76,8 @@ mod tests {
 
     #[test]
     fn read_lyrics_prefers_embedded_and_falls_back_to_sidecar_lrc() {
-        let base = std::env::temp_dir().join(format!("sealmusic_lyrics_test_{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("sealmusic_lyrics_test_{}", std::process::id()));
         let audio_path = base.with_extension("flac");
         let lrc_path = base.with_extension("lrc");
         let _cleanup = TempCleanup(vec![lrc_path.clone()]);

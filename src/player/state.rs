@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     path::PathBuf,
     sync::{Arc, RwLock},
     time::{Duration, Instant},
@@ -34,7 +34,9 @@ pub struct PlaybackState {
     pub can_previous: bool,
     pub can_play: bool,
     #[cfg(target_os = "linux")]
-    pub art_url: Option<String>,
+    pub art_url: Option<Arc<str>>,
+    #[cfg(target_os = "linux")]
+    pub synced_lyrics: Option<Arc<str>>,
 }
 
 impl Default for PlaybackState {
@@ -53,6 +55,8 @@ impl Default for PlaybackState {
             can_play: false,
             #[cfg(target_os = "linux")]
             art_url: None,
+            #[cfg(target_os = "linux")]
+            synced_lyrics: None,
         }
     }
 }
@@ -77,7 +81,7 @@ impl PlaybackState {
 pub type SharedState = Arc<RwLock<PlaybackState>>;
 
 pub enum PlaybackEvent {
-    State(PlaybackState, Option<Duration>),
+    State(Arc<PlaybackState>, Option<Duration>),
     Details(TrackDetails),
     Library(PathBuf, SortKey, bool, Vec<Arc<Track>>),
     Results(Vec<Arc<Track>>),
@@ -91,6 +95,7 @@ pub enum PlaybackEvent {
 #[derive(Default)]
 pub struct Queue {
     order: Vec<Arc<Track>>,
+    index_by_id: HashMap<TrackId, usize>,
     back: VecDeque<Arc<Track>>,
     forward: VecDeque<Arc<Track>>,
 }
@@ -104,11 +109,25 @@ impl Queue {
                 self.order.swap(0, index);
             }
         }
-        // Resolve history against the new library to drop missing tracks and refresh metadata.
-        let by_id: std::collections::HashMap<_, _> = tracks.iter().map(|t| (&t.id, t)).collect();
-        for stack in [&mut self.back, &mut self.forward] {
-            *stack = stack.iter().filter_map(|t| by_id.get(&t.id).map(|t| Arc::clone(t))).collect();
+        self.index_by_id.clear();
+        self.index_by_id.reserve(self.order.len());
+        for (idx, track) in self.order.iter().enumerate() {
+            self.index_by_id.insert(track.id.clone(), idx);
         }
+        // Resolve history against the new library to drop missing tracks and refresh metadata.
+        if !self.back.is_empty() || !self.forward.is_empty() {
+            for stack in [&mut self.back, &mut self.forward] {
+                *stack = stack
+                    .iter()
+                    .filter_map(|t| {
+                        self.index_by_id.get(&t.id).map(|&idx| Arc::clone(&self.order[idx]))
+                    })
+                    .collect();
+            }
+        }
+    }
+    pub fn get(&self, id: &TrackId) -> Option<Arc<Track>> {
+        self.index_by_id.get(id).map(|&idx| Arc::clone(&self.order[idx]))
     }
     pub fn step(
         &self,
@@ -124,7 +143,7 @@ impl Queue {
         if let Some(t) = history.back() {
             return Some(t.clone());
         }
-        let Some(i) = self.order.iter().position(|t| Some(&t.id) == current) else {
+        let Some(i) = current.and_then(|id| self.index_by_id.get(id).copied()) else {
             return self.order.first().cloned();
         };
         let neighbor = if next {
@@ -171,13 +190,13 @@ mod tests {
     use super::*;
     use crate::library::TrackOrigin;
     fn track(s: &str) -> Arc<Track> {
-        Arc::new(Track {
-            id: TrackId(s.into()),
-            origin: TrackOrigin::Local(s.into()),
-            title: s.into(),
-            artist: String::new(),
-            duration: Duration::from_secs(2),
-        })
+        Arc::new(Track::new(
+            TrackId(s.into()),
+            TrackOrigin::Local(s.into()),
+            s.into(),
+            String::new(),
+            Duration::from_secs(2),
+        ))
     }
     #[test]
     fn history_survives_reorder_and_drops_removed_tracks() {

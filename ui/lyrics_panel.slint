@@ -38,7 +38,7 @@ export component LyricsPanel inherits Rectangle {
     in property <image> album_image;
     in property <SongInfo> current_song;
     in property <[LyricItem]> lyrics;
-    in property <float> progress;
+    in property <int> active_lyric_index: -1;
     in-out property <length> lyric_viewport_y;
     callback jump-to(float);
     background: Theme.surface;
@@ -91,10 +91,10 @@ export component LyricsPanel inherits Rectangle {
                 width: 100%;
                 mouse-drag-pan-enabled: false;
                 content-y <=> root.lyric_viewport_y;
-                for item in root.lyrics: LyricLine {
+                for item[idx] in root.lyrics: LyricLine {
                     time: item.time;
                     content: item.text;
-                    playing: (root.progress >= item.time) && (root.progress < item.time + item.duration);
+                    playing: idx == root.active_lyric_index;
                     jump-to(t) => { root.jump-to(t) }
                 }
             }

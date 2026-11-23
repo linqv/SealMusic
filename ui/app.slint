@@ -39,6 +39,7 @@ export global PlaybackGlobal {
 export global DisplayGlobal {
     in-out property <SongInfo> current_song;
     in-out property <[LyricItem]> lyrics;
+    in-out property <int> active_lyric_index: -1;
     in property <length> lyric_viewport_y;
     in-out property <length> lyric_line_height: 40px;
     in property <image> album_image;
@@ -142,6 +143,7 @@ export component MainWindow inherits Window {
     pure callback open_url_in_browser(string);
     pure callback prev-lyric-time(float, [LyricItem]) -> float;
     pure callback next-lyric-time(float, [LyricItem]) -> float;
+    callback page_changed(int);
     in property <string> version;
     in-out property <int> current_page: 0;
     in-out property <bool> sidebar_expanded: false;
@@ -196,6 +198,7 @@ export component MainWindow inherits Window {
                 current_page: root.current_page;
                 change_page(p) => {
                     root.current_page = p;
+                    root.page_changed(p);
                     root.focus();
                 }
                 request_focus => {
@@ -268,6 +271,7 @@ export component MainWindow inherits Window {
                             }
                             double-clicked() => {
                                 root.current_page = 2;
+                                root.page_changed(2);
                             }
                             format-duration(d) => {
                                 return root.format_duration(d);
@@ -298,6 +302,7 @@ export component MainWindow inherits Window {
                         TouchArea {
                             double-clicked => {
                                 root.current_page = 0;
+                                root.page_changed(0);
                             }
                         }
 
@@ -307,7 +312,7 @@ export component MainWindow inherits Window {
                             album_image <=> DisplayGlobal.album_image;
                             current_song <=> DisplayGlobal.current_song;
                             lyrics <=> DisplayGlobal.lyrics;
-                            progress <=> PlaybackGlobal.progress;
+                            active_lyric_index: DisplayGlobal.active_lyric_index;
                             lyric_viewport_y <=> DisplayGlobal.lyric_viewport_y;
                             jump-to(t) => { root.change_progress(t); }
                         }
@@ -391,22 +396,22 @@ export component MainWindow inherits Window {
 
                 KeyBinding {
                     keys: @keys(F1);
-                    activated => { root.current_page = 0; root.focus(); }
+                    activated => { root.current_page = 0; root.page_changed(0); root.focus(); }
                 }
 
                 KeyBinding {
                     keys: @keys(F2);
-                    activated => { root.current_page = 1; root.focus(); }
+                    activated => { root.current_page = 1; root.page_changed(1); root.focus(); }
                 }
 
                 KeyBinding {
                     keys: @keys(F3);
-                    activated => { root.current_page = 2; root.focus(); }
+                    activated => { root.current_page = 2; root.page_changed(2); root.focus(); }
                 }
 
                 KeyBinding {
                     keys: @keys(F4);
-                    activated => { root.current_page = 3; root.focus(); }
+                    activated => { root.current_page = 3; root.page_changed(3); root.focus(); }
                 }
 
             }

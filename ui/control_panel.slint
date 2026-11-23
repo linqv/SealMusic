@@ -189,6 +189,10 @@ export component ControlPanel inherits Rectangle {
     callback change-volume(float);
     callback double-clicked();
     pure callback format-duration(float) -> string;
+    private property <int> progress-secs: floor(max(0, root.progress));
+    private property <int> duration-secs: floor(max(0, root.duration));
+    private property <string> progress-text: root.format-duration(root.progress-secs);
+    private property <string> duration-text: root.format-duration(root.duration-secs);
 
     VerticalLayout {
         width: 100%;
@@ -359,7 +363,7 @@ export component ControlPanel inherits Rectangle {
 
                 Text {
                     x: parent.width / 2 - self.width / 2;
-                    text: root.format-duration(root.progress) + " / " + root.format-duration(root.duration);
+                    text: root.progress-text + " / " + root.duration-text;
                     vertical-alignment: center;
                     horizontal-alignment: center;
                 }

@@ -1,5 +1,5 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, OnceCell, RefCell},
     rc::Rc,
     sync::{
         Arc,
@@ -22,6 +22,134 @@ use crate::{
     slint_types::*,
 };
 
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
+
+type LyricTimeline = Rc<RefCell<Vec<(f32, f32)>>>;
+
+struct ScrollGuard {
+    last_y: Cell<f32>,
+    allow_scroll: Cell<Instant>,
+}
+
+impl Default for ScrollGuard {
+    fn default() -> Self {
+        Self {
+            last_y: Cell::new(0.),
+            allow_scroll: Cell::new(Instant::now()),
+        }
+    }
+}
+
+fn default_cover() -> slint::Image {
+    thread_local! {
+        static COVER: OnceCell<slint::Image> = const { OnceCell::new() };
+    }
+    COVER.with(|cell| {
+        cell.get_or_init(|| {
+            slint::Image::load_from_svg_data(include_bytes!("../ui/cover.svg")).unwrap()
+        })
+        .clone()
+    })
+}
+
+fn find_active_lyric(timeline: &[(f32, f32)], pos: f32) -> i32 {
+    let idx = timeline.partition_point(|&(start, _)| start <= pos);
+    let Some(i) = idx.checked_sub(1) else {
+        return -1;
+    };
+    let (start, end) = timeline[i];
+    if pos >= start && pos < end {
+        i as i32
+    } else {
+        -1
+    }
+}
+
+fn sync_lyrics_view(
+    ui: &MainWindow,
+    timeline: &LyricTimeline,
+    pos: f32,
+    scroll: &ScrollGuard,
+    force_scroll: bool,
+) {
+    let display = ui.global::<DisplayGlobal>();
+    let current_y = display.get_lyric_viewport_y();
+    if (scroll.last_y.get() - current_y).abs() > 0.5 {
+        scroll.allow_scroll.set(Instant::now() + Duration::from_secs(5));
+    }
+    scroll.last_y.set(current_y);
+
+    let active = find_active_lyric(&timeline.borrow(), pos);
+    let prev = display.get_active_lyric_index();
+    if active != prev {
+        display.set_active_lyric_index(active);
+    }
+    if active >= 0
+        && (active != prev || force_scroll)
+        && Instant::now() >= scroll.allow_scroll.get()
+    {
+        let next_y =
+            -((active as usize).saturating_sub(5) as f32) * display.get_lyric_line_height();
+        scroll.last_y.set(next_y);
+        display.set_lyric_viewport_y(next_y);
+    }
+}
+
+fn sync_visible_progress(
+    ui: &MainWindow,
+    state: &SharedState,
+    timeline: &LyricTimeline,
+    scroll: &ScrollGuard,
+    force_scroll: bool,
+) {
+    let page = ui.get_current_page();
+    if page != 0 && page != 2 {
+        return;
+    }
+    let playback = ui.global::<PlaybackGlobal>();
+    if playback.get_dragging() {
+        return;
+    }
+    let pos = state.read().unwrap().position_now().as_secs_f32();
+    playback.set_progress(pos);
+    if page == 2 {
+        sync_lyrics_view(ui, timeline, pos, scroll, force_scroll);
+    }
+}
+
+fn sync_progress_timer(
+    ui: &MainWindow,
+    timer: &Rc<slint::Timer>,
+    state: &SharedState,
+    timeline: &LyricTimeline,
+    scroll: &Rc<ScrollGuard>,
+) {
+    let should_run = ui.window().is_visible() && !ui.global::<PlaybackGlobal>().get_paused();
+    if !should_run {
+        timer.stop();
+        return;
+    }
+    if timer.running() {
+        return;
+    }
+    let weak = ui.as_weak();
+    let timer_ref = Rc::clone(timer);
+    let state = state.clone();
+    let timeline = Rc::clone(timeline);
+    let scroll = Rc::clone(scroll);
+    timer.start(slint::TimerMode::Repeated, Duration::from_millis(200), move || {
+        let Some(ui) = weak.upgrade() else {
+            timer_ref.stop();
+            return;
+        };
+        if !ui.window().is_visible() || ui.global::<PlaybackGlobal>().get_paused() {
+            timer_ref.stop();
+            return;
+        }
+        sync_visible_progress(&ui, &state, &timeline, &scroll, false);
+    });
+}
+
 fn song(t: &Track) -> SongInfo {
     let secs = t.duration.as_secs();
     SongInfo {
@@ -34,7 +162,7 @@ fn song(t: &Track) -> SongInfo {
 fn model(tracks: Vec<Arc<Track>>) -> slint::ModelRc<SongInfo> {
     slint::ModelRc::new(slint::VecModel::from(tracks.iter().map(|t| song(t)).collect::<Vec<_>>()))
 }
-fn apply(ui: &MainWindow, event: Event) {
+fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
     let display = ui.global::<DisplayGlobal>();
     let playback = ui.global::<PlaybackGlobal>();
     match event {
@@ -42,12 +170,19 @@ fn apply(ui: &MainWindow, event: Event) {
             display.set_current_song(s.track.as_deref().map(song).unwrap_or_default());
             playback.set_paused(s.status != Status::Playing);
             playback.set_duration(s.duration.as_secs_f32());
+            let pos = seeked.unwrap_or_else(|| s.position_now()).as_secs_f32();
             if !playback.get_dragging() {
-                playback.set_progress(seeked.unwrap_or_else(|| s.position_now()).as_secs_f32());
+                playback.set_progress(pos);
             }
             playback.set_volume(s.volume);
             playback.set_loop_mode(s.loop_mode);
             playback.set_shuffle(s.shuffle);
+            if ui.get_current_page() == 2 {
+                sync_lyrics_view(ui, &sync.timeline, pos, &sync.scroll, seeked.is_some());
+            } else {
+                display.set_active_lyric_index(find_active_lyric(&sync.timeline.borrow(), pos));
+            }
+            sync_progress_timer(ui, &sync.timer, &sync.state, &sync.timeline, &sync.scroll);
         }
         Event::Details(details) => {
             let cover = details
@@ -59,21 +194,28 @@ fn apply(ui: &MainWindow, event: Event) {
                         rgba.height(),
                     ))
                 })
-                .unwrap_or_else(|| {
-                    slint::Image::load_from_svg_data(include_bytes!("../ui/cover.svg")).unwrap()
-                });
+                .unwrap_or_else(default_cover);
             display.set_album_image(cover);
+            let mut times = Vec::with_capacity(details.lyrics.len());
             let lyrics: Vec<_> = details
                 .lyrics
                 .into_iter()
-                .map(|l| LyricItem {
-                    time: l.time,
-                    text: l.text.into(),
-                    duration: l.duration,
+                .map(|l| {
+                    times.push((l.time, l.time + l.duration));
+                    LyricItem {
+                        time: l.time,
+                        text: l.text.into(),
+                        duration: l.duration,
+                    }
                 })
                 .collect();
+            *sync.timeline.borrow_mut() = times;
             display.set_lyrics(slint::ModelRc::new(slint::VecModel::from(lyrics)));
+            sync.scroll.last_y.set(0.);
+            sync.scroll.allow_scroll.set(Instant::now());
             display.set_lyric_viewport_y(0.);
+            let pos = playback.get_progress();
+            display.set_active_lyric_index(find_active_lyric(&sync.timeline.borrow(), pos));
         }
         Event::Library(dir, key, asc, tracks) => {
             display.set_song_dir(dir.display().to_shared_string());
@@ -92,6 +234,9 @@ fn apply(ui: &MainWindow, event: Event) {
         Event::Raise => {
             ui.window().set_minimized(false);
             let _ = ui.show();
+            sync.theme.set_visible(true);
+            sync_visible_progress(ui, &sync.state, &sync.timeline, &sync.scroll, false);
+            sync_progress_timer(ui, &sync.timer, &sync.state, &sync.timeline, &sync.scroll);
         }
         #[cfg(target_os = "linux")]
         Event::Quit => {
@@ -99,10 +244,280 @@ fn apply(ui: &MainWindow, event: Event) {
         }
     }
 }
-fn is_system_light() -> bool {
-    matches!(dark_light::detect(), Ok(dark_light::Mode::Light))
+
+#[cfg(target_os = "linux")]
+mod theme_watcher {
+    use std::{sync::Mutex, thread};
+
+    use futures_channel::mpsc::{self, UnboundedSender};
+    use futures_lite::{StreamExt, future};
+    use mpris_server::zbus::{
+        self,
+        zvariant::{OwnedValue, Value},
+    };
+    use slint::ComponentHandle;
+
+    use crate::slint_types::{DisplayGlobal, MainWindow};
+
+    enum Cmd {
+        CheckNow,
+        Shutdown,
+    }
+
+    pub struct ThemeWatcher {
+        tx: UnboundedSender<Cmd>,
+        handle: Mutex<Option<thread::JoinHandle<()>>>,
+    }
+
+    impl ThemeWatcher {
+        pub fn start(ui_weak: slint::Weak<MainWindow>, check_immediately: bool) -> Self {
+            let (tx, mut rx) = mpsc::unbounded::<Cmd>();
+            if check_immediately {
+                let _ = tx.unbounded_send(Cmd::CheckNow);
+            }
+            let handle = thread::spawn(move || {
+                future::block_on(async move {
+                    let Ok(conn) = zbus::Connection::session().await else {
+                        log::debug!("Theme watcher unavailable: no D-Bus session bus");
+                        return;
+                    };
+                    let Ok(proxy) = zbus::proxy::Builder::<zbus::Proxy<'_>>::new(&conn)
+                        .destination("org.freedesktop.portal.Desktop")
+                        .and_then(|b| b.path("/org/freedesktop/portal/desktop"))
+                        .and_then(|b| b.interface("org.freedesktop.portal.Settings"))
+                        .map(|b| b.cache_properties(zbus::proxy::CacheProperties::No))
+                    else {
+                        return;
+                    };
+                    let Ok(proxy) = proxy.build().await else {
+                        log::debug!("Theme watcher unavailable: portal Settings proxy failed");
+                        return;
+                    };
+                    let Ok(mut signals) = proxy.receive_signal("SettingChanged").await else {
+                        log::debug!(
+                            "Theme watcher unavailable: SettingChanged subscription failed"
+                        );
+                        return;
+                    };
+
+                    enum Event {
+                        Command(Option<Cmd>),
+                        Signal(Option<zbus::Message>),
+                    }
+
+                    loop {
+                        let next = future::or(async { Event::Command(rx.next().await) }, async {
+                            Event::Signal(signals.next().await)
+                        })
+                        .await;
+                        match next {
+                            Event::Command(Some(Cmd::CheckNow)) => {
+                                if let Some(is_light) = read_portal_light(&proxy).await {
+                                    apply_theme(&ui_weak, is_light);
+                                }
+                            }
+                            Event::Command(Some(Cmd::Shutdown)) | Event::Command(None) => break,
+                            Event::Signal(Some(msg)) => {
+                                if let Ok((ns, key, val)) =
+                                    msg.body().deserialize::<(String, String, OwnedValue)>()
+                                    && ns == "org.freedesktop.appearance"
+                                    && key == "color-scheme"
+                                    && let Some(is_light) = parse_color_scheme(&val)
+                                {
+                                    apply_theme(&ui_weak, is_light);
+                                }
+                            }
+                            Event::Signal(None) => break,
+                        }
+                    }
+                });
+            });
+            Self {
+                tx,
+                handle: Mutex::new(Some(handle)),
+            }
+        }
+
+        pub fn check_now(&self) {
+            let _ = self.tx.unbounded_send(Cmd::CheckNow);
+        }
+
+        pub fn set_visible(&self, _visible: bool) {}
+
+        pub fn stop(&self) {
+            let _ = self.tx.unbounded_send(Cmd::Shutdown);
+            if let Some(handle) = self.handle.lock().unwrap().take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    async fn read_portal_light(proxy: &zbus::Proxy<'_>) -> Option<bool> {
+        let value = match proxy
+            .call::<_, _, OwnedValue>("ReadOne", &("org.freedesktop.appearance", "color-scheme"))
+            .await
+        {
+            Ok(v) => v,
+            Err(_) => proxy
+                .call::<_, _, OwnedValue>("Read", &("org.freedesktop.appearance", "color-scheme"))
+                .await
+                .ok()?,
+        };
+        parse_color_scheme(&value)
+    }
+
+    fn parse_color_scheme(value: &OwnedValue) -> Option<bool> {
+        let mut current: &Value<'_> = value;
+        while let Value::Value(inner) = current {
+            current = inner;
+        }
+        match current {
+            Value::U32(scheme) => Some(*scheme == 2),
+            _ => None,
+        }
+    }
+
+    fn apply_theme(ui_weak: &slint::Weak<MainWindow>, is_light: bool) {
+        let weak = ui_weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = weak.upgrade() {
+                let display = ui.global::<DisplayGlobal>();
+                if display.get_follow_system_theme() && display.get_light_ui() != is_light {
+                    ui.invoke_set_light_theme(is_light);
+                    log::info!(
+                        "system theme changed to: {}",
+                        if is_light {
+                            "light"
+                        } else {
+                            "dark"
+                        }
+                    );
+                }
+            }
+        });
+    }
 }
-fn register_callbacks(ui: &MainWindow, controls: &Controls, can_run_hidden: Arc<AtomicBool>) {
+
+#[cfg(not(target_os = "linux"))]
+mod theme_watcher {
+    use std::{
+        sync::{Arc, Condvar, Mutex},
+        thread,
+        time::Duration,
+    };
+
+    use slint::ComponentHandle;
+
+    use crate::slint_types::{DisplayGlobal, MainWindow};
+
+    struct State {
+        visible: bool,
+        check_now: bool,
+        shutdown: bool,
+    }
+
+    pub struct ThemeWatcher {
+        state: Arc<(Mutex<State>, Condvar)>,
+        handle: Mutex<Option<thread::JoinHandle<()>>>,
+    }
+
+    impl ThemeWatcher {
+        pub fn start(ui_weak: slint::Weak<MainWindow>, check_immediately: bool) -> Self {
+            let state = Arc::new((
+                Mutex::new(State {
+                    visible: true,
+                    check_now: check_immediately,
+                    shutdown: false,
+                }),
+                Condvar::new(),
+            ));
+            let shared = state.clone();
+            let handle = thread::spawn(move || {
+                let (lock, cv) = &*shared;
+                loop {
+                    {
+                        let mut guard = lock.lock().unwrap();
+                        while !guard.shutdown && !guard.visible && !guard.check_now {
+                            guard = cv.wait(guard).unwrap();
+                        }
+                        if guard.shutdown {
+                            break;
+                        }
+                        if guard.check_now {
+                            guard.check_now = false;
+                        } else {
+                            let (g, _) = cv.wait_timeout(guard, Duration::from_secs(2)).unwrap();
+                            if g.shutdown {
+                                break;
+                            }
+                            if !g.visible && !g.check_now {
+                                continue;
+                            }
+                        }
+                    }
+                    let is_light = matches!(dark_light::detect(), Ok(dark_light::Mode::Light));
+                    let weak = ui_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = weak.upgrade() {
+                            let display = ui.global::<DisplayGlobal>();
+                            if display.get_follow_system_theme()
+                                && display.get_light_ui() != is_light
+                            {
+                                ui.invoke_set_light_theme(is_light);
+                            }
+                        }
+                    });
+                }
+            });
+            Self {
+                state,
+                handle: Mutex::new(Some(handle)),
+            }
+        }
+
+        pub fn check_now(&self) {
+            let (lock, cv) = &*self.state;
+            lock.lock().unwrap().check_now = true;
+            cv.notify_one();
+        }
+
+        pub fn set_visible(&self, visible: bool) {
+            let (lock, cv) = &*self.state;
+            lock.lock().unwrap().visible = visible;
+            cv.notify_one();
+        }
+
+        pub fn stop(&self) {
+            let (lock, cv) = &*self.state;
+            lock.lock().unwrap().shutdown = true;
+            cv.notify_one();
+            if let Some(handle) = self.handle.lock().unwrap().take() {
+                let _ = handle.join();
+            }
+        }
+    }
+}
+
+use theme_watcher::ThemeWatcher;
+
+struct UiSync {
+    state: SharedState,
+    timer: Rc<slint::Timer>,
+    timeline: LyricTimeline,
+    scroll: Rc<ScrollGuard>,
+    theme: Rc<ThemeWatcher>,
+}
+
+thread_local! {
+    static GUI_SYNC: RefCell<Option<Rc<UiSync>>> = const { RefCell::new(None) };
+}
+
+fn register_callbacks(
+    ui: &MainWindow,
+    controls: &Controls,
+    can_run_hidden: Arc<AtomicBool>,
+    sync: &UiSync,
+) {
     let tx = controls.clone();
     ui.on_play(move |t| tx.send(Cmd::PlayTrack(crate::library::TrackId(t.id.into()))));
     let tx = controls.clone();
@@ -130,7 +545,24 @@ fn register_callbacks(ui: &MainWindow, controls: &Controls, can_run_hidden: Arc<
     let tx = controls.clone();
     ui.on_sort_song_list(move |k, a| tx.send(Cmd::Sort(k, a)));
     let tx = controls.clone();
-    ui.on_search_songs(move |q| tx.send(Cmd::Search(q.into())));
+    let search_timer = Rc::new(slint::Timer::default());
+    let pending_query = Rc::new(RefCell::new(String::new()));
+    ui.on_search_songs(move |q| {
+        let query: String = q.into();
+        if query.is_empty() {
+            search_timer.stop();
+            pending_query.borrow_mut().clear();
+            tx.send(Cmd::Search(query));
+            return;
+        }
+        *pending_query.borrow_mut() = query;
+        let tx = tx.clone();
+        let pending = Rc::clone(&pending_query);
+        search_timer.start(slint::TimerMode::SingleShot, SEARCH_DEBOUNCE, move || {
+            let q = pending.borrow().clone();
+            tx.send(Cmd::Search(q));
+        });
+    });
     let tx = controls.clone();
     ui.on_select_song_dir(move || {
         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
@@ -142,10 +574,19 @@ fn register_callbacks(ui: &MainWindow, controls: &Controls, can_run_hidden: Arc<
             log::warn!("Language: {e:?}");
         }
     });
-    let weak = ui.as_weak();
+    let theme = Rc::clone(&sync.theme);
     ui.on_set_follow_system_theme(move |follow| {
-        if follow && let Some(ui) = weak.upgrade() {
-            ui.invoke_set_light_theme(is_system_light());
+        if follow {
+            theme.check_now();
+        }
+    });
+    let weak = ui.as_weak();
+    let state = sync.state.clone();
+    let timeline = Rc::clone(&sync.timeline);
+    let scroll = Rc::clone(&sync.scroll);
+    ui.on_page_changed(move |_| {
+        if let Some(ui) = weak.upgrade() {
+            sync_visible_progress(&ui, &state, &timeline, &scroll, true);
         }
     });
     ui.on_prev_lyric_time(|p, lines| {
@@ -189,7 +630,11 @@ fn register_callbacks(ui: &MainWindow, controls: &Controls, can_run_hidden: Arc<
             log::warn!("Closing window: {e}");
         }
     });
+    let timer = Rc::clone(&sync.timer);
+    let theme = Rc::clone(&sync.theme);
     ui.window().on_close_requested(move || {
+        timer.stop();
+        theme.set_visible(false);
         if !can_run_hidden.load(Ordering::Acquire) {
             let _ = slint::quit_event_loop();
         }
@@ -231,31 +676,6 @@ fn register_callbacks(ui: &MainWindow, controls: &Controls, can_run_hidden: Arc<
     });
 }
 
-fn build_theme_timer(ui_weak: slint::Weak<MainWindow>) -> slint::Timer {
-    let timer = slint::Timer::default();
-    timer.start(slint::TimerMode::Repeated, Duration::from_secs(1), move || {
-        if let Some(ui) = ui_weak.upgrade() {
-            let display = ui.global::<DisplayGlobal>();
-            if display.get_follow_system_theme() {
-                let is_light = is_system_light();
-                let current = display.get_light_ui();
-                if current != is_light {
-                    ui.invoke_set_light_theme(is_light);
-                    log::info!(
-                        "system theme changed to: {}",
-                        if is_light {
-                            "light"
-                        } else {
-                            "dark"
-                        }
-                    );
-                }
-            }
-        }
-    });
-    timer
-}
-
 /// Center the window on the current monitor's work area (avoids taskbar/dock).
 /// Returns `true` if centering was applied, `false` if the window wasn't ready yet.
 fn center_window(ui: &MainWindow) -> bool {
@@ -284,12 +704,20 @@ fn center_window(ui: &MainWindow) -> bool {
     }
 }
 
-fn register_tray(ui: &MainWindow, tray: &AppTray, controls: &Controls) {
+fn register_tray(ui: &MainWindow, tray: &AppTray, controls: &Controls, sync: &UiSync) {
     let weak = ui.as_weak();
+    let state = sync.state.clone();
+    let timer = Rc::clone(&sync.timer);
+    let timeline = Rc::clone(&sync.timeline);
+    let scroll = Rc::clone(&sync.scroll);
+    let theme = Rc::clone(&sync.theme);
     tray.on_show_window(move || {
         if let Some(ui) = weak.upgrade() {
             ui.window().set_minimized(false);
             let _ = ui.show();
+            theme.set_visible(true);
+            sync_visible_progress(&ui, &state, &timeline, &scroll, false);
+            sync_progress_timer(&ui, &timer, &state, &timeline, &scroll);
         }
     });
     let tx = controls.clone();
@@ -312,47 +740,6 @@ fn register_tray(ui: &MainWindow, tray: &AppTray, controls: &Controls) {
     });
 }
 
-fn progress_timer(ui: &MainWindow, state: SharedState) -> slint::Timer {
-    let weak = ui.as_weak();
-    let timer = slint::Timer::default();
-    let mut last_y = 0.;
-    let mut allow_scroll = Instant::now();
-    timer.start(slint::TimerMode::Repeated, Duration::from_millis(200), move || {
-        let Some(ui) = weak.upgrade() else {
-            return;
-        };
-        if !ui.window().is_visible() {
-            return;
-        }
-        let p = ui.global::<PlaybackGlobal>();
-        if p.get_paused() || p.get_dragging() {
-            return;
-        }
-        let pos = state.read().unwrap().position_now().as_secs_f32();
-        p.set_progress(pos);
-        if ui.get_current_page() != 2 {
-            return;
-        }
-        let display = ui.global::<DisplayGlobal>();
-        let current_y = display.get_lyric_viewport_y();
-        if (last_y - current_y).abs() > 0.5 {
-            allow_scroll = Instant::now() + Duration::from_secs(5);
-        }
-        last_y = current_y;
-        if Instant::now() >= allow_scroll
-            && let Some((index, _)) = display
-                .get_lyrics()
-                .iter()
-                .enumerate()
-                .find(|(_, l)| l.time <= pos && pos - l.time < 0.25)
-        {
-            last_y = -(index.saturating_sub(5) as f32) * display.get_lyric_line_height();
-            display.set_lyric_viewport_y(last_y);
-        }
-    });
-    timer
-}
-
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let cfg = Config::load();
@@ -367,11 +754,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let _ = slint::select_bundled_translation(&cfg.lang);
     display.set_song_dir(cfg.song_dir.display().to_shared_string());
     display.set_follow_system_theme(cfg.follow_system_theme);
-    ui.invoke_set_light_theme(if cfg.follow_system_theme {
-        is_system_light()
-    } else {
-        cfg.light_ui
-    });
+    ui.invoke_set_light_theme(cfg.light_ui);
     display.set_app_font_family(
         if cfg!(windows) {
             "Microsoft YaHei UI"
@@ -388,37 +771,60 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let controls = Controls(tx);
     let shared = SharedState::default();
     let can_run_hidden = Arc::new(AtomicBool::new(tray.is_some()));
-    register_callbacks(&ui, &controls, can_run_hidden.clone());
+    let theme = Rc::new(ThemeWatcher::start(ui.as_weak(), cfg.follow_system_theme));
+    let sync = Rc::new(UiSync {
+        state: shared.clone(),
+        timer: Rc::new(slint::Timer::default()),
+        timeline: Rc::new(RefCell::new(Vec::new())),
+        scroll: Rc::new(ScrollGuard::default()),
+        theme: Rc::clone(&theme),
+    });
+    GUI_SYNC.with(|cell| *cell.borrow_mut() = Some(Rc::clone(&sync)));
+    register_callbacks(&ui, &controls, can_run_hidden.clone(), &sync);
     if let Some(tray) = &tray {
-        register_tray(&ui, tray, &controls);
+        register_tray(&ui, tray, &controls, &sync);
     }
     #[cfg(target_os = "linux")]
-    let (desktop, service) =
-        crate::integrations::mpris::start(controls.clone(), shared.clone(), can_run_hidden);
+    let mpris_available = Arc::new(AtomicBool::new(true));
+    #[cfg(target_os = "linux")]
+    let (desktop, service) = crate::integrations::mpris::start(
+        controls.clone(),
+        shared.clone(),
+        can_run_hidden,
+        mpris_available.clone(),
+    );
     let weak = ui.as_weak();
-    let mut scroll = Some(cfg.gallery_viewport_y);
-    let worker = player::start(cfg, shared.clone(), rx, move |event| {
+    let mut scroll_y = Some(cfg.gallery_viewport_y);
+    let worker = player::start(
+        cfg,
+        shared,
+        rx,
         #[cfg(target_os = "linux")]
-        if let Event::State(s, seeked) = &event {
-            let _ = desktop.send((s.clone(), *seeked));
-        }
-        let restore = if matches!(event, Event::Library(..)) {
-            scroll.take()
-        } else {
-            None
-        };
-        let weak = weak.clone();
-        let _ = slint::invoke_from_event_loop(move || {
-            if let Some(ui) = weak.upgrade() {
-                apply(&ui, event);
-                if let Some(y) = restore {
-                    ui.global::<DisplayGlobal>().set_gallery_viewport_y(y);
-                }
+        mpris_available,
+        move |event| {
+            #[cfg(target_os = "linux")]
+            if let Event::State(s, seeked) = &event {
+                let _ = desktop.send((Arc::clone(s), *seeked));
             }
-        });
-    });
-    let _progress = progress_timer(&ui, shared);
-    let _theme = build_theme_timer(ui.as_weak());
+            let restore = if matches!(event, Event::Library(..)) {
+                scroll_y.take()
+            } else {
+                None
+            };
+            let weak = weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                let sync = GUI_SYNC.with(|cell| cell.borrow().clone());
+                if let Some(sync) = sync
+                    && let Some(ui) = weak.upgrade()
+                {
+                    apply(&ui, event, &sync);
+                    if let Some(y) = restore {
+                        ui.global::<DisplayGlobal>().set_gallery_viewport_y(y);
+                    }
+                }
+            });
+        },
+    );
     ui.show()?;
     let weak = ui.as_weak();
     slint::Timer::single_shot(Duration::from_millis(50), move || {
@@ -434,6 +840,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     if service.join().is_err() {
         log::warn!("MPRIS worker failed");
     }
+    sync.timer.stop();
+    theme.stop();
+    GUI_SYNC.with(|cell| cell.borrow_mut().take());
     cfg.lang = display.get_lang().into();
     cfg.light_ui = display.get_light_ui();
     cfg.follow_system_theme = display.get_follow_system_theme();
@@ -443,4 +852,22 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     cfg.save()?;
     run?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_active_lyric;
+
+    #[test]
+    fn find_active_lyric_handles_boundaries_gaps_and_bilingual_duplicates() {
+        let timeline = vec![(1.0, 1.0), (1.0, 3.0), (3.0, 5.0), (8.0, 108.0)];
+        assert_eq!(find_active_lyric(&[], 1.0), -1);
+        assert_eq!(find_active_lyric(&timeline, 0.5), -1);
+        assert_eq!(find_active_lyric(&timeline, 1.0), 1);
+        assert_eq!(find_active_lyric(&timeline, 2.5), 1);
+        assert_eq!(find_active_lyric(&timeline, 3.0), 2);
+        assert_eq!(find_active_lyric(&timeline, 6.0), -1);
+        assert_eq!(find_active_lyric(&timeline, 8.0), 3);
+        assert_eq!(find_active_lyric(&timeline, 108.0), -1);
+    }
 }
