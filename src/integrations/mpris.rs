@@ -681,6 +681,37 @@ mod tests {
         let raw_lyrics =
             meta.get::<mpris_server::zbus::zvariant::Str<'_>>(SYNCED_LYRICS_KEY).unwrap().unwrap();
         assert_eq!(raw_lyrics.as_str(), synced_lyrics.unwrap().as_ref());
+
+        let online_ref = sample_online_ref();
+        let online_track = online_ref.track().unwrap();
+        let online_meta = metadata(&PlaybackState {
+            track: Some(online_track.clone()),
+            duration: online_track.duration,
+            ..Default::default()
+        });
+        assert!(
+            online_meta.trackid().unwrap().as_str().starts_with("/dev/sealmusic/track/online_")
+        );
+        assert_eq!(online_meta.title(), Some("Online Song"));
+        assert_eq!(online_meta.artist(), Some(vec!["Online Artist".into()]));
+        assert!(online_meta.art_url().is_none());
+        assert!(online_meta.get_value(SYNCED_LYRICS_KEY).is_none());
+    }
+
+    fn sample_online_ref() -> crate::online::OnlineTrack {
+        let payload = serde_json::json!({
+            "source": "wy",
+            "name": "Online Song",
+            "singer": "Online Artist",
+            "songmid": 29947420,
+            "interval": "03:20",
+            "types": [{"type": "128k"}],
+        });
+        let mut url = url::Url::parse("lxmusic://music/play").unwrap();
+        url.query_pairs_mut().append_pair("data", &payload.to_string());
+        let mut reference = crate::online::OnlineTrack::parse(url.as_str()).unwrap();
+        reference.quality = "128k".into();
+        reference
     }
 
     #[test]
@@ -737,6 +768,18 @@ mod tests {
         };
         assert!(changes(&base, &stopped).contains(&Property::CanSeek(false)));
 
+        let deferred = PlaybackState {
+            deferred: true,
+            ..base.clone()
+        };
+        assert!(changes(&base, &deferred).contains(&Property::CanSeek(false)));
+
+        let drained = PlaybackState {
+            sink_empty: true,
+            ..base.clone()
+        };
+        assert!(changes(&base, &drained).contains(&Property::CanSeek(false)));
+
         let lyrics_only = PlaybackState {
             synced_lyrics: Some(Arc::from("{\"version\":1,\"trackId\":\"/a\",\"lines\":[]}")),
             ..base.clone()
@@ -767,8 +810,7 @@ mod tests {
         std::fs::copy(&fixture, &first).unwrap();
         std::fs::copy(&fixture, &second).unwrap();
 
-        let (tx, rx) = mpsc::channel();
-        let controls = Controls(tx);
+        let (controls, rx) = Controls::channel();
         let shared = SharedState::default();
         let can_run_hidden = Arc::new(AtomicBool::new(false));
         let mpris_available = Arc::new(AtomicBool::new(true));
@@ -941,16 +983,96 @@ mod tests {
             assert!(!dbus.name_has_owner(bus_name).await.unwrap());
         });
         assert!(!cached_art_path.exists());
+
+        // Phase 2: Restored online track exposes stable online TrackId, deferred CanSeek=false,
+        // and rejects SetPosition for both deferred and stale IDs over live D-Bus.
+        let empty_dir = tempfile::tempdir().unwrap();
+        let mut platforms = std::collections::BTreeMap::new();
+        platforms.insert("wy".into(), vec!["128k".into()]);
+        let online_cfg = Config {
+            song_dir: empty_dir.path().to_path_buf(),
+            current_online: Some(sample_online_ref()),
+            lx_script: Some(crate::online::Script {
+                id: "0".repeat(64),
+                enabled: true,
+                metadata: std::collections::BTreeMap::new(),
+                platforms,
+            }),
+            progress: 12.5,
+            ..Default::default()
+        };
+        let (controls, rx) = Controls::channel();
+        let shared = SharedState::default();
+        let can_run_hidden = Arc::new(AtomicBool::new(false));
+        let mpris_available = Arc::new(AtomicBool::new(true));
+        let (desktop, service) =
+            start(controls.clone(), shared.clone(), can_run_hidden, mpris_available);
+        let worker = crate::player::spawn_test_worker(online_cfg, shared, rx, move |event| {
+            if let Event::State(s, seeked) = &event {
+                let _ = desktop.send((Arc::clone(s), *seeked));
+            }
+        });
+        block_on(async {
+            let conn = zbus::Connection::session().await.unwrap();
+            let bus_name =
+                BusName::try_from(format!("org.mpris.MediaPlayer2.{}", crate::APP_ID)).unwrap();
+            let dbus = fdo::DBusProxy::new(&conn).await.unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !dbus.name_has_owner(bus_name.clone()).await.unwrap() {
+                assert!(std::time::Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(20));
+            }
+            let player = zbus::proxy::Builder::<zbus::Proxy<'_>>::new(&conn)
+                .destination(bus_name.as_str())
+                .unwrap()
+                .path("/org/mpris/MediaPlayer2")
+                .unwrap()
+                .interface("org.mpris.MediaPlayer2.Player")
+                .unwrap()
+                .cache_properties(zbus::proxy::CacheProperties::No)
+                .build()
+                .await
+                .unwrap();
+            while !player.get_property::<bool>("CanPlay").await.unwrap() {
+                assert!(std::time::Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(20));
+            }
+            let meta: HashMap<String, OwnedValue> = player.get_property("Metadata").await.unwrap();
+            let online_id =
+                OwnedObjectPath::try_from(meta["mpris:trackid"].try_clone().unwrap()).unwrap();
+            assert!(online_id.as_str().starts_with("/dev/sealmusic/track/online_"));
+            assert_eq!(<&str>::try_from(&*meta["xesam:title"]).unwrap(), "Online Song");
+            assert_eq!(player.get_property::<String>("PlaybackStatus").await.unwrap(), "Paused");
+            assert!(!player.get_property::<bool>("CanSeek").await.unwrap());
+            assert_eq!(player.get_property::<i64>("Position").await.unwrap(), 12_500_000);
+
+            // SetPosition for deferred current ID and stale ID must both be no-ops.
+            player
+                .call::<_, _, ()>("SetPosition", &(online_id.as_ref(), 5_000_000_i64))
+                .await
+                .unwrap();
+            assert_eq!(player.get_property::<i64>("Position").await.unwrap(), 12_500_000);
+            let stale_id = TrackId::try_from("/dev/sealmusic/track/online_stale").unwrap();
+            player.call::<_, _, ()>("SetPosition", &(stale_id.into_inner(), 0_i64)).await.unwrap();
+            assert_eq!(player.get_property::<i64>("Position").await.unwrap(), 12_500_000);
+
+            player.call::<_, _, ()>("Stop", &()).await.unwrap();
+            assert_eq!(player.get_property::<String>("PlaybackStatus").await.unwrap(), "Stopped");
+            assert_eq!(player.get_property::<i64>("Position").await.unwrap(), 0);
+        });
+        controls.send(Cmd::Shutdown);
+        worker.join().unwrap();
+        service.join().unwrap();
     }
 
     #[test]
     #[ignore = "run with invalid DBUS_SESSION_BUS_ADDRESS"]
     fn mpris_degrades_without_session_bus() {
-        let (tx, _rx) = mpsc::channel();
+        let (controls, _rx) = Controls::channel();
         let can_run_hidden = Arc::new(AtomicBool::new(true));
         let mpris_available = Arc::new(AtomicBool::new(true));
         let (desktop, service) = start(
-            Controls(tx),
+            controls,
             SharedState::default(),
             can_run_hidden.clone(),
             mpris_available.clone(),

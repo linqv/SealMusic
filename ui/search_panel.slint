@@ -1,5 +1,7 @@
+import { OnlineGlobal } from "online.slint";
+import { OnlineIssue } from "types.slint";
 import { Theme } from "theme.slint";
-import { LineEdit } from "std-widgets.slint";
+import { Button, LineEdit } from "std-widgets.slint";
 import { ListView } from "std-widgets.slint";
 import { SongItem } from "song_list.slint";
 import { SongInfo } from "types.slint";
@@ -9,6 +11,7 @@ export component SearchPanel inherits Rectangle {
     in-out property <string> search-query;
     in property <[SongInfo]> search-results;
     in property <SongInfo> current-song;
+    private property <bool> is-link: OnlineGlobal.available && OnlineGlobal.is-link(root.search-query);
     callback search(string);
     callback play-song(SongInfo);
 
@@ -60,7 +63,7 @@ export component SearchPanel inherits Rectangle {
                     search-input := LineEdit {
                         horizontal-stretch: 1;
                         height: 100%;
-                        placeholder-text: @tr("Search songs or artists...");
+                        placeholder-text: OnlineGlobal.available ? @tr("Search songs or paste an LX track link") : @tr("Search songs or artists...");
                         text <=> root.search-query;
                         font-size: 13px;
 
@@ -71,12 +74,32 @@ export component SearchPanel inherits Rectangle {
                 }
             }
 
+            if root.is-link && OnlineGlobal.preview-query == root.search-query: VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+                Text {
+                    text: OnlineGlobal.preview-issue == OnlineIssue.None ? OnlineGlobal.preview-detail
+                        : OnlineGlobal.issue-text(OnlineGlobal.preview-issue, OnlineGlobal.preview-detail);
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: 8px;
+                    for q in OnlineGlobal.qualities: Button {
+                        text: @tr("Play at {}", q);
+                        clicked => { OnlineGlobal.play-link(root.search-query, q); }
+                    }
+                }
+            }
+            if root.is-link: Rectangle { vertical-stretch: 1; }
+
             // Results count label
         Rectangle {
                 height: 26px;
                 width: 100%;
                 background: Theme.surface;
-                visible: root.search-query != "";
+                visible: !root.is-link && root.search-query != "";
 
                 Text {
                     x: 12px;
@@ -91,7 +114,7 @@ export component SearchPanel inherits Rectangle {
             }
 
             // Results list
-        if root.search-query != "":
+        if !root.is-link && root.search-query != "":
             ListView {
                 horizontal-stretch: 1;
 

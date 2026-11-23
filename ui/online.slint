@@ -1,0 +1,31 @@
+import { OnlineIssue } from "types.slint";
+
+export global OnlineGlobal {
+    in property <bool> available;
+    in property <bool> installed;
+    in-out property <bool> enabled;
+    in property <bool> importing;
+    in property <string> script-summary;
+    in property <string> preview-query;
+    in property <OnlineIssue> preview-issue;
+    in property <string> preview-detail;
+    in property <[string]> qualities;
+    in property <string> loading;
+    in property <bool> loading-paused;
+    pure callback is-link(string) -> bool;
+    callback import-script();
+    callback enable-script(bool);
+    callback play-link(string, string);
+
+    public pure function issue-text(issue: OnlineIssue, detail: string) -> string {
+        if issue == OnlineIssue.InvalidLink { return @tr("Invalid LX link or missing field: {}", detail); }
+        if issue == OnlineIssue.NoScript { return @tr("Enable an LX source in Settings."); }
+        if issue == OnlineIssue.NoQuality { return @tr("No compatible audio quality is available."); }
+        if issue == OnlineIssue.ScriptFile { return @tr("Could not read or save the LX source."); }
+        if issue == OnlineIssue.Initialization { return @tr("The LX source failed to initialize."); }
+        if issue == OnlineIssue.Resolve { return @tr("The source could not resolve the media URL ({}).", detail); }
+        if issue == OnlineIssue.Transfer { return @tr("Media download failed ({}).", detail); }
+        if issue == OnlineIssue.Decode { return @tr("Audio decoding failed ({}).", detail); }
+        return "";
+    }
+}

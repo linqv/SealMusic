@@ -171,3 +171,83 @@ msgstr "关闭"
 msgctxt "ControlPanel"
 msgid "Stop"
 msgstr "停止"
+
+#: ui/online.slint:19
+msgctxt "OnlineGlobal"
+msgid "Invalid LX link or missing field: {}"
+msgstr "LX 链接无效或缺少字段：{}"
+
+#: ui/online.slint:20
+msgctxt "OnlineGlobal"
+msgid "Enable an LX source in Settings."
+msgstr "请先在设置中启用 LX 音乐源。"
+
+#: ui/online.slint:21
+msgctxt "OnlineGlobal"
+msgid "No compatible audio quality is available."
+msgstr "曲目与音乐源没有共同支持的音质。"
+
+#: ui/online.slint:22
+msgctxt "OnlineGlobal"
+msgid "Could not read or save the LX source."
+msgstr "无法读取或保存 LX 音乐源。"
+
+#: ui/online.slint:23
+msgctxt "OnlineGlobal"
+msgid "The LX source failed to initialize."
+msgstr "LX 音乐源初始化失败。"
+
+#: ui/online.slint:24
+msgctxt "OnlineGlobal"
+msgid "The source could not resolve the media URL ({})."
+msgstr "音乐源取址失败（{}）。"
+
+#: ui/online.slint:25
+msgctxt "OnlineGlobal"
+msgid "Media download failed ({})."
+msgstr "音频下载失败（{}）。"
+
+#: ui/online.slint:26
+msgctxt "OnlineGlobal"
+msgid "Audio decoding failed ({})."
+msgstr "音频解码失败（{}）。"
+
+#: ui/app.slint:205
+msgctxt "MainWindow"
+msgid "Loading {} (paused)"
+msgstr "正在加载 {}（已暂停）"
+
+#: ui/app.slint:206
+msgctxt "MainWindow"
+msgid "Loading {}"
+msgstr "正在加载 {}"
+
+#: ui/search_panel.slint:66
+msgctxt "SearchPanel"
+msgid "Search songs or paste an LX track link"
+msgstr "搜索歌曲或粘贴 LX 单曲链接"
+
+#: ui/search_panel.slint:90
+msgctxt "SearchPanel"
+msgid "Play at {}"
+msgstr "以 {} 播放"
+
+#: ui/settings_panel.slint:126
+msgctxt "SettingsPanel"
+msgid "LX music source"
+msgstr "LX 音乐源"
+
+#: ui/settings_panel.slint:131
+msgctxt "SettingsPanel"
+msgid "Initializing…"
+msgstr "正在初始化…"
+
+#: ui/settings_panel.slint:131
+msgctxt "SettingsPanel"
+msgid "Import JS source…"
+msgstr "导入 JS 音乐源…"
+
+#: ui/settings_panel.slint:136
+msgctxt "SettingsPanel"
+msgid "Enabled"
+msgstr "启用"

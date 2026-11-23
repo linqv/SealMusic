@@ -1,4 +1,8 @@
-use std::{path::PathBuf, sync::mpsc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{Arc, mpsc},
+    time::Duration,
+};
 
 use crate::{
     library::TrackId,
@@ -22,6 +26,14 @@ pub enum PlayerCommand {
     Sort(SortKey, bool),
     Search(String),
     #[cfg(target_os = "linux")]
+    ImportScript(PathBuf),
+    #[cfg(target_os = "linux")]
+    EnableScript(bool),
+    #[cfg(target_os = "linux")]
+    OnlineDone(super::online::Completion),
+    #[cfg(target_os = "linux")]
+    PlayLink(String, String),
+    #[cfg(target_os = "linux")]
     Raise,
     #[cfg(target_os = "linux")]
     Quit,
@@ -35,9 +47,26 @@ pub struct Request {
 }
 
 #[derive(Clone)]
-pub struct Controls(pub mpsc::Sender<Request>);
+pub struct Controls(Arc<mpsc::Sender<Request>>);
+
+pub struct Inbox {
+    pub rx: mpsc::Receiver<Request>,
+    #[cfg(target_os = "linux")]
+    pub sender: std::sync::Weak<mpsc::Sender<Request>>,
+}
 
 impl Controls {
+    pub fn channel() -> (Self, Inbox) {
+        let (tx, rx) = mpsc::channel();
+        let tx = Arc::new(tx);
+        let inbox = Inbox {
+            rx,
+            #[cfg(target_os = "linux")]
+            sender: Arc::downgrade(&tx),
+        };
+        (Self(tx), inbox)
+    }
+
     pub fn send(&self, command: PlayerCommand) {
         if self
             .0

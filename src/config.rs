@@ -15,6 +15,10 @@ fn config_path() -> PathBuf {
 pub struct Config {
     pub song_dir: PathBuf,
     pub current_song_path: Option<PathBuf>,
+    #[cfg(target_os = "linux")]
+    pub lx_script: Option<crate::online::Script>,
+    #[cfg(target_os = "linux")]
+    pub current_online: Option<crate::online::OnlineTrack>,
     pub progress: f32,
     pub loop_mode: LoopMode,
     pub shuffle: bool,
@@ -33,6 +37,10 @@ impl Default for Config {
         Self {
             song_dir: home::home_dir().unwrap_or_default().join("Music"),
             current_song_path: None,
+            #[cfg(target_os = "linux")]
+            lx_script: None,
+            #[cfg(target_os = "linux")]
+            current_online: None,
             progress: 0.,
             loop_mode: LoopMode::Playlist,
             shuffle: false,

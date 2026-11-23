@@ -4,6 +4,8 @@ mod config;
 mod integrations;
 mod library;
 mod logger;
+#[cfg(target_os = "linux")]
+mod online;
 mod player;
 mod slint_types;
 
@@ -15,6 +17,10 @@ fn is_runtime_check_argument(mut args: impl Iterator<Item = std::ffi::OsString>)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "linux")]
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == "--lx-worker") {
+        return lx_probe::run_worker().map_err(Into::into);
+    }
     if is_runtime_check_argument(std::env::args_os()) {
         return Ok(());
     }

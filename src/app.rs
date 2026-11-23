@@ -4,7 +4,6 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc,
     },
     time::{Duration, Instant},
 };
@@ -168,6 +167,7 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
     match event {
         Event::State(s, seeked) => {
             display.set_current_song(s.track.as_deref().map(song).unwrap_or_default());
+            playback.set_can_seek(s.can_seek());
             playback.set_paused(s.status != Status::Playing);
             playback.set_duration(s.duration.as_secs_f32());
             let pos = seeked.unwrap_or_else(|| s.position_now()).as_secs_f32();
@@ -226,6 +226,38 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
             log::info!("Library ready");
         }
         Event::Results(v) => display.set_search_results(model(v)),
+        #[cfg(target_os = "linux")]
+        Event::Script(script, importing) => {
+            let lx = ui.global::<OnlineGlobal>();
+            lx.set_installed(script.is_some());
+            lx.set_enabled(script.as_ref().is_some_and(|s| s.enabled));
+            lx.set_importing(importing);
+            lx.set_script_summary(script.map(|s| s.summary()).unwrap_or_default().into());
+        }
+        #[cfg(target_os = "linux")]
+        Event::Link(query, title, qualities, issue) => {
+            let lx = ui.global::<OnlineGlobal>();
+            lx.set_preview_query(query.into());
+            lx.set_preview_detail(title.into());
+            lx.set_preview_issue(issue);
+            lx.set_qualities(slint::ModelRc::new(slint::VecModel::from(
+                qualities.into_iter().map(slint::SharedString::from).collect::<Vec<_>>(),
+            )));
+            display.set_search_results(Default::default());
+        }
+        #[cfg(target_os = "linux")]
+        Event::Loading(label, paused) => {
+            let lx = ui.global::<OnlineGlobal>();
+            lx.set_loading(label.into());
+            lx.set_loading_paused(paused);
+        }
+        #[cfg(target_os = "linux")]
+        Event::OnlineFailure((issue, detail)) => {
+            ui.set_operation_error_message(
+                ui.global::<OnlineGlobal>().invoke_issue_text(issue, detail.into()),
+            );
+            ui.invoke_show_operation_error();
+        }
         Event::Error(msg) => {
             ui.set_operation_error_message(msg.into());
             ui.invoke_show_operation_error();
@@ -564,6 +596,23 @@ fn register_callbacks(
         });
     });
     let tx = controls.clone();
+    #[cfg(target_os = "linux")]
+    {
+        let lx = ui.global::<OnlineGlobal>();
+        lx.set_available(true);
+        lx.on_is_link(|q| crate::online::is_link(q.as_str()));
+        let tx = controls.clone();
+        lx.on_import_script(move || {
+            if let Some(path) = rfd::FileDialog::new().add_filter("JavaScript", &["js"]).pick_file()
+            {
+                tx.send(Cmd::ImportScript(path));
+            }
+        });
+        let tx = controls.clone();
+        lx.on_enable_script(move |enabled| tx.send(Cmd::EnableScript(enabled)));
+        let tx = controls.clone();
+        lx.on_play_link(move |link, quality| tx.send(Cmd::PlayLink(link.into(), quality.into())));
+    }
     ui.on_select_song_dir(move || {
         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
             tx.send(Cmd::Refresh(dir));
@@ -767,8 +816,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     ui.global::<PlaybackGlobal>().set_paused(true);
     let tray = AppTray::new().map_err(|e| log::warn!("Tray unavailable: {e}")).ok();
-    let (tx, rx) = mpsc::channel();
-    let controls = Controls(tx);
+    let (controls, rx) = Controls::channel();
     let shared = SharedState::default();
     let can_run_hidden = Arc::new(AtomicBool::new(tray.is_some()));
     let theme = Rc::new(ThemeWatcher::start(ui.as_weak(), cfg.follow_system_theme));

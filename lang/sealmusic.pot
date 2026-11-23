@@ -170,3 +170,83 @@ msgstr ""
 msgctxt "ControlPanel"
 msgid "Stop"
 msgstr ""
+
+#: ui/online.slint:19
+msgctxt "OnlineGlobal"
+msgid "Invalid LX link or missing field: {}"
+msgstr ""
+
+#: ui/online.slint:20
+msgctxt "OnlineGlobal"
+msgid "Enable an LX source in Settings."
+msgstr ""
+
+#: ui/online.slint:21
+msgctxt "OnlineGlobal"
+msgid "No compatible audio quality is available."
+msgstr ""
+
+#: ui/online.slint:22
+msgctxt "OnlineGlobal"
+msgid "Could not read or save the LX source."
+msgstr ""
+
+#: ui/online.slint:23
+msgctxt "OnlineGlobal"
+msgid "The LX source failed to initialize."
+msgstr ""
+
+#: ui/online.slint:24
+msgctxt "OnlineGlobal"
+msgid "The source could not resolve the media URL ({})."
+msgstr ""
+
+#: ui/online.slint:25
+msgctxt "OnlineGlobal"
+msgid "Media download failed ({})."
+msgstr ""
+
+#: ui/online.slint:26
+msgctxt "OnlineGlobal"
+msgid "Audio decoding failed ({})."
+msgstr ""
+
+#: ui/app.slint:205
+msgctxt "MainWindow"
+msgid "Loading {} (paused)"
+msgstr ""
+
+#: ui/app.slint:206
+msgctxt "MainWindow"
+msgid "Loading {}"
+msgstr ""
+
+#: ui/search_panel.slint:66
+msgctxt "SearchPanel"
+msgid "Search songs or paste an LX track link"
+msgstr ""
+
+#: ui/search_panel.slint:90
+msgctxt "SearchPanel"
+msgid "Play at {}"
+msgstr ""
+
+#: ui/settings_panel.slint:126
+msgctxt "SettingsPanel"
+msgid "LX music source"
+msgstr ""
+
+#: ui/settings_panel.slint:131
+msgctxt "SettingsPanel"
+msgid "Initializing…"
+msgstr ""
+
+#: ui/settings_panel.slint:131
+msgctxt "SettingsPanel"
+msgid "Import JS source…"
+msgstr ""
+
+#: ui/settings_panel.slint:136
+msgctxt "SettingsPanel"
+msgid "Enabled"
+msgstr ""

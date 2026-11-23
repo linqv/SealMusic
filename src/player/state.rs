@@ -33,6 +33,8 @@ pub struct PlaybackState {
     pub can_next: bool,
     pub can_previous: bool,
     pub can_play: bool,
+    pub deferred: bool,
+    pub sink_empty: bool,
     #[cfg(target_os = "linux")]
     pub art_url: Option<Arc<str>>,
     #[cfg(target_os = "linux")]
@@ -53,6 +55,8 @@ impl Default for PlaybackState {
             can_next: false,
             can_previous: false,
             can_play: false,
+            deferred: false,
+            sink_empty: false,
             #[cfg(target_os = "linux")]
             art_url: None,
             #[cfg(target_os = "linux")]
@@ -62,14 +66,17 @@ impl Default for PlaybackState {
 }
 impl PlaybackState {
     pub fn position_now(&self) -> Duration {
-        if self.status == Status::Playing {
+        if self.status == Status::Playing && !self.sink_empty {
             self.position.saturating_add(self.sampled_at.elapsed()).min(self.duration)
         } else {
             self.position
         }
     }
     pub fn can_seek(&self) -> bool {
-        self.status != Status::Stopped && !self.duration.is_zero()
+        !self.deferred
+            && !self.sink_empty
+            && self.status != Status::Stopped
+            && !self.duration.is_zero()
     }
     pub fn accepts_position(&self, id: Option<&TrackId>, position: Duration) -> bool {
         self.can_seek()
@@ -87,6 +94,14 @@ pub enum PlaybackEvent {
     Results(Vec<Arc<Track>>),
     Error(String),
     #[cfg(target_os = "linux")]
+    Script(Option<crate::online::Script>, bool),
+    #[cfg(target_os = "linux")]
+    Link(String, String, Vec<String>, crate::slint_types::OnlineIssue),
+    #[cfg(target_os = "linux")]
+    OnlineFailure(crate::online::Failure),
+    #[cfg(target_os = "linux")]
+    Loading(String, bool),
+    #[cfg(target_os = "linux")]
     Raise,
     #[cfg(target_os = "linux")]
     Quit,
@@ -96,8 +111,8 @@ pub enum PlaybackEvent {
 pub struct Queue {
     order: Vec<Arc<Track>>,
     index_by_id: HashMap<TrackId, usize>,
-    back: VecDeque<Arc<Track>>,
-    forward: VecDeque<Arc<Track>>,
+    back: VecDeque<TrackId>,
+    forward: VecDeque<TrackId>,
 }
 
 impl Queue {
@@ -114,16 +129,16 @@ impl Queue {
         for (idx, track) in self.order.iter().enumerate() {
             self.index_by_id.insert(track.id.clone(), idx);
         }
-        // Resolve history against the new library to drop missing tracks and refresh metadata.
-        if !self.back.is_empty() || !self.forward.is_empty() {
-            for stack in [&mut self.back, &mut self.forward] {
-                *stack = stack
-                    .iter()
-                    .filter_map(|t| {
-                        self.index_by_id.get(&t.id).map(|&idx| Arc::clone(&self.order[idx]))
-                    })
-                    .collect();
-            }
+        self.back.retain(|id| self.index_by_id.contains_key(id));
+        self.forward.retain(|id| self.index_by_id.contains_key(id));
+    }
+    #[cfg(target_os = "linux")]
+    pub fn upsert(&mut self, track: Arc<Track>) {
+        if let Some(&i) = self.index_by_id.get(&track.id) {
+            self.order[i] = track;
+        } else {
+            self.index_by_id.insert(track.id.clone(), self.order.len());
+            self.order.push(track);
         }
     }
     pub fn get(&self, id: &TrackId) -> Option<Arc<Track>> {
@@ -135,23 +150,37 @@ impl Queue {
         next: bool,
         looping: LoopMode,
     ) -> Option<Arc<Track>> {
+        self.step_skip(current, next, looping, 0).0
+    }
+    pub fn step_skip(
+        &self,
+        current: Option<&TrackId>,
+        next: bool,
+        looping: LoopMode,
+        skip: usize,
+    ) -> (Option<Arc<Track>>, bool) {
         let history = if next {
             &self.forward
         } else {
             &self.back
         };
-        if let Some(t) = history.back() {
-            return Some(t.clone());
+        if let Some(track) = history
+            .len()
+            .checked_sub(skip + 1)
+            .and_then(|idx| history.get(idx))
+            .and_then(|id| self.get(id))
+        {
+            return (Some(track), true);
         }
         let Some(i) = current.and_then(|id| self.index_by_id.get(id).copied()) else {
-            return self.order.first().cloned();
+            return (self.order.first().cloned(), false);
         };
         let neighbor = if next {
             self.order.get(i + 1)
         } else {
             i.checked_sub(1).and_then(|p| self.order.get(p))
         };
-        neighbor
+        let track = neighbor
             .or_else(|| {
                 if looping == LoopMode::None {
                     None
@@ -161,13 +190,25 @@ impl Queue {
                     self.order.last()
                 }
             })
-            .cloned()
+            .cloned();
+        (track, false)
     }
     /// Commit navigation only after the destination has successfully loaded.
+    #[cfg(test)]
     pub fn record(&mut self, old: Option<Arc<Track>>, new: &TrackId, next: Option<bool>) {
-        let Some(old) = old.filter(|t| t.id != *new) else {
+        self.record_navigation(old, new, next, 0, next.is_some());
+    }
+    pub fn record_navigation(
+        &mut self,
+        old: Option<Arc<Track>>,
+        new: &TrackId,
+        next: Option<bool>,
+        history_skip: usize,
+        from_history: bool,
+    ) {
+        if old.as_ref().is_some_and(|t| t.id == *new) {
             return;
-        };
+        }
         let (source, dest) = if next == Some(false) {
             (&mut self.back, &mut self.forward)
         } else {
@@ -175,13 +216,21 @@ impl Queue {
         };
         if next.is_none() {
             source.clear();
-        } else if source.back().is_some_and(|t| t.id == *new) {
-            source.pop_back();
+        } else if from_history {
+            if let Some(idx) = source.len().checked_sub(history_skip + 1)
+                && source.get(idx) == Some(new)
+            {
+                source.truncate(idx);
+            }
+        } else if history_skip > 0 {
+            source.truncate(source.len().saturating_sub(history_skip));
         }
-        if dest.len() >= 256 {
-            dest.pop_front();
+        if let Some(old) = old.filter(|t| self.index_by_id.contains_key(&t.id)) {
+            if dest.len() >= 256 {
+                dest.pop_front();
+            }
+            dest.push_back(old.id.clone());
         }
-        dest.push_back(old);
     }
 }
 
@@ -233,5 +282,63 @@ mod tests {
         q.rebuild(&tracks, true, Some(&tracks[3].id));
         assert_eq!(q.order.len(), tracks.len());
         assert_eq!(q.order[0].id, tracks[3].id);
+    }
+    #[test]
+    fn step_skip_and_record_navigation_advance_past_pending_history_entries() {
+        let (a, b, c, d) = (track("a"), track("b"), track("c"), track("d"));
+        let mut q = Queue::default();
+        q.rebuild(&[a.clone(), b.clone(), c.clone(), d.clone()], false, None);
+        // Play a -> b -> d, so back = [a, b], current = d.
+        q.record(Some(a.clone()), &b.id, None);
+        q.record(Some(b.clone()), &d.id, None);
+
+        // First Previous picks top of back (b); second skips b and picks a; third falls into order.
+        assert_eq!(q.step_skip(Some(&d.id), false, LoopMode::Playlist, 0), (Some(b.clone()), true));
+        assert_eq!(q.step_skip(Some(&b.id), false, LoopMode::Playlist, 1), (Some(a.clone()), true));
+        assert_eq!(
+            q.step_skip(Some(&a.id), false, LoopMode::Playlist, 2),
+            (Some(d.clone()), false)
+        );
+
+        // Committing the second step (a) drops both b and a from back and pushes d to forward.
+        q.record_navigation(Some(d.clone()), &a.id, Some(false), 1, true);
+        assert_eq!(q.step(Some(&a.id), true, LoopMode::None), Some(d.clone()));
+        assert_eq!(q.step(Some(&a.id), false, LoopMode::None), None);
+    }
+    #[test]
+    fn record_navigation_updates_source_when_old_is_missing_or_removed() {
+        let (a, b, c, gone) = (track("a"), track("b"), track("c"), track("gone"));
+        let mut q = Queue::default();
+        q.rebuild(&[a.clone(), b.clone(), c.clone()], false, None);
+        q.record(Some(a.clone()), &b.id, None);
+        q.record(Some(b.clone()), &c.id, None);
+
+        // With old == None (e.g. current track disappeared during refresh), back still truncates.
+        q.record_navigation(None, &a.id, Some(false), 1, true);
+        assert_eq!(q.step(Some(&a.id), false, LoopMode::None), None);
+        assert_eq!(q.step(Some(&a.id), true, LoopMode::None), Some(b.clone()));
+
+        // Establish forward = [a], then jump manually from a removed track `gone` to `c`.
+        q.record(Some(a.clone()), &b.id, Some(false));
+        assert_eq!(q.step(Some(&b.id), true, LoopMode::None), Some(a));
+        q.record_navigation(Some(gone), &c.id, None, 0, false);
+        assert_eq!(q.step(Some(&c.id), true, LoopMode::None), None);
+        assert_eq!(q.step(Some(&c.id), false, LoopMode::None), Some(b));
+    }
+    #[test]
+    fn sink_empty_disables_seek_and_freezes_position() {
+        let t = track("a");
+        let s = PlaybackState {
+            track: Some(t.clone()),
+            duration: Duration::from_secs(10),
+            position: Duration::from_secs(10),
+            sampled_at: Instant::now() - Duration::from_secs(3),
+            status: Status::Playing,
+            sink_empty: true,
+            ..Default::default()
+        };
+        assert!(!s.can_seek());
+        assert!(!s.accepts_position(Some(&t.id), Duration::from_secs(2)));
+        assert_eq!(s.position_now(), Duration::from_secs(10));
     }
 }

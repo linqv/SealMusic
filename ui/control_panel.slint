@@ -170,6 +170,7 @@ export component ControlPanel inherits Rectangle {
     background: Theme.surface;
 
     in-out property <float> progress;
+    in property <bool> can-seek;
     in property <float> duration;
     in property <bool> paused;
     in property <LoopMode> loop_mode;
@@ -199,6 +200,7 @@ export component ControlPanel inherits Rectangle {
         height: 100%;
         Slider {
             minimum: 0;
+            enabled: root.can-seek;
             maximum: root.duration;
             value <=> root.progress;
             released(v) => {

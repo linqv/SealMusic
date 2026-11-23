@@ -1,5 +1,7 @@
 pub mod command;
 mod local;
+#[cfg(target_os = "linux")]
+mod online;
 pub mod state;
 
 #[cfg(target_os = "linux")]
@@ -11,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use command::{PlayerCommand as Cmd, Request};
+use command::{Inbox, PlayerCommand as Cmd};
 use rodio::Source;
 use state::{PlaybackEvent as Event, PlaybackState, Queue, SharedState, Status};
 
@@ -29,6 +31,8 @@ struct PlayerCore<F> {
     shared: SharedState,
     tracks: Vec<Arc<Track>>,
     queue: Queue,
+    #[cfg(target_os = "linux")]
+    online: online::Online,
     query: String,
     pending_seek: Option<Duration>,
     tick_count: u8,
@@ -44,7 +48,7 @@ struct PlayerCore<F> {
 pub fn start(
     cfg: Config,
     shared: SharedState,
-    rx: mpsc::Receiver<Request>,
+    inbox: Inbox,
     #[cfg(target_os = "linux")] mpris_available: Arc<AtomicBool>,
     mut publish: impl FnMut(Event) + Send + 'static,
 ) -> thread::JoinHandle<Config> {
@@ -62,7 +66,7 @@ pub fn start(
         run_worker(
             cfg,
             shared,
-            rx,
+            inbox,
             mixer,
             player,
             #[cfg(target_os = "linux")]
@@ -76,7 +80,7 @@ pub fn start(
 pub(crate) fn spawn_test_worker(
     cfg: Config,
     shared: SharedState,
-    rx: mpsc::Receiver<Request>,
+    inbox: Inbox,
     publish: impl FnMut(Event) + Send + 'static,
 ) -> thread::JoinHandle<Config> {
     thread::spawn(move || {
@@ -94,7 +98,7 @@ pub(crate) fn spawn_test_worker(
             }
         });
         let cfg =
-            run_worker(cfg, shared, rx, mixer, player, Arc::new(AtomicBool::new(true)), publish);
+            run_worker(cfg, shared, inbox, mixer, player, Arc::new(AtomicBool::new(true)), publish);
         running.store(false, Ordering::Relaxed);
         let _ = audio.join();
         cfg
@@ -104,7 +108,7 @@ pub(crate) fn spawn_test_worker(
 fn run_worker(
     cfg: Config,
     shared: SharedState,
-    rx: mpsc::Receiver<Request>,
+    inbox: Inbox,
     mixer: rodio::mixer::Mixer,
     player: rodio::Player,
     #[cfg(target_os = "linux")] mpris_available: Arc<AtomicBool>,
@@ -123,6 +127,8 @@ fn run_worker(
         shared,
         tracks: Vec::new(),
         queue: Queue::default(),
+        #[cfg(target_os = "linux")]
+        online: online::Online::new(inbox.sender),
         query: String::new(),
         pending_seek: None,
         tick_count: 0,
@@ -137,7 +143,18 @@ fn run_worker(
     if let Err(e) = core.refresh(core.cfg.song_dir.clone(), true) {
         core.error(e);
     }
+    #[cfg(target_os = "linux")]
+    {
+        core.script_event();
+        if core.cfg.current_online.is_some() && !core.restore_online() {
+            core.cfg.current_online = None;
+            if let Err(e) = core.reset_and_restore_local(true) {
+                core.error(e);
+            }
+        }
+    }
     core.broadcast();
+    let rx = inbox.rx;
     loop {
         let request = if core.state.status == Status::Playing {
             match rx.recv_timeout(Duration::from_millis(200)) {
@@ -169,8 +186,18 @@ fn run_worker(
             core.tick();
         }
     }
-    core.cfg.current_song_path = core.state.track.as_ref().map(|t| t.path().to_owned());
-    core.cfg.progress = core.player.get_pos().min(core.state.duration).as_secs_f32();
+    core.cfg.current_song_path =
+        core.state.track.as_ref().and_then(|t| t.local_path().map(ToOwned::to_owned));
+    #[cfg(target_os = "linux")]
+    {
+        core.cancel_load();
+        core.cfg.current_online = core.state.track.as_ref().and_then(|t| match &t.origin {
+            crate::library::TrackOrigin::Online(r) => Some(r.clone()),
+            _ => None,
+        });
+    }
+    core.sample_position();
+    core.cfg.progress = core.state.position.as_secs_f32();
     if core.state.status == Status::Stopped {
         core.cfg.progress = 0.;
     }
@@ -187,9 +214,16 @@ impl<F: FnMut(Event)> PlayerCore<F> {
     }
     fn tick(&mut self) {
         if self.player.empty() {
+            #[cfg(target_os = "linux")]
+            if self.online.loading() {
+                if !self.state.sink_empty {
+                    self.broadcast();
+                }
+                return;
+            }
             let result = if self.state.loop_mode == LoopMode::Track {
                 match self.state.track.clone() {
-                    Some(t) => self.load(t, Status::Playing),
+                    Some(t) => self.load(t, Status::Playing, None, 0, false, true, Duration::ZERO),
                     None => Ok(()),
                 }
             } else {
@@ -211,8 +245,13 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         }
     }
     fn sample_position(&mut self) {
+        if self.state.deferred {
+            return;
+        }
         self.state.position = if self.state.status == Status::Stopped {
             Duration::ZERO
+        } else if self.player.empty() {
+            self.state.duration
         } else {
             self.player.get_pos().min(self.state.duration)
         };
@@ -220,21 +259,38 @@ impl<F: FnMut(Event)> PlayerCore<F> {
     }
     fn broadcast(&mut self) {
         self.tick_count = 0;
+        self.state.sink_empty = self.player.empty();
         self.sample_position();
         let current = self.state.track.as_ref().map(|t| &t.id);
         self.state.can_next = self.queue.step(current, true, self.state.loop_mode).is_some();
         self.state.can_previous = self.queue.step(current, false, self.state.loop_mode).is_some();
-        self.state.can_play = !self.tracks.is_empty();
+        self.state.can_play =
+            !self.player.empty() || self.queue.step(None, true, LoopMode::None).is_some();
         let snapshot = Arc::new(self.state.clone());
         *self.shared.write().unwrap() = (*snapshot).clone();
         (self.publish)(Event::State(snapshot, self.pending_seek.take()));
     }
     fn rebuild_order(&mut self) {
-        self.queue.rebuild(
-            &self.tracks,
-            self.state.shuffle,
-            self.state.track.as_ref().map(|t| &t.id),
-        );
+        #[cfg(target_os = "linux")]
+        let tracks = {
+            let mut tracks = self.tracks.clone();
+            tracks.extend(
+                self.online
+                    .tracks
+                    .iter()
+                    .filter(|t| {
+                        let crate::library::TrackOrigin::Online(r) = &t.origin else {
+                            return false;
+                        };
+                        r.qualities(self.cfg.lx_script.as_ref()).contains(&r.quality)
+                    })
+                    .cloned(),
+            );
+            tracks
+        };
+        #[cfg(not(target_os = "linux"))]
+        let tracks = &self.tracks;
+        self.queue.rebuild(&tracks, self.state.shuffle, self.state.track.as_ref().map(|t| &t.id));
     }
     fn library_event(&mut self) {
         (self.publish)(Event::Library(
@@ -248,7 +304,44 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         }
     }
     fn results(&mut self) {
+        #[cfg(target_os = "linux")]
+        if crate::online::is_link(&self.query) {
+            self.preview_link();
+            return;
+        }
         (self.publish)(Event::Results(scan::search(&self.query, &self.tracks)));
+    }
+    fn clear_current_track(&mut self) {
+        self.state.deferred = false;
+        self.player.clear();
+        self.state.status = Status::Stopped;
+        self.state.track = None;
+        self.state.duration = Duration::ZERO;
+        #[cfg(target_os = "linux")]
+        {
+            self.artwork = None;
+            self.state.art_url = None;
+            self.state.synced_lyrics = None;
+        }
+        (self.publish)(Event::Details(Default::default()));
+    }
+    fn reset_and_restore_local(&mut self, startup: bool) -> Result<(), String> {
+        self.stop();
+        self.clear_current_track();
+        let saved = self.cfg.current_song_path.as_ref().filter(|_| startup).and_then(|p| {
+            self.tracks.iter().find(|t| t.local_path() == Some(p.as_path())).cloned()
+        });
+        if let Some(track) = saved.or_else(|| self.tracks.first().cloned()) {
+            let resume = startup && self.cfg.current_song_path.as_deref() == track.local_path();
+            self.load(track, Status::Paused, None, 0, false, false, Duration::ZERO)?;
+            if resume && self.cfg.progress > 0. {
+                let pos = Duration::try_from_secs_f32(self.cfg.progress)
+                    .unwrap_or_default()
+                    .min(self.state.duration);
+                self.seek(pos)?;
+            }
+        }
+        Ok(())
     }
     fn refresh(&mut self, dir: PathBuf, startup: bool) -> Result<(), String> {
         let mut tracks = match scan::scan(&dir) {
@@ -261,6 +354,12 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         self.tracks = tracks;
         self.rebuild_order();
         self.library_event();
+        #[cfg(target_os = "linux")]
+        if (startup && self.cfg.current_online.is_some())
+            || self.state.track.as_ref().is_some_and(|t| t.local_path().is_none())
+        {
+            return Ok(());
+        }
         if let Some(current) = &self.state.track
             && let Some(updated) = self.queue.get(&current.id)
         {
@@ -268,36 +367,17 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             self.details(&updated);
             return Ok(());
         }
-        self.stop();
-        self.state.track = None;
-        self.state.duration = Duration::ZERO;
         #[cfg(target_os = "linux")]
-        {
-            self.artwork = None;
-            self.state.art_url = None;
-            self.state.synced_lyrics = None;
-        }
-        (self.publish)(Event::Details(Default::default()));
-        let saved = self
-            .cfg
-            .current_song_path
-            .as_ref()
-            .filter(|_| startup)
-            .and_then(|p| self.tracks.iter().find(|t| t.path() == p).cloned());
-        if let Some(track) = saved.or_else(|| self.tracks.first().cloned()) {
-            let resume = startup && self.cfg.current_song_path.as_deref() == Some(track.path());
-            self.load(track, Status::Paused)?;
-            if resume && self.cfg.progress > 0. {
-                let pos = Duration::try_from_secs_f32(self.cfg.progress)
-                    .unwrap_or_default()
-                    .min(self.state.duration);
-                self.seek(pos)?;
+        if self.online.loading() {
+            if self.state.track.is_some() {
+                self.clear_current_track();
             }
+            return Ok(());
         }
-        Ok(())
+        self.reset_and_restore_local(startup)
     }
     fn details(&mut self, t: &Track) {
-        let details = metadata::read_details(t.path());
+        let details = t.local_path().map(metadata::read_details).unwrap_or_default();
         #[cfg(target_os = "linux")]
         if self.mpris_available.load(Ordering::Acquire) {
             self.artwork = if let Some(raw) = &details.raw_cover {
@@ -333,19 +413,86 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         }
         (self.publish)(Event::Details(details));
     }
-    fn load(&mut self, t: Arc<Track>, status: Status) -> Result<(), String> {
-        let source = local::decode(t.path())?;
+    #[allow(clippy::too_many_arguments)]
+    fn load(
+        &mut self,
+        t: Arc<Track>,
+        status: Status,
+        direction: Option<bool>,
+        history_skip: usize,
+        from_history: bool,
+        finished: bool,
+        position: Duration,
+    ) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            self.cancel_load();
+            if t.local_path().is_none() {
+                if let Err(err) = self.begin_online(
+                    t,
+                    status,
+                    direction,
+                    history_skip,
+                    from_history,
+                    finished,
+                    position,
+                ) {
+                    if finished {
+                        self.stop();
+                    } else {
+                        self.stop_if_drained();
+                    }
+                    self.online_failure(err);
+                }
+                return Ok(());
+            }
+        }
+        let source = match local::decode(t.local_path().ok_or("Missing local path")?) {
+            Ok(source) => source,
+            Err(e) => {
+                if finished {
+                    self.stop();
+                } else {
+                    self.stop_if_drained();
+                }
+                return Err(e);
+            }
+        };
+        let old = self.state.track.clone();
+        self.commit(t.clone(), status, source, position)?;
+        self.queue.record_navigation(old, &t.id, direction, history_skip, from_history);
+        Ok(())
+    }
+
+    fn commit(
+        &mut self,
+        t: Arc<Track>,
+        status: Status,
+        source: rodio::Decoder<std::io::BufReader<std::fs::File>>,
+        position: Duration,
+    ) -> Result<(), String> {
         let duration = source.total_duration().unwrap_or(t.duration);
         let changed = self.state.track.as_ref().is_none_or(|old| old.id != t.id);
-        if !changed && self.state.status != Status::Stopped {
-            self.pending_seek = Some(Duration::ZERO);
-        }
         // A new sink starts at position zero, including while paused or stopped.
         let next = rodio::Player::connect_new(&self.mixer);
         next.pause();
         next.set_volume(self.state.volume);
         next.append(source);
+        if !position.is_zero() {
+            let position = position.min(duration);
+            if let Err(e) = next.try_seek(position) {
+                log::warn!("Restoring position for '{}': {e}", t.title);
+                if !changed && self.state.status != Status::Stopped {
+                    self.pending_seek = Some(Duration::ZERO);
+                }
+            } else {
+                self.pending_seek = Some(position);
+            }
+        } else if !changed && self.state.status != Status::Stopped {
+            self.pending_seek = Some(Duration::ZERO);
+        }
         self.player = next;
+        self.state.deferred = false;
         self.state.duration = duration;
         self.state.track = Some(t.clone());
         self.state.status = status;
@@ -358,16 +505,45 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         Ok(())
     }
     fn stop(&mut self) {
+        #[cfg(target_os = "linux")]
+        self.cancel_load();
+        self.state.deferred = false;
         self.player.clear();
         self.state.status = Status::Stopped;
     }
+    pub(super) fn stop_if_drained(&mut self) {
+        #[cfg(target_os = "linux")]
+        if self.online.loading() {
+            return;
+        }
+        if !self.state.deferred && self.state.status != Status::Stopped && self.player.empty() {
+            self.stop();
+        }
+    }
     fn play(&mut self) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        if let Some((label, resume_current)) = self.online.resume_pending() {
+            (self.publish)(Event::Loading(label, false));
+            if resume_current && !self.player.empty() {
+                self.player.play();
+                self.state.status = Status::Playing;
+            }
+            return Ok(());
+        }
         if self.state.status == Status::Playing {
             return Ok(());
         }
         if self.player.empty() {
-            if let Some(t) = self.state.track.clone().or_else(|| self.tracks.first().cloned()) {
-                self.load(t, Status::Playing)?;
+            if let Some(t) = self.state.track.as_ref().filter(|_| self.state.deferred).cloned() {
+                self.load(t, Status::Playing, None, 0, false, false, self.state.position)?;
+            } else if let Some(t) = self
+                .state
+                .track
+                .as_ref()
+                .and_then(|t| self.queue.get(&t.id))
+                .or_else(|| self.queue.step(None, true, LoopMode::None))
+            {
+                self.load(t, Status::Playing, None, 0, false, false, Duration::ZERO)?;
             }
         } else {
             self.player.play();
@@ -376,10 +552,20 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         Ok(())
     }
     fn navigate(&mut self, next: bool, finished: bool) -> Result<(), String> {
-        let old = self.state.track.clone();
-        if let Some(t) = self.queue.step(old.as_ref().map(|t| &t.id), next, self.state.loop_mode) {
-            self.load(t.clone(), self.state.status)?;
-            self.queue.record(old, &t.id, Some(next));
+        #[cfg(target_os = "linux")]
+        let (pending_target, skip) = self.online.nav_context(next);
+        #[cfg(not(target_os = "linux"))]
+        let (pending_target, skip): (Option<&Arc<Track>>, usize) = (None, 0);
+        let current = pending_target
+            .filter(|t| self.queue.get(&t.id).is_some())
+            .or(self.state.track.as_ref());
+        let status = self.state.status;
+        #[cfg(target_os = "linux")]
+        let status = self.online.target_status().unwrap_or(status);
+        let (target, from_history) =
+            self.queue.step_skip(current.map(|t| &t.id), next, self.state.loop_mode, skip);
+        if let Some(t) = target {
+            self.load(t, status, Some(next), skip, from_history, finished, Duration::ZERO)?;
         } else if finished {
             self.stop();
         }
@@ -393,7 +579,10 @@ impl<F: FnMut(Event)> PlayerCore<F> {
     fn handle(&mut self, cmd: Cmd) -> Result<(), String> {
         match cmd {
             Cmd::TogglePlayPause => {
-                return self.handle(if self.state.status == Status::Playing {
+                let status = self.state.status;
+                #[cfg(target_os = "linux")]
+                let status = self.online.target_status().unwrap_or(status);
+                return self.handle(if status == Status::Playing {
                     Cmd::Pause
                 } else {
                     Cmd::Play
@@ -401,6 +590,11 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             }
             Cmd::Play => self.play()?,
             Cmd::Pause => {
+                #[cfg(target_os = "linux")]
+                if let Some(label) = self.online.pause_pending(self.state.status == Status::Playing)
+                {
+                    (self.publish)(Event::Loading(label, true));
+                }
                 if self.state.status == Status::Playing {
                     self.player.pause();
                     self.state.status = Status::Paused;
@@ -409,18 +603,18 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             Cmd::Stop => self.stop(),
             Cmd::PlayTrack(id) => {
                 let t = self.queue.get(&id).ok_or("Track is no longer in the library")?;
-                let old = self.state.track.clone();
-                self.load(t, Status::Playing)?;
-                self.queue.record(old, &id, None);
+                self.load(t, Status::Playing, None, 0, false, false, Duration::ZERO)?;
             }
             Cmd::Next => self.navigate(true, false)?,
             Cmd::Previous => self.navigate(false, false)?,
             Cmd::SeekTo(id, pos) => {
+                self.state.sink_empty = self.player.empty();
                 if self.state.accepts_position(id.as_ref(), pos) {
                     self.seek(pos)?;
                 }
             }
             Cmd::SeekRelative(offset) => {
+                self.state.sink_empty = self.player.empty();
                 if self.state.can_seek() {
                     let delta = Duration::from_micros(offset.unsigned_abs());
                     let now = self.player.get_pos();
@@ -462,6 +656,22 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                     self.rebuild_order();
                 }
                 self.library_event();
+            }
+            #[cfg(target_os = "linux")]
+            Cmd::OnlineDone(done) => {
+                self.complete_online(done);
+                return Ok(());
+            }
+            #[cfg(target_os = "linux")]
+            Cmd::ImportScript(path) => self.import_script(path),
+            #[cfg(target_os = "linux")]
+            Cmd::EnableScript(enabled) => self.enable_script(enabled),
+            #[cfg(target_os = "linux")]
+            Cmd::PlayLink(query, quality) => {
+                if let Err(err) = self.play_link(query, quality) {
+                    self.stop_if_drained();
+                    self.online_failure(err);
+                }
             }
             Cmd::Search(q) => {
                 if q == self.query {
@@ -564,6 +774,8 @@ mod tests {
                 shared: SharedState::default(),
                 tracks: tracks.clone(),
                 queue: Queue::default(),
+                #[cfg(target_os = "linux")]
+                online: online::Online::new(Default::default()),
                 query: String::new(),
                 pending_seek: None,
                 tick_count: 0,
@@ -699,5 +911,471 @@ mod tests {
         assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&first.id));
         h.core.handle(Cmd::SetShuffle(false)).unwrap();
         assert!(!h.core.state.shuffle);
+    }
+
+    #[cfg(target_os = "linux")]
+    mod online_state_tests {
+        use std::collections::BTreeMap;
+
+        use super::*;
+        use crate::{
+            online::{OnlineTrack, Script},
+            slint_types::OnlineIssue,
+        };
+
+        fn fake_script(enabled: bool) -> Script {
+            let mut platforms = BTreeMap::new();
+            platforms.insert("wy".into(), vec!["128k".into(), "320k".into()]);
+            Script {
+                id: "0".repeat(64),
+                enabled,
+                metadata: BTreeMap::new(),
+                platforms,
+            }
+        }
+
+        fn wy_link(songmid: u64, name: &str) -> String {
+            let payload = serde_json::json!({
+                "source": "wy",
+                "name": name,
+                "singer": "Artist",
+                "songmid": songmid,
+                "interval": "00:02",
+                "types": [{"type": "128k"}, {"type": "320k"}],
+            });
+            let mut url = url::Url::parse("lxmusic://music/play").unwrap();
+            url.query_pairs_mut().append_pair("data", &payload.to_string());
+            url.into()
+        }
+
+        fn fixture_audio() -> Box<rodio::Decoder<std::io::BufReader<std::fs::File>>> {
+            let fixture =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tagged.flac");
+            Box::new(local::decode(&fixture).unwrap())
+        }
+
+        #[test]
+        fn failed_play_link_does_not_pollute_queue_or_online_tracks() {
+            let mut h = TestHarness::new(1);
+            h.core.cfg.lx_script = Some(fake_script(true));
+            let link = wy_link(101, "Broken");
+
+            h.core.handle(Cmd::PlayLink(link, "128k".into())).unwrap();
+            let id = h.core.online.pending_id().unwrap();
+            assert!(h.core.online.tracks.is_empty());
+
+            h.core.complete_online(online::Completion::Prepared(
+                id,
+                Err((OnlineIssue::Resolve, "wy · 128k".into())),
+            ));
+            assert!(h.core.online.tracks.is_empty());
+            assert_eq!(h.core.queue.step(None, true, LoopMode::None), Some(h.tracks[0].clone()));
+        }
+
+        #[test]
+        fn pause_and_resume_while_loading_respects_prior_paused_state() {
+            let mut h = TestHarness::new(1);
+            h.core.cfg.lx_script = Some(fake_script(true));
+            let local = h.tracks[0].clone();
+
+            // Start paused on local track, then trigger online load.
+            h.core.handle(Cmd::PlayTrack(local.id.clone())).unwrap();
+            h.core.handle(Cmd::Pause).unwrap();
+            assert_eq!(h.core.state.status, Status::Paused);
+
+            h.core.handle(Cmd::PlayLink(wy_link(102, "Online"), "128k".into())).unwrap();
+            assert_eq!(h.core.online.target_status(), Some(Status::Playing));
+
+            // Pause then resume while loading must NOT unpause the old paused local track.
+            h.core.handle(Cmd::Pause).unwrap();
+            assert_eq!(h.core.online.target_status(), Some(Status::Paused));
+            h.core.handle(Cmd::Play).unwrap();
+            assert_eq!(h.core.online.target_status(), Some(Status::Playing));
+            assert_eq!(h.core.state.status, Status::Paused);
+
+            // When old track WAS playing, pause pauses both and resume resumes both.
+            h.core.cancel_load();
+            h.core.handle(Cmd::Play).unwrap();
+            assert_eq!(h.core.state.status, Status::Playing);
+            h.core.handle(Cmd::PlayLink(wy_link(103, "Online2"), "128k".into())).unwrap();
+            h.core.handle(Cmd::Pause).unwrap();
+            assert_eq!(h.core.state.status, Status::Paused);
+            assert_eq!(h.core.online.target_status(), Some(Status::Paused));
+            h.core.handle(Cmd::Play).unwrap();
+            assert_eq!(h.core.state.status, Status::Playing);
+            assert_eq!(h.core.online.target_status(), Some(Status::Playing));
+        }
+
+        #[test]
+        fn repeated_previous_advances_past_pending_online_history_track() {
+            let mut h = TestHarness::new(1);
+            h.core.cfg.lx_script = Some(fake_script(true));
+            let local = h.tracks[0].clone();
+
+            // Play local -> commit online A -> commit online B, so back = [local, A], current = B.
+            h.core.handle(Cmd::PlayTrack(local.id.clone())).unwrap();
+            h.core.handle(Cmd::PlayLink(wy_link(201, "A"), "128k".into())).unwrap();
+            let id_a = h.core.online.pending_id().unwrap();
+            h.core.complete_online(online::Completion::Prepared(id_a, Ok(fixture_audio())));
+            let track_a = h.core.state.track.clone().unwrap();
+
+            h.core.handle(Cmd::PlayLink(wy_link(202, "B"), "128k".into())).unwrap();
+            let id_b = h.core.online.pending_id().unwrap();
+            h.core.complete_online(online::Completion::Prepared(id_b, Ok(fixture_audio())));
+
+            // First Previous begins loading A; second Previous skips A and loads local immediately.
+            h.core.handle(Cmd::Previous).unwrap();
+            assert!(h.core.online.loading());
+            assert_eq!(h.core.online.nav_context(false).0.map(|t| &t.id), Some(&track_a.id));
+
+            h.core.handle(Cmd::Previous).unwrap();
+            assert!(!h.core.online.loading());
+            assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&local.id));
+        }
+
+        #[test]
+        fn restore_online_emits_details_and_reports_disabled_script_on_play() {
+            let mut h = TestHarness::new(1);
+            let mut reference = OnlineTrack::parse(&wy_link(301, "Restored")).unwrap();
+            reference.quality = "128k".into();
+            h.core.cfg.current_online = Some(reference);
+            h.core.cfg.lx_script = Some(fake_script(false));
+            h.events.lock().unwrap().clear();
+
+            assert!(h.core.restore_online());
+            assert!(h.core.state.deferred);
+            assert!(h.events.lock().unwrap().iter().any(|ev| matches!(ev, Event::Details(_))));
+
+            h.events.lock().unwrap().clear();
+            h.core.handle(Cmd::Play).unwrap();
+            assert!(
+                h.events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|ev| matches!(ev, Event::OnlineFailure((OnlineIssue::NoScript, _))))
+            );
+            assert_eq!(h.core.state.status, Status::Paused);
+        }
+
+        #[test]
+        fn refresh_deleting_current_local_track_preserves_pending_online_load() {
+            let mut h = TestHarness::new(2);
+            h.core.cfg.lx_script = Some(fake_script(true));
+            let first = h.tracks[0].clone();
+            h.core.handle(Cmd::PlayTrack(first.id.clone())).unwrap();
+            h.core.handle(Cmd::PlayLink(wy_link(401, "Loading"), "128k".into())).unwrap();
+            let pending_id = h.core.online.pending_id().unwrap();
+
+            // Refresh to a fresh empty directory (so current local track disappears).
+            let empty_dir = std::env::temp_dir()
+                .join(format!("sealmusic_empty_refresh_{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&empty_dir);
+            h.core.handle(Cmd::Refresh(empty_dir.clone())).unwrap();
+            let _ = std::fs::remove_dir_all(&empty_dir);
+
+            assert_eq!(h.core.online.pending_id(), Some(pending_id));
+            assert!(h.core.state.track.is_none());
+            h.core.complete_online(online::Completion::Prepared(pending_id, Ok(fixture_audio())));
+            assert_eq!(h.core.state.status, Status::Playing);
+            assert!(h.core.state.track.as_ref().is_some_and(|t| t.title == "Loading"));
+        }
+
+        #[test]
+        fn stale_completion_from_replaced_load_is_discarded() {
+            let mut h = TestHarness::new(1);
+            h.core.cfg.lx_script = Some(fake_script(true));
+            let local = h.tracks[0].clone();
+            h.core.handle(Cmd::PlayTrack(local.id.clone())).unwrap();
+
+            h.core.handle(Cmd::PlayLink(wy_link(501, "SlowA"), "128k".into())).unwrap();
+            let id_a = h.core.online.pending_id().unwrap();
+
+            h.core.handle(Cmd::PlayLink(wy_link(502, "FastB"), "320k".into())).unwrap();
+            let id_b = h.core.online.pending_id().unwrap();
+            assert_ne!(id_a, id_b);
+
+            // Stale completion for A must be ignored without replacing current track or queue.
+            h.core.complete_online(online::Completion::Prepared(id_a, Ok(fixture_audio())));
+            assert_eq!(h.core.online.pending_id(), Some(id_b));
+            assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&local.id));
+            assert!(h.core.online.tracks.is_empty());
+
+            h.core.complete_online(online::Completion::Prepared(id_b, Ok(fixture_audio())));
+            assert!(!h.core.online.loading());
+            assert_eq!(h.core.state.track.as_ref().map(|t| t.title.as_str()), Some("FastB"));
+            assert_eq!(h.core.online.tracks.len(), 1);
+        }
+
+        #[test]
+        fn same_track_quality_switch_updates_track_without_polluting_history() {
+            let mut h = TestHarness::new(1);
+            h.core.cfg.lx_script = Some(fake_script(true));
+            let local = h.tracks[0].clone();
+            let link = wy_link(503, "SwitchQuality");
+
+            h.core.handle(Cmd::PlayTrack(local.id.clone())).unwrap();
+            h.core.handle(Cmd::PlayLink(link.clone(), "128k".into())).unwrap();
+            let id_128 = h.core.online.pending_id().unwrap();
+            h.core.complete_online(online::Completion::Prepared(id_128, Ok(fixture_audio())));
+            let track_128_id = h.core.state.track.as_ref().unwrap().id.clone();
+
+            h.events.lock().unwrap().clear();
+            h.core.handle(Cmd::PlayLink(link, "320k".into())).unwrap();
+            let id_320 = h.core.online.pending_id().unwrap();
+            assert_ne!(id_128, id_320);
+            h.core.complete_online(online::Completion::Prepared(id_320, Ok(fixture_audio())));
+
+            let current = h.core.state.track.as_ref().unwrap();
+            assert_eq!(current.id, track_128_id);
+            assert!(matches!(
+                &current.origin,
+                crate::library::TrackOrigin::Online(r) if r.quality == "320k"
+            ));
+            assert_eq!(h.core.online.tracks.len(), 1);
+            assert!(
+                h.events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|ev| matches!(ev, Event::State(_, Some(pos)) if *pos == Duration::ZERO))
+            );
+            // History must still step straight back to local rather than duplicating the same track.
+            h.core.handle(Cmd::Previous).unwrap();
+            assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&local.id));
+        }
+
+        #[test]
+        fn stop_and_disable_script_cancel_pending_load_and_discard_stale_result() {
+            let mut h = TestHarness::new(1);
+            h.core.cfg.lx_script = Some(fake_script(true));
+            let local = h.tracks[0].clone();
+            h.core.handle(Cmd::PlayTrack(local.id.clone())).unwrap();
+
+            h.core.handle(Cmd::PlayLink(wy_link(504, "Stopped"), "128k".into())).unwrap();
+            let id_stop = h.core.online.pending_id().unwrap();
+            h.core.handle(Cmd::Stop).unwrap();
+            assert!(!h.core.online.loading());
+            assert_eq!(h.core.state.status, Status::Stopped);
+            h.core.complete_online(online::Completion::Prepared(id_stop, Ok(fixture_audio())));
+            assert_eq!(h.core.state.status, Status::Stopped);
+            assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&local.id));
+
+            h.core.handle(Cmd::PlayTrack(local.id.clone())).unwrap();
+            h.core.handle(Cmd::PlayLink(wy_link(505, "Disabled"), "128k".into())).unwrap();
+            let id_disable = h.core.online.pending_id().unwrap();
+            h.core.handle(Cmd::EnableScript(false)).unwrap();
+            assert!(!h.core.online.loading());
+            assert!(h.core.cfg.lx_script.as_ref().is_some_and(|s| !s.enabled));
+            h.core.complete_online(online::Completion::Prepared(id_disable, Ok(fixture_audio())));
+            assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&local.id));
+            assert!(h.core.online.tracks.is_empty());
+        }
+
+        #[test]
+        fn failed_script_import_preserves_existing_script_and_pending_load() {
+            let mut h = TestHarness::new(1);
+            let old = fake_script(true);
+            h.core.cfg.lx_script = Some(old.clone());
+            h.core.handle(Cmd::PlayLink(wy_link(506, "InFlight"), "128k".into())).unwrap();
+            let pending_id = h.core.online.pending_id().unwrap();
+
+            h.core.handle(Cmd::ImportScript(PathBuf::from("/nonexistent/bad.js"))).unwrap();
+            let import_id = h.core.online.import_id().unwrap();
+            h.events.lock().unwrap().clear();
+            h.core.complete_online(online::Completion::Imported(
+                import_id,
+                Err((OnlineIssue::Initialization, String::new())),
+            ));
+            assert_eq!(h.core.cfg.lx_script.as_ref().map(|s| &s.id), Some(&old.id));
+            assert!(h.core.cfg.lx_script.as_ref().is_some_and(|s| s.enabled));
+            assert_eq!(h.core.online.pending_id(), Some(pending_id));
+            assert!(
+                h.events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|ev| matches!(ev, Event::OnlineFailure((OnlineIssue::Initialization, _))))
+            );
+
+            // Successful replacement cancels the old script's pending load and swaps active script.
+            let mut replacement = fake_script(true);
+            replacement.id = "1".repeat(64);
+            h.core.handle(Cmd::ImportScript(PathBuf::from("/nonexistent/good.js"))).unwrap();
+            let import_id_2 = h.core.online.import_id().unwrap();
+            h.core.complete_online(online::Completion::Imported(import_id_2, Ok(replacement)));
+            assert!(!h.core.online.loading());
+            assert_eq!(
+                h.core.cfg.lx_script.as_ref().map(|s| s.id.as_str()),
+                Some("1".repeat(64).as_str())
+            );
+        }
+
+        #[test]
+        fn drained_sink_while_auto_advancing_disables_seek_and_stops_on_failure() {
+            let mut h = TestHarness::new(1);
+            h.core.cfg.lx_script = Some(fake_script(true));
+            let local = h.tracks[0].clone();
+
+            // Put an online track after local in queue, then play local.
+            h.core.handle(Cmd::PlayLink(wy_link(507, "NextOnline"), "128k".into())).unwrap();
+            let id_seed = h.core.online.pending_id().unwrap();
+            h.core.complete_online(online::Completion::Prepared(id_seed, Ok(fixture_audio())));
+            h.core.handle(Cmd::PlayTrack(local.id.clone())).unwrap();
+            assert!(h.core.state.can_seek());
+
+            // Simulate natural EOF of local -> tick() starts loading NextOnline.
+            h.core.player.clear();
+            h.core.tick();
+            let id_next = h.core.online.pending_id().unwrap();
+            assert!(h.core.state.sink_empty);
+            assert!(!h.core.state.can_seek());
+            assert_eq!(h.core.state.position, h.core.state.duration);
+
+            // Seek commands while sink is drained must be ignored cleanly without error or Seeked.
+            h.events.lock().unwrap().clear();
+            h.core.handle(Cmd::SeekTo(Some(local.id.clone()), Duration::from_millis(500))).unwrap();
+            h.core.handle(Cmd::SeekRelative(1_000_000)).unwrap();
+            assert!(
+                !h.events.lock().unwrap().iter().any(|ev| matches!(ev, Event::State(_, Some(_))))
+            );
+
+            // Failure on auto-advanced track enters Stopped and reports once.
+            h.events.lock().unwrap().clear();
+            h.core.complete_online(online::Completion::Prepared(
+                id_next,
+                Err((OnlineIssue::Transfer, "HTTP 503".into())),
+            ));
+            assert_eq!(h.core.state.status, Status::Stopped);
+            assert_eq!(
+                h.events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|ev| matches!(ev, Event::OnlineFailure((OnlineIssue::Transfer, _))))
+                    .count(),
+                1
+            );
+        }
+
+        #[test]
+        fn eof_during_manual_load_stops_on_failure_or_script_disable() {
+            let mut h = TestHarness::new(2);
+            h.core.cfg.lx_script = Some(fake_script(true));
+            let first = h.tracks[0].clone();
+
+            // Play first, trigger manual load of B, then first reaches EOF before B finishes.
+            h.core.handle(Cmd::PlayTrack(first.id.clone())).unwrap();
+            h.core.handle(Cmd::PlayLink(wy_link(508, "ManualB"), "128k".into())).unwrap();
+            let id_b = h.core.online.pending_id().unwrap();
+            h.core.player.clear();
+            h.core.tick();
+            assert_eq!(h.core.online.pending_id(), Some(id_b));
+            assert!(h.core.state.sink_empty);
+            assert!(!h.core.state.can_seek());
+
+            // Manual load failure after EOF must transition to Stopped (not keep Playing + empty sink).
+            h.core.complete_online(online::Completion::Prepared(
+                id_b,
+                Err((OnlineIssue::Resolve, "wy · 128k".into())),
+            ));
+            assert_eq!(h.core.state.status, Status::Stopped);
+            assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&first.id));
+
+            // Same scenario when user disables the active script after EOF during manual load.
+            h.core.handle(Cmd::PlayTrack(first.id.clone())).unwrap();
+            h.core.handle(Cmd::PlayLink(wy_link(509, "ManualC"), "128k".into())).unwrap();
+            h.core.player.clear();
+            h.core.tick();
+            h.core.handle(Cmd::EnableScript(false)).unwrap();
+            assert!(!h.core.online.loading());
+            assert_eq!(h.core.state.status, Status::Stopped);
+            assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&first.id));
+        }
+
+        #[test]
+        fn mixed_queue_preserves_navigation_across_sort_shuffle_refresh_and_loop_modes() {
+            let mut h = TestHarness::new(2);
+            h.core.cfg.lx_script = Some(fake_script(true));
+            let dir = h.temp_dir.clone().unwrap();
+            let local_0 = h.tracks[0].clone();
+
+            // Commit two online tracks into mixed queue: [local_0, local_1, online_a, online_b].
+            h.core.handle(Cmd::PlayTrack(local_0.id.clone())).unwrap();
+            h.core.handle(Cmd::PlayLink(wy_link(601, "OnlineA"), "128k".into())).unwrap();
+            let id_a = h.core.online.pending_id().unwrap();
+            h.core.complete_online(online::Completion::Prepared(id_a, Ok(fixture_audio())));
+            let online_a = h.core.state.track.clone().unwrap();
+
+            h.core.handle(Cmd::PlayLink(wy_link(602, "OnlineB"), "128k".into())).unwrap();
+            let id_b = h.core.online.pending_id().unwrap();
+            h.core.complete_online(online::Completion::Prepared(id_b, Ok(fixture_audio())));
+            let online_b = h.core.state.track.clone().unwrap();
+
+            // Sort descending and refresh local directory: online tracks, current track, and history stay intact.
+            h.core.handle(Cmd::Sort(crate::slint_types::SortKey::BySongName, false)).unwrap();
+            h.core.handle(Cmd::Refresh(dir)).unwrap();
+            assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&online_b.id));
+            assert!(h.core.queue.get(&online_a.id).is_some());
+            assert!(h.core.queue.get(&online_b.id).is_some());
+
+            // LoopMode::None at tail of non-shuffled order stops next; LoopMode::Playlist wraps.
+            h.core.handle(Cmd::SetLoopMode(LoopMode::None)).unwrap();
+            assert!(!h.core.state.can_next);
+            h.core.handle(Cmd::SetLoopMode(LoopMode::Playlist)).unwrap();
+            assert!(h.core.state.can_next);
+
+            // Shuffle keeps current online_b playable and Previous returns to online_a via history.
+            h.core.handle(Cmd::SetShuffle(true)).unwrap();
+            h.core.handle(Cmd::Previous).unwrap();
+            assert_eq!(h.core.online.nav_context(false).0.map(|t| &t.id), Some(&online_a.id));
+            let id_back = h.core.online.pending_id().unwrap();
+            h.core.complete_online(online::Completion::Prepared(id_back, Ok(fixture_audio())));
+            assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&online_a.id));
+
+            // LoopMode::Track on EOF re-requests online_a.
+            h.core.handle(Cmd::SetLoopMode(LoopMode::Track)).unwrap();
+            h.core.player.clear();
+            h.core.tick();
+            assert_eq!(h.core.online.nav_context(true).0.map(|t| &t.id), Some(&online_a.id));
+        }
+
+        #[test]
+        fn refresh_clearing_current_track_still_truncates_history_on_pending_previous() {
+            let mut h = TestHarness::new(2);
+            h.core.cfg.lx_script = Some(fake_script(true));
+            let local_0 = h.tracks[0].clone();
+
+            // Commit online A -> online B -> local_0, so back = [A, B], current = local_0.
+            h.core.handle(Cmd::PlayLink(wy_link(701, "HistA"), "128k".into())).unwrap();
+            let id_a = h.core.online.pending_id().unwrap();
+            h.core.complete_online(online::Completion::Prepared(id_a, Ok(fixture_audio())));
+            let track_a = h.core.state.track.clone().unwrap();
+
+            h.core.handle(Cmd::PlayLink(wy_link(702, "HistB"), "128k".into())).unwrap();
+            let id_b = h.core.online.pending_id().unwrap();
+            h.core.complete_online(online::Completion::Prepared(id_b, Ok(fixture_audio())));
+
+            h.core.handle(Cmd::PlayTrack(local_0.id.clone())).unwrap();
+
+            // Previous twice to skip B and target A.
+            h.core.handle(Cmd::Previous).unwrap();
+            h.core.handle(Cmd::Previous).unwrap();
+            let id_target_a = h.core.online.pending_id().unwrap();
+
+            // Refresh to empty dir deletes local_0 (state.track becomes None) while A is pending.
+            let empty_dir =
+                std::env::temp_dir().join(format!("sealmusic_empty_hist_{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&empty_dir);
+            h.core.handle(Cmd::Refresh(empty_dir.clone())).unwrap();
+            let _ = std::fs::remove_dir_all(&empty_dir);
+            assert!(h.core.state.track.is_none());
+
+            // Committing A must still truncate [A, B] from back so LoopMode::None has no previous.
+            h.core.handle(Cmd::SetLoopMode(LoopMode::None)).unwrap();
+            h.core.complete_online(online::Completion::Prepared(id_target_a, Ok(fixture_audio())));
+            assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&track_a.id));
+            assert!(!h.core.state.can_previous);
+        }
     }
 }

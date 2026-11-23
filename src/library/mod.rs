@@ -33,6 +33,8 @@ impl TrackId {
 #[derive(Clone, Debug, PartialEq)]
 pub enum TrackOrigin {
     Local(PathBuf),
+    #[cfg(target_os = "linux")]
+    Online(crate::online::OnlineTrack),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -67,9 +69,11 @@ impl Track {
         }
     }
 
-    pub fn path(&self) -> &Path {
+    pub fn local_path(&self) -> Option<&Path> {
         match &self.origin {
-            TrackOrigin::Local(path) => path,
+            TrackOrigin::Local(path) => Some(path),
+            #[cfg(target_os = "linux")]
+            TrackOrigin::Online(_) => None,
         }
     }
 }

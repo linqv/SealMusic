@@ -64,7 +64,8 @@
               : [],
           }
         }
-        emit({event: 'result', id: 0, value: sources})
+        const {rawScript, ...metadata} = currentScriptInfo
+        emit({event: 'result', id: 0, value: {sources, metadata}})
       } catch (err) {
         emit({event: 'error', id: 0, error: String(err)})
       }

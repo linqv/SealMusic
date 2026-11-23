@@ -24,3 +24,15 @@ export struct LyricItem {
     duration: float,
     text: string,
 }
+
+export enum OnlineIssue {
+    None,
+    InvalidLink,
+    NoScript,
+    NoQuality,
+    ScriptFile,
+    Initialization,
+    Resolve,
+    Transfer,
+    Decode,
+}

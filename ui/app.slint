@@ -1,3 +1,5 @@
+import { OnlineGlobal } from "online.slint";
+export { OnlineGlobal }
 import { Theme } from "theme.slint";
 import { Palette } from "std-widgets.slint";
 import { ControlPanel } from "control_panel.slint";
@@ -11,6 +13,7 @@ import { TitleBar } from "title_bar.slint";
 import { SettingsPanel } from "settings_panel.slint";
 import { SearchPanel } from "search_panel.slint";
 import {
+    OnlineIssue,
     LoopMode,
     LyricItem,
     SongInfo,
@@ -18,6 +21,7 @@ import {
 } from "types.slint";
 
 export {
+    OnlineIssue,
     LoopMode,
     LyricItem,
     SongInfo,
@@ -26,6 +30,7 @@ export {
 
 // === Group 1: Audio playback engine state ===
 export global PlaybackGlobal {
+    in property <bool> can-seek;
     in-out property <float> progress;
     in-out property <float> duration;
     in-out property <bool> paused;
@@ -186,11 +191,29 @@ export component MainWindow inherits Window {
             }
         }
 
-        HorizontalLayout {
+        loading-strip := Rectangle {
             x: 0px;
             y: title-bar.height;
             width: 100%;
-            height: root.height - title-bar.height;
+            height: OnlineGlobal.loading == "" ? 0px : 28px;
+            clip: true;
+            background: Theme.panel;
+            Text {
+                x: 12px;
+                width: parent.width - 24px;
+                text: OnlineGlobal.loading-paused
+                    ? @tr("Loading {} (paused)", OnlineGlobal.loading)
+                    : @tr("Loading {}", OnlineGlobal.loading);
+                color: Theme.text-secondary;
+                overflow: elide;
+            }
+        }
+
+        HorizontalLayout {
+            x: 0px;
+            y: title-bar.height + loading-strip.height;
+            width: 100%;
+            height: root.height - title-bar.height - loading-strip.height;
             spacing: 0px;
 
             sidebar := Sidebar {
@@ -235,6 +258,7 @@ export component MainWindow inherits Window {
                         }
 
                         ControlPanel {
+                            can-seek: PlaybackGlobal.can-seek;
                             max-height: 80px;
                             min-height: 50px;
                             preferred-height: 60px;

@@ -1,3 +1,4 @@
+import { OnlineGlobal } from "online.slint";
 import { Theme } from "theme.slint";
 import {
     Button,
@@ -117,6 +118,31 @@ export component SettingsPanel inherits Rectangle {
                         }
                     }
 
+                }
+            }
+
+            if OnlineGlobal.available: VerticalLayout {
+                spacing: 8px;
+                Text { text: @tr("LX music source"); color: Theme.text; font-weight: 600; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    Button {
+                        text: OnlineGlobal.importing ? @tr("Initializing…") : @tr("Import JS source…");
+                        enabled: !OnlineGlobal.importing;
+                        clicked => { OnlineGlobal.import-script(); }
+                    }
+                    if OnlineGlobal.installed: CheckBox {
+                        text: @tr("Enabled");
+                        checked <=> OnlineGlobal.enabled;
+                        enabled: !OnlineGlobal.importing;
+                        toggled => { OnlineGlobal.enable-script(self.checked); }
+                    }
+                }
+                if OnlineGlobal.installed: Text {
+                    text: OnlineGlobal.script-summary;
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
                 }
             }
 
