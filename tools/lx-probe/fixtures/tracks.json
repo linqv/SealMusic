@@ -1,0 +1,148 @@
+[
+  {
+    "source": "kw",
+    "action": "musicUrl",
+    "info": {
+      "type": "128k",
+      "musicInfo": {
+        "source": "kw",
+        "name": "P0",
+        "singer": "Fixture",
+        "songmid": "1001",
+        "albumId": "1",
+        "albumName": "P0",
+        "interval": "00:01",
+        "types": [
+          {
+            "type": "128k",
+            "size": "1.0M"
+          }
+        ],
+        "_types": {
+          "128k": {
+            "type": "128k",
+            "size": "1.0M"
+          }
+        }
+      }
+    }
+  },
+  {
+    "source": "kg",
+    "action": "musicUrl",
+    "info": {
+      "type": "128k",
+      "musicInfo": {
+        "source": "kg",
+        "name": "P0",
+        "singer": "Fixture",
+        "songmid": 1002,
+        "albumId": "1",
+        "albumName": "P0",
+        "interval": "00:01",
+        "types": [
+          {
+            "type": "128k",
+            "size": "1.0M",
+            "hash": "22222222222222222222222222222222"
+          }
+        ],
+        "_types": {
+          "128k": {
+            "type": "128k",
+            "size": "1.0M",
+            "hash": "22222222222222222222222222222222"
+          }
+        },
+        "hash": "11111111111111111111111111111111"
+      }
+    }
+  },
+  {
+    "source": "tx",
+    "action": "musicUrl",
+    "info": {
+      "type": "128k",
+      "musicInfo": {
+        "source": "tx",
+        "name": "P0",
+        "singer": "Fixture",
+        "songmid": "p0SongMid",
+        "albumId": "1",
+        "albumName": "P0",
+        "interval": "00:01",
+        "types": [
+          {
+            "type": "128k",
+            "size": "1.0M"
+          }
+        ],
+        "_types": {
+          "128k": {
+            "type": "128k",
+            "size": "1.0M"
+          }
+        },
+        "strMediaMid": "p0MediaMid",
+        "albumMid": "p0AlbumMid"
+      }
+    }
+  },
+  {
+    "source": "wy",
+    "action": "musicUrl",
+    "info": {
+      "type": "128k",
+      "musicInfo": {
+        "source": "wy",
+        "name": "Fade",
+        "singer": "Alan Walker",
+        "songmid": 29947420,
+        "albumId": "1",
+        "albumName": "P0",
+        "interval": "00:01",
+        "types": [
+          {
+            "type": "128k",
+            "size": "1.0M"
+          }
+        ],
+        "_types": {
+          "128k": {
+            "type": "128k",
+            "size": "1.0M"
+          }
+        }
+      }
+    }
+  },
+  {
+    "source": "mg",
+    "action": "musicUrl",
+    "info": {
+      "type": "128k",
+      "musicInfo": {
+        "source": "mg",
+        "name": "P0",
+        "singer": "Fixture",
+        "songmid": "60000000001",
+        "albumId": "1",
+        "albumName": "P0",
+        "interval": "00:01",
+        "types": [
+          {
+            "type": "128k",
+            "size": "1.0M"
+          }
+        ],
+        "_types": {
+          "128k": {
+            "type": "128k",
+            "size": "1.0M"
+          }
+        },
+        "copyrightId": "60000000001"
+      }
+    }
+  }
+]

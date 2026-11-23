@@ -75,7 +75,7 @@ Instructions for AI coding agents working in this repository.
 - **Add Slint component:** Create file in `ui/`, import in `ui/app.slint`, check `src/slint_types.rs` exports and `src/app.rs` wiring.
 
 ## Existing Docs
-- [P0_PLAN.md](P0_PLAN.md) — P0 trimming, refactoring, MPRIS2 design, and benchmark/verification record
+- [tools/lx-probe/README.md](tools/lx-probe/README.md) — LX custom source P0 probe and verification record
 - [README.md](README.md) — English overview
 - [README-zh.md](README-zh.md) — Chinese overview
 - [.agents/skills/i18n-update/SKILL.md](.agents/skills/i18n-update/SKILL.md) — i18n workflow

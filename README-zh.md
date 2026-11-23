@@ -36,4 +36,4 @@ playerctl -p sealmusic position 10+
 | Windows | `./packager/pack-nsis.ps1`、`./packager/pack-msi.ps1` |
 | macOS | `./packager/pack-dmg.sh` |
 
-Linux 包中的桌面入口和可执行文件使用 `sealmusic`。[P0 实施与实测记录](P0_PLAN.md)
+Linux 包中的桌面入口和可执行文件使用 `sealmusic`。

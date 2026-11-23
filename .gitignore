@@ -4,3 +4,5 @@ tmp*
 DLLs/*
 .omc
 docs
+DESIGN.md
+test-lxjs/

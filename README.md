@@ -38,4 +38,4 @@ Run `cargo run` for development, or `cargo build --locked --release` for a relea
 | Windows | `./packager/pack-nsis.ps1`, `./packager/pack-msi.ps1` |
 | macOS | `./packager/pack-dmg.sh` |
 
-The Linux packages install the desktop entry and executable as `sealmusic`. [P0 implementation and measurements](P0_PLAN.md)
+The Linux packages install the desktop entry and executable as `sealmusic`.
