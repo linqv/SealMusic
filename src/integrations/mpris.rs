@@ -259,11 +259,13 @@ fn build_metadata(
     let Ok(id) = TrackId::try_from(t.id.0.as_str()) else {
         return Metadata::default();
     };
-    let mut m = Metadata::builder()
-        .trackid(id)
-        .length(time(duration))
-        .title(t.title.clone())
-        .artist([t.artist.clone()]);
+    let mut m = Metadata::builder().trackid(id).title(t.title.clone()).artist([t.artist.clone()]);
+    if !t.album.is_empty() {
+        m = m.album(t.album.clone());
+    }
+    if !duration.is_zero() {
+        m = m.length(time(duration));
+    }
     if let Some(url) = art_url {
         m = m.art_url(url.to_owned());
     }
@@ -694,6 +696,7 @@ mod tests {
         );
         assert_eq!(online_meta.title(), Some("Online Song"));
         assert_eq!(online_meta.artist(), Some(vec!["Online Artist".into()]));
+        assert_eq!(online_meta.album(), Some("Online Album"));
         assert!(online_meta.art_url().is_none());
         assert!(online_meta.get_value(SYNCED_LYRICS_KEY).is_none());
     }
@@ -703,6 +706,7 @@ mod tests {
             "source": "wy",
             "name": "Online Song",
             "singer": "Online Artist",
+            "albumName": "Online Album",
             "songmid": 29947420,
             "interval": "03:20",
             "types": [{"type": "128k"}],

@@ -57,22 +57,22 @@ msgctxt "LyricsPanel"
 msgid "Title: {}"
 msgstr "歌曲：{}"
 
-#: ui/search_panel.slint:63
+#: ui/search_panel.slint:68
 msgctxt "SearchPanel"
 msgid "Search songs or artists..."
 msgstr "搜索歌曲或艺术家..."
 
-#: ui/search_panel.slint:85
+#: ui/search_panel.slint:116 ui/search_panel.slint:179
 msgctxt "SearchPanel"
 msgid "No results found"
 msgstr "未找到结果"
 
-#: ui/search_panel.slint:86
+#: ui/search_panel.slint:180
 msgctxt "SearchPanel"
 msgid "{} result(s) found"
 msgstr "找到 {} 个结果"
 
-#: ui/search_panel.slint:128
+#: ui/search_panel.slint:222
 msgctxt "SearchPanel"
 msgid "Type to search songs"
 msgstr "输入关键词搜索歌曲"
@@ -222,12 +222,12 @@ msgctxt "MainWindow"
 msgid "Loading {}"
 msgstr "正在加载 {}"
 
-#: ui/search_panel.slint:66
+#: ui/search_panel.slint:68
 msgctxt "SearchPanel"
 msgid "Search songs or paste an LX track link"
 msgstr "搜索歌曲或粘贴 LX 单曲链接"
 
-#: ui/search_panel.slint:90
+#: ui/search_panel.slint:135 ui/search_panel.slint:161
 msgctxt "SearchPanel"
 msgid "Play at {}"
 msgstr "以 {} 播放"
@@ -266,3 +266,68 @@ msgstr "打开更新链接"
 msgctxt "MainWindow"
 msgid "LX source update"
 msgstr "LX 音源更新"
+
+#: ui/online.slint:38
+msgctxt "OnlineGlobal"
+msgid "Kuwo"
+msgstr "酷我"
+
+#: ui/online.slint:39
+msgctxt "OnlineGlobal"
+msgid "Kugou"
+msgstr "酷狗"
+
+#: ui/online.slint:40
+msgctxt "OnlineGlobal"
+msgid "QQ Music"
+msgstr "QQ音乐"
+
+#: ui/online.slint:41
+msgctxt "OnlineGlobal"
+msgid "NetEase"
+msgstr "网易云"
+
+#: ui/online.slint:42
+msgctxt "OnlineGlobal"
+msgid "Migu"
+msgstr "咪咕"
+
+#: ui/search_panel.slint:91
+msgctxt "SearchPanel"
+msgid "Cancel"
+msgstr "取消"
+
+#: ui/search_panel.slint:91
+msgctxt "SearchPanel"
+msgid "Local library"
+msgstr "本地曲库"
+
+#: ui/search_panel.slint:109
+msgctxt "SearchPanel"
+msgid "Previous page"
+msgstr "上一页"
+
+#: ui/search_panel.slint:117
+msgctxt "SearchPanel"
+msgid "{} · Page {}"
+msgstr "{} · 第 {} 页"
+
+#: ui/search_panel.slint:124
+msgctxt "SearchPanel"
+msgid "Next page"
+msgstr "下一页"
+
+#: ui/search_panel.slint:133
+msgctxt "SearchPanel"
+msgid "Searching {}…"
+msgstr "正在搜索{}…"
+
+#: ui/search_panel.slint:134
+msgctxt "SearchPanel"
+msgid "{} search failed."
+msgstr "{}搜索失败。"
+
+#: ui/search_panel.slint:138
+msgctxt "SearchPanel"
+msgid "Retry"
+msgstr "重试"

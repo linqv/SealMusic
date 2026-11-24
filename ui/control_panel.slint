@@ -193,7 +193,7 @@ export component ControlPanel inherits Rectangle {
     private property <int> progress-secs: floor(max(0, root.progress));
     private property <int> duration-secs: floor(max(0, root.duration));
     private property <string> progress-text: root.format-duration(root.progress-secs);
-    private property <string> duration-text: root.format-duration(root.duration-secs);
+    private property <string> duration-text: root.duration > 0 ? root.format-duration(root.duration-secs) : "–:––";
 
     VerticalLayout {
         width: 100%;
@@ -201,7 +201,7 @@ export component ControlPanel inherits Rectangle {
         Slider {
             minimum: 0;
             enabled: root.can-seek;
-            maximum: root.duration;
+            maximum: root.duration > 0 ? root.duration : max(1, root.progress);
             value <=> root.progress;
             released(v) => {
                 root.dragging = false;

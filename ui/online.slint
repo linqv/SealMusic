@@ -1,7 +1,22 @@
-import { OnlineIssue } from "types.slint";
+import { OnlineIssue, SongInfo } from "types.slint";
+
+export struct CatalogRow {
+    song: SongInfo,
+    qualities: [string],
+}
 
 export global OnlineGlobal {
     in property <bool> available;
+    in property <string> catalog-source: "kw";
+    in property <string> catalog-query;
+    in property <int> catalog-page;
+    in property <bool> catalog-busy;
+    in property <bool> catalog-failed;
+    in property <bool> catalog-next;
+    in property <[CatalogRow]> catalog-rows;
+    callback search-catalog(string, string, int);
+    callback cancel-catalog();
+    callback play-catalog(string, string);
     in property <bool> installed;
     in-out property <bool> enabled;
     in property <bool> importing;
@@ -13,11 +28,21 @@ export global OnlineGlobal {
     in property <string> loading;
     in property <bool> loading-paused;
     pure callback is-link(string) -> bool;
+    pure callback is-blank(string) -> bool;
     in property <bool> local-playback;
     callback play-local-source(string);
     callback import-script();
     callback enable-script(bool);
     callback play-link(string, string);
+
+    public pure function source-name(source: string) -> string {
+        if source == "kw" { return @tr("Kuwo"); }
+        if source == "kg" { return @tr("Kugou"); }
+        if source == "tx" { return @tr("QQ Music"); }
+        if source == "wy" { return @tr("NetEase"); }
+        if source == "mg" { return @tr("Migu"); }
+        return source;
+    }
 
     public pure function issue-text(issue: OnlineIssue, detail: string) -> string {
         if issue == OnlineIssue.InvalidLink { return @tr("Invalid LX link or missing field: {}", detail); }

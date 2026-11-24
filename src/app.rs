@@ -184,7 +184,7 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
             }
             sync_progress_timer(ui, &sync.timer, &sync.state, &sync.timeline, &sync.scroll);
         }
-        Event::Details(details) => {
+        Event::Details(details, position) => {
             let cover = details
                 .cover
                 .map(|rgba| {
@@ -214,8 +214,12 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
             sync.scroll.last_y.set(0.);
             sync.scroll.allow_scroll.set(Instant::now());
             display.set_lyric_viewport_y(0.);
-            let pos = playback.get_progress();
-            display.set_active_lyric_index(find_active_lyric(&sync.timeline.borrow(), pos));
+            let pos = position.as_secs_f32();
+            if ui.get_current_page() == 2 {
+                sync_lyrics_view(ui, &sync.timeline, pos, &sync.scroll, true);
+            } else {
+                display.set_active_lyric_index(find_active_lyric(&sync.timeline.borrow(), pos));
+            }
         }
         Event::Library(dir, key, asc, tracks) => {
             display.set_song_dir(dir.display().to_shared_string());
@@ -226,6 +230,29 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
             log::info!("Library ready");
         }
         Event::Results(v) => display.set_search_results(model(v)),
+        #[cfg(target_os = "linux")]
+        Event::Catalog(view) => {
+            let lx = ui.global::<OnlineGlobal>();
+            if !view.source.is_empty() {
+                lx.set_catalog_source(view.source.into());
+            }
+            lx.set_catalog_query(view.query.into());
+            lx.set_catalog_page(view.page as i32);
+            lx.set_catalog_busy(view.busy);
+            lx.set_catalog_failed(view.failed);
+            lx.set_catalog_next(view.has_next);
+            let rows = view
+                .rows
+                .into_iter()
+                .map(|(track, qs)| crate::slint_types::CatalogRow {
+                    song: song(&track),
+                    qualities: slint::ModelRc::new(slint::VecModel::from(
+                        qs.into_iter().map(slint::SharedString::from).collect::<Vec<_>>(),
+                    )),
+                })
+                .collect::<Vec<_>>();
+            lx.set_catalog_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+        }
         #[cfg(target_os = "linux")]
         Event::Script(script, importing) => {
             let lx = ui.global::<OnlineGlobal>();
@@ -614,6 +641,19 @@ fn register_callbacks(
         let lx = ui.global::<OnlineGlobal>();
         lx.set_available(true);
         lx.on_is_link(|q| crate::online::is_link(q.as_str()));
+        lx.on_is_blank(|q| q.trim().is_empty());
+        let tx = controls.clone();
+        lx.on_search_catalog(move |source, q, page| {
+            if page > 0 {
+                tx.send(Cmd::SearchCatalog(source.into(), q.into(), page as u32));
+            }
+        });
+        let tx = controls.clone();
+        lx.on_cancel_catalog(move || tx.send(Cmd::CancelCatalog));
+        let tx = controls.clone();
+        lx.on_play_catalog(move |id, q| {
+            tx.send(Cmd::PlayCatalog(crate::library::TrackId(id.into()), q.into()))
+        });
         let tx = controls.clone();
         lx.on_import_script(move || {
             if let Some(path) = rfd::FileDialog::new().add_filter("JavaScript", &["js"]).pick_file()
@@ -650,7 +690,13 @@ fn register_callbacks(
     let state = sync.state.clone();
     let timeline = Rc::clone(&sync.timeline);
     let scroll = Rc::clone(&sync.scroll);
-    ui.on_page_changed(move |_| {
+    #[cfg(target_os = "linux")]
+    let catalog_controls = controls.clone();
+    ui.on_page_changed(move |_page| {
+        #[cfg(target_os = "linux")]
+        if _page != 1 {
+            catalog_controls.send(Cmd::AbortCatalogSearch);
+        }
         if let Some(ui) = weak.upgrade() {
             sync_visible_progress(&ui, &state, &timeline, &scroll, true);
         }

@@ -56,22 +56,22 @@ msgctxt "LyricsPanel"
 msgid "Title: {}"
 msgstr ""
 
-#: ui/search_panel.slint:63
+#: ui/search_panel.slint:68
 msgctxt "SearchPanel"
 msgid "Search songs or artists..."
 msgstr ""
 
-#: ui/search_panel.slint:85
+#: ui/search_panel.slint:116 ui/search_panel.slint:179
 msgctxt "SearchPanel"
 msgid "No results found"
 msgstr ""
 
-#: ui/search_panel.slint:86
+#: ui/search_panel.slint:180
 msgctxt "SearchPanel"
 msgid "{} result(s) found"
 msgstr ""
 
-#: ui/search_panel.slint:128
+#: ui/search_panel.slint:222
 msgctxt "SearchPanel"
 msgid "Type to search songs"
 msgstr ""
@@ -221,12 +221,12 @@ msgctxt "MainWindow"
 msgid "Loading {}"
 msgstr ""
 
-#: ui/search_panel.slint:66
+#: ui/search_panel.slint:68
 msgctxt "SearchPanel"
 msgid "Search songs or paste an LX track link"
 msgstr ""
 
-#: ui/search_panel.slint:90
+#: ui/search_panel.slint:135 ui/search_panel.slint:161
 msgctxt "SearchPanel"
 msgid "Play at {}"
 msgstr ""
@@ -264,4 +264,69 @@ msgstr ""
 #: ui/app.slint
 msgctxt "MainWindow"
 msgid "LX source update"
+msgstr ""
+
+#: ui/online.slint:38
+msgctxt "OnlineGlobal"
+msgid "Kuwo"
+msgstr ""
+
+#: ui/online.slint:39
+msgctxt "OnlineGlobal"
+msgid "Kugou"
+msgstr ""
+
+#: ui/online.slint:40
+msgctxt "OnlineGlobal"
+msgid "QQ Music"
+msgstr ""
+
+#: ui/online.slint:41
+msgctxt "OnlineGlobal"
+msgid "NetEase"
+msgstr ""
+
+#: ui/online.slint:42
+msgctxt "OnlineGlobal"
+msgid "Migu"
+msgstr ""
+
+#: ui/search_panel.slint:91
+msgctxt "SearchPanel"
+msgid "Cancel"
+msgstr ""
+
+#: ui/search_panel.slint:91
+msgctxt "SearchPanel"
+msgid "Local library"
+msgstr ""
+
+#: ui/search_panel.slint:109
+msgctxt "SearchPanel"
+msgid "Previous page"
+msgstr ""
+
+#: ui/search_panel.slint:117
+msgctxt "SearchPanel"
+msgid "{} · Page {}"
+msgstr ""
+
+#: ui/search_panel.slint:124
+msgctxt "SearchPanel"
+msgid "Next page"
+msgstr ""
+
+#: ui/search_panel.slint:133
+msgctxt "SearchPanel"
+msgid "Searching {}…"
+msgstr ""
+
+#: ui/search_panel.slint:134
+msgctxt "SearchPanel"
+msgid "{} search failed."
+msgstr ""
+
+#: ui/search_panel.slint:138
+msgctxt "SearchPanel"
+msgid "Retry"
 msgstr ""

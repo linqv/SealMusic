@@ -1,17 +1,28 @@
 use std::{
-    fs::File,
-    io::{BufReader, Seek, Write},
+    sync::OnceLock,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use reqwest::{Client, Response, StatusCode, Url};
-use rodio::Decoder;
 
-use super::{Result, Script, sanitize_log};
+use super::{PreparedAudio, Result, Script, sanitize_log, stream::download_and_decode};
 use crate::slint_types::OnlineIssue;
 
 const LIMIT: u64 = 256 * 1024 * 1024;
-const WRITE_BATCH: usize = 256 * 1024;
+
+fn media_client() -> Option<&'static Client> {
+    static CLIENT: OnceLock<Option<Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            Client::builder()
+                .connect_timeout(Duration::from_secs(15))
+                .read_timeout(Duration::from_secs(30))
+                .build()
+                .map_err(|e| log::warn!("Could not build media HTTP client: {e}"))
+                .ok()
+        })
+        .as_ref()
+}
 
 fn url_has_expired_param(url: &Url) -> bool {
     url.query_pairs().any(|(k, v)| {
@@ -95,107 +106,25 @@ async fn fetch_response(
     ready.ok_or_else(transfer)
 }
 
-async fn download_and_decode(
-    mut response: Response,
-    context: &str,
-    limit: u64,
-) -> Result<Decoder<BufReader<File>>> {
-    let transfer = || (OnlineIssue::Transfer, context.to_owned());
-    if response.content_length().is_some_and(|len| len > limit) {
-        log::warn!("Media response Content-Length exceeds limit ({context})");
-        return Err((OnlineIssue::Transfer, "256 MiB".into()));
-    }
-
-    // The decoder owns this anonymous file. Cancellation and sink replacement close it.
-    let mut file = tokio::task::spawn_blocking(tempfile::tempfile)
-        .await
-        .map_err(|e| {
-            log::warn!("Tempfile task failed ({context}): {e}");
-            transfer()
-        })?
-        .map_err(|e| {
-            log::warn!("Could not create media tempfile ({context}): {e}");
-            transfer()
-        })?;
-
-    let mut bytes = 0_u64;
-    let mut batch = Vec::with_capacity(WRITE_BATCH);
-    while let Some(chunk) = response.chunk().await.map_err(|e| {
-        log::warn!("Media stream error ({context}): {}", e.without_url());
-        transfer()
-    })? {
-        bytes += chunk.len() as u64;
-        if bytes > limit {
-            log::warn!("Media download exceeded limit ({context})");
-            return Err((OnlineIssue::Transfer, "256 MiB".into()));
-        }
-        batch.extend_from_slice(&chunk);
-        if batch.len() >= WRITE_BATCH {
-            let pending = std::mem::replace(&mut batch, Vec::with_capacity(WRITE_BATCH));
-            file = tokio::task::spawn_blocking(move || -> std::io::Result<File> {
-                file.write_all(&pending)?;
-                Ok(file)
-            })
-            .await
-            .map_err(|e| {
-                log::warn!("Media write task failed ({context}): {e}");
-                transfer()
-            })?
-            .map_err(|e| {
-                log::warn!("Media tempfile write error ({context}): {e}");
-                transfer()
-            })?;
-        }
-    }
-
-    let decode_context = context.to_owned();
-    tokio::task::spawn_blocking(move || -> Result<Decoder<BufReader<File>>> {
-        if !batch.is_empty() {
-            file.write_all(&batch).map_err(|e| {
-                log::warn!("Media tempfile write error ({decode_context}): {e}");
-                (OnlineIssue::Transfer, decode_context.clone())
-            })?;
-        }
-        file.rewind().map_err(|e| {
-            log::warn!("Media tempfile rewind error ({decode_context}): {e}");
-            (OnlineIssue::Transfer, decode_context.clone())
-        })?;
-        Decoder::try_from(file).map_err(|e| {
-            log::warn!("Audio decode failed ({decode_context}): {e}");
-            (OnlineIssue::Decode, decode_context)
-        })
-    })
-    .await
-    .map_err(|e| {
-        log::warn!("Audio decode task failed ({context}): {e}");
-        (OnlineIssue::Decode, context.to_owned())
-    })?
-}
-
 pub async fn prepare(
     script: Script,
     action: serde_json::Value,
     alert: lx_probe::AlertHandler,
-) -> Result<Decoder<BufReader<File>>> {
+    resume: bool,
+    finished: impl FnOnce() + Send + 'static,
+) -> Result<PreparedAudio> {
     let source = action["source"].as_str().unwrap_or_default();
     let context = action["info"]["type"]
         .as_str()
         .map(|q| format!("{source} · {q}"))
         .unwrap_or_else(|| source.to_owned());
-    let client = Client::builder()
-        .connect_timeout(Duration::from_secs(15))
-        .read_timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| {
-            log::warn!("Could not build media HTTP client: {e}");
-            (OnlineIssue::Transfer, context.clone())
-        })?;
+    let client = media_client().ok_or_else(|| (OnlineIssue::Transfer, context.clone()))?;
 
     // Drop the script worker subprocess as soon as we have a non-expired media response.
     let response = {
         let session = script.session(alert).await?;
         fetch_response(
-            &client,
+            client,
             &context,
             SessionResolver {
                 session,
@@ -206,13 +135,13 @@ pub async fn prepare(
         .await?
     };
 
-    download_and_decode(response, &context, LIMIT).await
+    download_and_decode(response, &context, LIMIT, resume, finished).await
 }
 
 #[cfg(test)]
 mod tests {
     use std::{
-        io::{BufRead, BufReader as StdBufReader},
+        io::{BufRead, BufReader as StdBufReader, Write},
         net::TcpListener,
         sync::{
             Arc,
@@ -220,8 +149,6 @@ mod tests {
         },
         thread,
     };
-
-    use rodio::Source;
 
     use super::*;
 
@@ -309,11 +236,90 @@ mod tests {
             )
             .await
             .unwrap();
-            download_and_decode(response, "wy · flac", LIMIT).await.unwrap()
+            let (done, finished) = futures_channel::oneshot::channel();
+            let prepared = download_and_decode(response, "wy · flac", LIMIT, false, move || {
+                let _ = done.send(());
+            })
+            .await
+            .unwrap();
+            finished.await.unwrap();
+            prepared
         });
         server.join().unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert!(decoder.total_duration().is_some_and(|d| !d.is_zero()));
+        assert!(decoder.source.total_duration().is_some_and(|d| !d.is_zero()));
+        let embedded = decoder.stream.as_ref().unwrap().take_details().unwrap();
+        assert_eq!(embedded.cover.unwrap().dimensions(), (2, 3));
+        assert_eq!(embedded.lyrics[0].text, "Embedded line");
+    }
+
+    // Keep the HTTP response open until the decoder has actually produced audio.
+    // A whole-file implementation cannot pass the gate.
+    #[test]
+    fn chunked_audio_plays_before_eof_and_detects_a_truncated_transfer() {
+        for truncated in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let (release, gate) = std::sync::mpsc::channel();
+            let server = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut reader = StdBufReader::new(socket.try_clone().unwrap());
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap() > 0 && line != "\r\n" {
+                    line.clear();
+                }
+                // 4s of 8kHz mono PCM. Send half of it with no Content-Length or Range.
+                let sample_bytes = 64_000u32;
+                let mut wav = b"RIFF".to_vec();
+                wav.extend((sample_bytes + 36).to_le_bytes());
+                wav.extend(b"WAVEfmt ");
+                wav.extend(16u32.to_le_bytes());
+                wav.extend([1, 0, 1, 0]);
+                wav.extend(8000u32.to_le_bytes());
+                wav.extend(16000u32.to_le_bytes());
+                wav.extend([2, 0, 16, 0]);
+                wav.extend(b"data");
+                wav.extend(sample_bytes.to_le_bytes());
+                wav.resize(44 + sample_bytes as usize / 2, 1);
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n",
+                    wav.len()
+                )
+                .unwrap();
+                socket.write_all(&wav).unwrap();
+                socket.write_all(b"\r\n").unwrap();
+                gate.recv_timeout(Duration::from_secs(5)).unwrap();
+                if !truncated {
+                    let tail = vec![1; sample_bytes as usize / 2];
+                    write!(socket, "{:x}\r\n", tail.len()).unwrap();
+                    socket.write_all(&tail).unwrap();
+                    socket.write_all(b"\r\n0\r\n\r\n").unwrap();
+                }
+            });
+            runtime().block_on(async {
+                let response = client().get(url).send().await.unwrap();
+                let (done, finished) = futures_channel::oneshot::channel();
+                let mut ready = download_and_decode(response, "kw", LIMIT, false, move || {
+                    let _ = done.send(());
+                })
+                .await
+                .unwrap();
+                assert!(ready.source.next().is_some());
+                let stream = ready.stream.as_ref().unwrap();
+                assert!(!stream.status().unwrap().0);
+                release.send(()).unwrap();
+                finished.await.unwrap();
+                if truncated {
+                    assert_eq!(stream.status().unwrap_err().0, OnlineIssue::Transfer);
+                } else {
+                    assert!(stream.status().unwrap().0);
+                    ready.source.try_seek(Duration::from_secs(1)).unwrap();
+                    assert!(ready.source.next().is_some());
+                }
+            });
+            server.join().unwrap();
+        }
     }
 
     #[test]
@@ -400,22 +406,28 @@ mod tests {
                 fetch_response(&c, "wy · 128k", FnResolver(|| Ok(format!("{origin}/cl"))))
                     .await
                     .unwrap();
-            let err_cl = download_and_decode(resp_cl, "wy · 128k", 128).await.err().unwrap();
+            let err_cl =
+                download_and_decode(resp_cl, "wy · 128k", 128, false, || {}).await.err().unwrap();
             assert_eq!(err_cl, (OnlineIssue::Transfer, "256 MiB".into()));
 
             let resp_stream =
                 fetch_response(&c, "wy · 128k", FnResolver(|| Ok(format!("{origin}/stream"))))
                     .await
                     .unwrap();
-            let err_stream =
-                download_and_decode(resp_stream, "wy · 128k", 128).await.err().unwrap();
+            let err_stream = download_and_decode(resp_stream, "wy · 128k", 128, false, || {})
+                .await
+                .err()
+                .unwrap();
             assert_eq!(err_stream, (OnlineIssue::Transfer, "256 MiB".into()));
 
             let resp_bad =
                 fetch_response(&c, "wy · 128k", FnResolver(|| Ok(format!("{origin}/bad"))))
                     .await
                     .unwrap();
-            let err_bad = download_and_decode(resp_bad, "wy · 128k", LIMIT).await.err().unwrap();
+            let err_bad = download_and_decode(resp_bad, "wy · 128k", LIMIT, false, || {})
+                .await
+                .err()
+                .unwrap();
             assert_eq!(err_bad, (OnlineIssue::Decode, "wy · 128k".into()));
         });
         server.join().unwrap();

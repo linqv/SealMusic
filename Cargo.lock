@@ -5386,9 +5386,11 @@ dependencies = [
 name = "sealmusic"
 version = "0.7.2"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "dark-light",
  "env_logger",
+ "flate2",
  "futures-channel",
  "futures-lite",
  "home",
@@ -5399,6 +5401,7 @@ dependencies = [
  "lx-probe",
  "mpris-server",
  "open",
+ "openssl",
  "rand 0.9.2",
  "rayon",
  "reqwest",

@@ -1,12 +1,24 @@
+mod details;
 mod local;
 mod media;
-use std::{collections::BTreeMap, io::Write, path::PathBuf, sync::Arc, time::Duration};
+mod search;
+mod stream;
+use std::{
+    collections::BTreeMap,
+    io::Write,
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
+pub use details::{fetch_details, inline_details};
 pub use local::{enhance, local_action};
 pub use media::prepare;
+pub use search::{SearchPage, is_search_source, search};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+pub use stream::{PreparedAudio, Stream};
 use url::Url;
 
 use crate::{
@@ -16,6 +28,21 @@ use crate::{
 
 pub type Failure = (OnlineIssue, String);
 pub type Result<T> = std::result::Result<T, Failure>;
+
+pub(super) fn api_client() -> Option<&'static reqwest::Client> {
+    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .read_timeout(Duration::from_secs(15))
+                .timeout(Duration::from_secs(20))
+                .build()
+                .map_err(|e| log::warn!("Could not build online HTTP client: {e}"))
+                .ok()
+        })
+        .as_ref()
+}
 
 pub fn is_link(query: &str) -> bool {
     query.trim_start().get(..10).is_some_and(|prefix| prefix.eq_ignore_ascii_case("lxmusic://"))
@@ -143,16 +170,18 @@ impl OnlineTrack {
             .and_then(|s| s.split_once(':'))
             .and_then(|(m, s)| m.parse::<u64>().ok()?.checked_mul(60)?.checked_add(s.parse().ok()?))
             .unwrap_or_default();
-        Ok(Arc::new(Track::new(
+        let mut track = Track::new(
             TrackId(format!("/dev/sealmusic/track/online_{hash:x}")),
             TrackOrigin::Online(self.clone()),
             info["name"].as_str().unwrap_or_default().into(),
             info["singer"].as_str().unwrap_or_default().into(),
             Duration::from_secs(duration),
-        )))
+        );
+        track.album = info["albumName"].as_str().unwrap_or_default().into();
+        Ok(Arc::new(track))
     }
 
-    fn info(&self) -> Value {
+    pub(super) fn info(&self) -> Value {
         serde_json::from_str(&self.music_info).unwrap_or(Value::Null)
     }
 
@@ -180,6 +209,55 @@ fn id_string(value: &Value) -> Option<String> {
         Value::Number(n) if n.is_u64() || n.is_i64() => Some(n.to_string()),
         _ => None,
     }
+}
+
+pub(super) fn decode_html(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_owned();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp + 1..];
+        let mut decoded = None;
+        if let Some(semi) = after.find(';')
+            && semi > 0
+            && semi <= 12
+        {
+            let entity = &after[..semi];
+            let replacement = match entity {
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "nbsp" => Some(' '),
+                "amp" => Some('&'),
+                _ if let Some(num) = entity.strip_prefix('#') => {
+                    let code = if let Some(hex) =
+                        num.strip_prefix('x').or_else(|| num.strip_prefix('X'))
+                    {
+                        u32::from_str_radix(hex, 16).ok()
+                    } else {
+                        num.parse::<u32>().ok()
+                    };
+                    code.and_then(char::from_u32)
+                }
+                _ => None,
+            };
+            if let Some(ch) = replacement {
+                out.push(ch);
+                rest = &after[semi + 1..];
+                decoded = Some(());
+            }
+        }
+        if decoded.is_none() {
+            out.push('&');
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

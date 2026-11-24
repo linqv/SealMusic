@@ -26,6 +26,14 @@ pub enum PlayerCommand {
     Sort(SortKey, bool),
     Search(String),
     #[cfg(target_os = "linux")]
+    SearchCatalog(String, String, u32),
+    #[cfg(target_os = "linux")]
+    CancelCatalog,
+    #[cfg(target_os = "linux")]
+    AbortCatalogSearch,
+    #[cfg(target_os = "linux")]
+    PlayCatalog(TrackId, String),
+    #[cfg(target_os = "linux")]
     ImportScript(PathBuf),
     #[cfg(target_os = "linux")]
     EnableScript(bool),

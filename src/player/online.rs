@@ -1,12 +1,9 @@
 use std::{
-    fs::File,
-    io::BufReader,
     path::PathBuf,
     sync::{Arc, Weak, mpsc},
     time::Duration,
 };
 
-use rodio::Decoder;
 use tokio::{runtime::Runtime, task::JoinHandle};
 
 use super::{
@@ -19,14 +16,14 @@ use crate::{
     slint_types::OnlineIssue,
 };
 
-type Audio = Decoder<BufReader<File>>;
-
 pub enum Completion {
+    Search(u64, Result<online::SearchPage, ()>),
     Details(u64, TrackId, Option<TrackDetails>),
     Alert(u64, lx_probe::UpdateAlert),
     Imported(u64, online::Result<Script>),
     ImportDrained(u64),
-    Prepared(u64, online::Result<Box<Audio>>),
+    Prepared(u64, online::Result<online::PreparedAudio>),
+    TransferEnded(u64),
 }
 
 struct Job {
@@ -53,8 +50,20 @@ struct Pending {
     position: Duration,
 }
 
+#[derive(Default, Clone)]
+pub struct CatalogView {
+    pub source: String,
+    pub query: String,
+    pub page: u32,
+    pub busy: bool,
+    pub failed: bool,
+    pub has_next: bool,
+    pub rows: Vec<(Arc<Track>, Vec<String>)>,
+}
+
 pub(super) struct Online {
-    runtime: Runtime,
+    search: Option<Job>,
+    catalog: CatalogView,
     tx: Weak<mpsc::Sender<Request>>,
     seq: u64,
     import: Option<Job>,
@@ -63,7 +72,11 @@ pub(super) struct Online {
     shown_alert: bool,
     details: Option<Job>,
     pending: Option<Pending>,
+    pub active_stream: Option<(u64, online::Stream)>,
     pub tracks: Vec<Arc<Track>>,
+    // Keep last so every Job and Stream drops (setting cancelled and waking
+    // Condvars) before Runtime::drop waits on blocking tasks.
+    runtime: Runtime,
 }
 
 impl Online {
@@ -76,12 +89,15 @@ impl Online {
                 .expect("LX runtime"),
             tx,
             seq: 0,
+            search: None,
+            catalog: CatalogView::default(),
             import: None,
             import_drain: None,
             import_alert: None,
             shown_alert: false,
             details: None,
             pending: None,
+            active_stream: None,
             tracks: vec![],
         }
     }
@@ -109,6 +125,10 @@ impl Online {
     #[cfg(test)]
     pub(super) fn import_id(&self) -> Option<u64> {
         self.import.as_ref().map(|j| j.id)
+    }
+    #[cfg(test)]
+    pub(super) fn search_id(&self) -> Option<u64> {
+        self.search.as_ref().map(|j| j.id)
     }
     pub fn nav_context(&self, next: bool) -> (Option<&Arc<Track>>, usize) {
         let Some(p) = &self.pending else {
@@ -236,33 +256,56 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         }
         self.rebuild_order();
         self.script_event();
+        self.catalog_event();
         self.results();
     }
 
     pub(super) fn enhance_details(&mut self, track: &Arc<Track>, details: &TrackDetails) {
         self.online.details.take();
-        let Some(script) = self.cfg.lx_script.as_ref() else {
-            return;
-        };
-        if track.local_path().is_none()
-            || !(details.lyrics.is_empty() && script.supports_local("lyric")
-                || details.cover.is_none() && script.supports_local("pic"))
-        {
-            return;
+        match &track.origin {
+            TrackOrigin::Local(_) => {
+                let Some(script) = self.cfg.lx_script.as_ref() else {
+                    return;
+                };
+                if !(details.lyrics.is_empty() && script.supports_local("lyric")
+                    || details.cover.is_none() && script.supports_local("pic"))
+                {
+                    return;
+                }
+                self.online.seq += 1;
+                let id = self.online.seq;
+                let tx = self.online.tx.clone();
+                let alert = self.online.alert_handler(id);
+                let (script, track, details) = (script.clone(), track.clone(), details.clone());
+                let handle = self.online.runtime.spawn(async move {
+                    let result = online::enhance(script, &track, details, alert).await;
+                    Completion::Details(id, track.id.clone(), result).send(tx);
+                });
+                self.online.details = Some(Job {
+                    id,
+                    handle,
+                });
+            }
+            TrackOrigin::Online(reference) => {
+                if self.state.deferred || (!details.lyrics.is_empty() && details.cover.is_some()) {
+                    return;
+                }
+                self.online.seq += 1;
+                let id = self.online.seq;
+                let tx = self.online.tx.clone();
+                let track_id = track.id.clone();
+                let reference = reference.clone();
+                let details = details.clone();
+                let handle = self.online.runtime.spawn(async move {
+                    let result = online::fetch_details(&reference, details).await;
+                    Completion::Details(id, track_id, result).send(tx);
+                });
+                self.online.details = Some(Job {
+                    id,
+                    handle,
+                });
+            }
         }
-        self.online.seq += 1;
-        let id = self.online.seq;
-        let tx = self.online.tx.clone();
-        let alert = self.online.alert_handler(id);
-        let (script, track, details) = (script.clone(), track.clone(), details.clone());
-        let handle = self.online.runtime.spawn(async move {
-            let result = online::enhance(script, &track, details, alert).await;
-            Completion::Details(id, track.id.clone(), result).send(tx);
-        });
-        self.online.details = Some(Job {
-            id,
-            handle,
-        });
     }
 
     fn link_info(&self, query: &str) -> online::Result<(OnlineTrack, Arc<Track>, Vec<String>)> {
@@ -279,6 +322,82 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             return Err((OnlineIssue::NoQuality, track.title.clone()));
         }
         Ok((reference, track, qualities))
+    }
+
+    pub(super) fn search_catalog(&mut self, source: String, query: String, page: u32) {
+        self.online.search.take();
+        if page == 0
+            || !online::is_search_source(&source)
+            || query.trim().is_empty()
+            || online::is_link(&query)
+        {
+            self.cancel_catalog();
+            return;
+        }
+        self.online.catalog = CatalogView {
+            source: source.clone(),
+            query: query.clone(),
+            page,
+            busy: true,
+            ..Default::default()
+        };
+        (self.publish)(Event::Catalog(self.online.catalog.clone()));
+        self.online.seq += 1;
+        let id = self.online.seq;
+        let tx = self.online.tx.clone();
+        let handle = self.online.runtime.spawn(async move {
+            Completion::Search(id, online::search(&source, query.trim(), page).await).send(tx);
+        });
+        self.online.search = Some(Job {
+            id,
+            handle,
+        });
+    }
+
+    pub(super) fn cancel_catalog(&mut self) {
+        self.online.search.take();
+        if self.online.catalog.page != 0 {
+            self.online.catalog = CatalogView::default();
+            (self.publish)(Event::Catalog(self.online.catalog.clone()));
+        }
+    }
+
+    pub(super) fn abort_catalog_search(&mut self) {
+        if self.online.search.take().is_some() && self.online.catalog.page != 0 {
+            self.online.catalog = CatalogView::default();
+            (self.publish)(Event::Catalog(self.online.catalog.clone()));
+        }
+    }
+
+    fn catalog_event(&mut self) {
+        if self.online.catalog.page == 0 {
+            return;
+        }
+        for (track, qualities) in &mut self.online.catalog.rows {
+            if let TrackOrigin::Online(reference) = &track.origin {
+                *qualities = reference.qualities(self.cfg.lx_script.as_ref());
+            }
+        }
+        (self.publish)(Event::Catalog(self.online.catalog.clone()));
+    }
+
+    pub(super) fn play_catalog(&mut self, id: TrackId, quality: String) -> online::Result<()> {
+        let Some((track, _)) = self.online.catalog.rows.iter().find(|(t, _)| t.id == id) else {
+            return Ok(());
+        };
+        let TrackOrigin::Online(mut reference) = track.origin.clone() else {
+            return Ok(());
+        };
+        reference.quality = quality;
+        self.begin_online(
+            reference.track()?,
+            Status::Playing,
+            None,
+            0,
+            false,
+            false,
+            Duration::ZERO,
+        )
     }
 
     pub(super) fn preview_link(&mut self) {
@@ -335,7 +454,11 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         let tx = self.online.tx.clone();
         let alert = self.online.alert_handler(id);
         let handle = self.online.runtime.spawn(async move {
-            let result = online::prepare(script, action, alert).await.map(Box::new);
+            let transfer_tx = tx.clone();
+            let result = online::prepare(script, action, alert, !position.is_zero(), move || {
+                Completion::TransferEnded(id).send(transfer_tx);
+            })
+            .await;
             Completion::Prepared(id, result).send(tx);
         });
         self.online.pending = Some(Pending {
@@ -363,8 +486,61 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         }
     }
 
+    // The transfer can finish before the decoder is committed. Check the shared
+    // outcome both at commit and when the completion message reaches the core.
+    pub(super) fn sync_stream(&mut self) -> bool {
+        let Some((_, stream)) = &self.online.active_stream else {
+            return true;
+        };
+        let status = stream.status();
+        let embedded = status.is_ok().then(|| stream.take_details()).flatten();
+        match status {
+            Ok((seekable, duration)) => {
+                self.state.input_seekable = seekable;
+                if let Some(duration) = duration {
+                    self.state.duration = duration;
+                }
+                if let Some(details) = embedded
+                    && let Some(track_id) = self.state.track.as_ref().map(|t| t.id.clone())
+                {
+                    self.merge_details(&track_id, details, false);
+                }
+                true
+            }
+            Err(err) => {
+                self.online.active_stream.take();
+                self.player.clear();
+                self.state.status = Status::Stopped;
+                self.state.input_seekable = false;
+                self.online_failure(err);
+                false
+            }
+        }
+    }
+
     pub(super) fn complete_online(&mut self, done: Completion) {
         match done {
+            Completion::TransferEnded(id)
+                if self.online.active_stream.as_ref().is_some_and(|(active, _)| *active == id) =>
+            {
+                self.sync_stream();
+            }
+            Completion::Search(id, result)
+                if self.online.search.as_ref().is_some_and(|j| j.id == id) =>
+            {
+                self.online.search.take();
+                let view = &mut self.online.catalog;
+                view.busy = false;
+                match result {
+                    Ok(page) => {
+                        view.has_next = page.has_next;
+                        view.rows = page.tracks.into_iter().map(|t| (t, vec![])).collect();
+                    }
+                    Err(()) => view.failed = true,
+                }
+                self.catalog_event();
+                return;
+            }
             Completion::Alert(id, alert)
                 if self.online.import.as_ref().is_some_and(|j| j.id == id) =>
             {
@@ -389,10 +565,10 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                 if self.online.details.as_ref().is_some_and(|j| j.id == id) =>
             {
                 self.online.details.take();
-                if let Some(details) = result
-                    && self.state.track.as_ref().is_some_and(|t| t.id == track_id)
-                {
-                    self.project_details(&track_id, details);
+                if let Some(details) = result {
+                    if !self.merge_details(&track_id, details, true) {
+                        return;
+                    }
                 } else {
                     return;
                 }
@@ -430,11 +606,20 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                     self.broadcast();
                     return;
                 }
+                let result = result.and_then(|prepared| {
+                    if let Some(stream) = &prepared.stream {
+                        stream.status()?;
+                    }
+                    Ok(prepared)
+                });
                 match result {
-                    Ok(source) => {
+                    Ok(prepared) => {
                         let old = self.state.track.clone();
-                        match self.commit(p.track.clone(), p.status, *source, p.position) {
+                        match self.commit(p.track.clone(), p.status, prepared.source, p.position) {
                             Ok(()) => {
+                                self.online.active_stream =
+                                    prepared.stream.map(|stream| (id, stream));
+                                self.sync_stream();
                                 if p.track.local_path().is_none() {
                                     self.online.upsert(p.track.clone());
                                     self.queue.upsert(p.track.clone());
@@ -481,7 +666,11 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         };
         self.online.upsert(track.clone());
         self.state.position = Duration::try_from_secs_f32(self.cfg.progress).unwrap_or_default();
-        self.state.duration = track.duration.max(self.state.position);
+        self.state.duration = if track.duration.is_zero() {
+            Duration::ZERO
+        } else {
+            track.duration.max(self.state.position)
+        };
         self.state.track = Some(track.clone());
         self.state.status = Status::Paused;
         self.state.deferred = true;

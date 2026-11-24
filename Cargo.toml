@@ -32,7 +32,10 @@ toml = "0.9.5"
 open = "5.4.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+base64 = "0.22"
+flate2 = "1"
 lx-probe = { path = "tools/lx-probe" }
+openssl = "0.10"
 serde_json = "1"
 sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

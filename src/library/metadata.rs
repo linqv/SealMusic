@@ -53,6 +53,10 @@ pub struct TrackDetails {
 
 #[cfg(target_os = "linux")]
 pub fn decode_network_cover(bytes: &[u8]) -> Option<image::RgbaImage> {
+    decode_cover(bytes)
+}
+
+fn decode_cover(bytes: &[u8]) -> Option<image::RgbaImage> {
     let mut reader =
         image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
     let mut limits = image::Limits::default();
@@ -62,10 +66,6 @@ pub fn decode_network_cover(bytes: &[u8]) -> Option<image::RgbaImage> {
     reader.limits(limits);
     let img = reader.decode().ok()?;
     Some(resize_cover(img))
-}
-
-fn decode_cover(bytes: &[u8]) -> Option<image::RgbaImage> {
-    Some(resize_cover(image::load_from_memory(bytes).ok()?))
 }
 
 fn resize_cover(img: image::DynamicImage) -> image::RgbaImage {
@@ -89,11 +89,8 @@ fn raw_cover_extension(mime: Option<&lofty::picture::MimeType>) -> Option<&'stat
     }
 }
 
-pub fn read_details(path: &Path) -> TrackDetails {
-    let tagged = Probe::open(path)
-        .ok()
-        .and_then(|probe| probe.options(ParseOptions::new().read_properties(false)).read().ok());
-    let tag = tagged.as_ref().and_then(|file| file.primary_tag().or_else(|| file.first_tag()));
+fn extract_details(tagged: Option<&lofty::file::TaggedFile>, path: Option<&Path>) -> TrackDetails {
+    let tag = tagged.and_then(|file| file.primary_tag().or_else(|| file.first_tag()));
     let picture = tag.and_then(|tag| {
         tag.get_picture_type(PictureType::CoverFront).or_else(|| tag.pictures().first())
     });
@@ -112,12 +109,32 @@ pub fn read_details(path: &Path) -> TrackDetails {
     let embedded = tag.and_then(|tag| {
         tag.get_string(ItemKey::UnsyncLyrics).or_else(|| tag.get_string(ItemKey::Lyrics))
     });
+    let lyrics = match path {
+        Some(path) => read_lyrics(path, embedded),
+        None => super::lyrics::parse_lyrics(embedded.unwrap_or_default()),
+    };
     TrackDetails {
         cover,
         #[cfg(target_os = "linux")]
         raw_cover,
-        lyrics: read_lyrics(path, embedded),
+        lyrics,
     }
+}
+
+pub fn read_details(path: &Path) -> TrackDetails {
+    let tagged = Probe::open(path)
+        .ok()
+        .and_then(|probe| probe.options(ParseOptions::new().read_properties(false)).read().ok());
+    extract_details(tagged.as_ref(), Some(path))
+}
+
+#[cfg(target_os = "linux")]
+pub fn read_details_from_reader<R: std::io::Read + std::io::Seek>(reader: R) -> TrackDetails {
+    let tagged = Probe::new(reader)
+        .guess_file_type()
+        .ok()
+        .and_then(|probe| probe.options(ParseOptions::new().read_properties(false)).read().ok());
+    extract_details(tagged.as_ref(), None)
 }
 
 #[cfg(test)]
@@ -145,5 +162,14 @@ mod tests {
         img.write_to(&mut Cursor::new(&mut encoded), image::ImageFormat::Png).unwrap();
         let decoded = decode_cover(&encoded).unwrap();
         assert_eq!(decoded.dimensions(), (MAX_COVER_DIMENSION, MAX_COVER_DIMENSION / 2));
+
+        // Craft a minimal PNG IHDR header declaring 9000x9000 (> 8192 limit) so decode_cover
+        // rejects it via image::Limits before allocating pixel buffers.
+        let mut oversized_png = vec![137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13];
+        oversized_png.extend_from_slice(b"IHDR");
+        oversized_png.extend_from_slice(&9000u32.to_be_bytes());
+        oversized_png.extend_from_slice(&9000u32.to_be_bytes());
+        oversized_png.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(decode_cover(&oversized_png).is_none());
     }
 }

@@ -43,6 +43,8 @@ struct PlayerCore<F> {
     mpris_available: Arc<AtomicBool>,
     #[cfg(target_os = "linux")]
     artwork: Option<tempfile::NamedTempFile>,
+    #[cfg(target_os = "linux")]
+    details: metadata::TrackDetails,
 }
 
 pub fn start(
@@ -139,6 +141,8 @@ fn run_worker(
         mpris_available,
         #[cfg(target_os = "linux")]
         artwork: None,
+        #[cfg(target_os = "linux")]
+        details: metadata::TrackDetails::default(),
     };
     if let Err(e) = core.refresh(core.cfg.song_dir.clone(), true) {
         core.error(e);
@@ -186,21 +190,24 @@ fn run_worker(
             core.tick();
         }
     }
+    core.sample_position();
     core.cfg.current_song_path =
         core.state.track.as_ref().and_then(|t| t.local_path().map(ToOwned::to_owned));
     #[cfg(target_os = "linux")]
     {
         core.cancel_load();
+        core.online.active_stream.take();
         core.cfg.current_online = core.state.track.as_ref().and_then(|t| match &t.origin {
             crate::library::TrackOrigin::Online(r) => Some(r.clone()),
             _ => None,
         });
     }
-    core.sample_position();
-    core.cfg.progress = core.state.position.as_secs_f32();
-    if core.state.status == Status::Stopped {
-        core.cfg.progress = 0.;
-    }
+    core.cfg.progress = if core.state.status == Status::Stopped {
+        0.
+    } else {
+        core.state.position.as_secs_f32()
+    };
+    core.player.clear();
     core.cfg.loop_mode = core.state.loop_mode;
     core.cfg.shuffle = core.state.shuffle;
     core.cfg.volume = core.state.volume;
@@ -214,6 +221,11 @@ impl<F: FnMut(Event)> PlayerCore<F> {
     }
     fn tick(&mut self) {
         if self.player.empty() {
+            #[cfg(target_os = "linux")]
+            if !self.sync_stream() {
+                self.broadcast();
+                return;
+            }
             #[cfg(target_os = "linux")]
             if self.online.loading() {
                 if !self.state.sink_empty {
@@ -236,7 +248,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             self.broadcast();
         } else {
             self.tick_count = (self.tick_count + 1) % POSITION_SYNC_TICKS;
-            if self.tick_count == 0 {
+            if self.tick_count == 0 || !self.state.input_seekable {
                 self.sample_position();
                 let mut shared = self.shared.write().unwrap();
                 shared.position = self.state.position;
@@ -250,8 +262,10 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         }
         self.state.position = if self.state.status == Status::Stopped {
             Duration::ZERO
-        } else if self.player.empty() {
+        } else if self.player.empty() && !self.state.duration.is_zero() {
             self.state.duration
+        } else if self.state.duration.is_zero() {
+            self.player.get_pos().max(self.state.position)
         } else {
             self.player.get_pos().min(self.state.duration)
         };
@@ -312,6 +326,8 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         (self.publish)(Event::Results(scan::search(&self.query, &self.tracks)));
     }
     fn clear_current_track(&mut self) {
+        #[cfg(target_os = "linux")]
+        self.online.active_stream.take();
         self.state.deferred = false;
         self.player.clear();
         self.state.status = Status::Stopped;
@@ -320,11 +336,12 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         #[cfg(target_os = "linux")]
         {
             self.online.cancel_details();
+            self.details = metadata::TrackDetails::default();
             self.artwork = None;
             self.state.art_url = None;
             self.state.synced_lyrics = None;
         }
-        (self.publish)(Event::Details(Default::default()));
+        (self.publish)(Event::Details(Default::default(), Duration::ZERO));
     }
     fn reset_and_restore_local(&mut self, startup: bool) -> Result<(), String> {
         self.stop();
@@ -378,47 +395,85 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         self.reset_and_restore_local(startup)
     }
     fn details(&mut self, t: &Arc<Track>) {
-        let details = t.local_path().map(metadata::read_details).unwrap_or_default();
+        let details = match &t.origin {
+            crate::library::TrackOrigin::Local(path) => metadata::read_details(path),
+            #[cfg(target_os = "linux")]
+            crate::library::TrackOrigin::Online(reference) => {
+                crate::online::inline_details(reference)
+            }
+        };
         #[cfg(target_os = "linux")]
         self.enhance_details(t, &details);
         self.project_details(&t.id, details);
     }
 
+    #[cfg(target_os = "linux")]
+    pub(super) fn merge_details(
+        &mut self,
+        track_id: &crate::library::TrackId,
+        incoming: metadata::TrackDetails,
+        prefer_incoming: bool,
+    ) -> bool {
+        if !self.state.track.as_ref().is_some_and(|t| &t.id == track_id) {
+            return false;
+        }
+        let mut merged = self.details.clone();
+        let mut changed = false;
+        if incoming.cover.is_some() && (prefer_incoming || merged.cover.is_none()) {
+            merged.cover = incoming.cover;
+            merged.raw_cover = incoming.raw_cover;
+            changed = true;
+        }
+        if !incoming.lyrics.is_empty() && (prefer_incoming || merged.lyrics.is_empty()) {
+            merged.lyrics = incoming.lyrics;
+            changed = true;
+        }
+        if changed {
+            self.project_details(track_id, merged);
+        }
+        changed
+    }
+
     fn project_details(&mut self, _id: &crate::library::TrackId, details: metadata::TrackDetails) {
         #[cfg(target_os = "linux")]
-        if self.mpris_available.load(Ordering::Acquire) {
-            self.artwork = if let Some(raw) = &details.raw_cover {
-                match crate::integrations::mpris::cache_cover_raw(&raw.bytes, raw.extension) {
-                    Ok(f) => Some(f),
-                    Err(e) => {
-                        log::warn!("Cover cache: {e}");
-                        None
-                    }
-                }
-            } else {
-                details.cover.as_ref().and_then(
-                    |img| match crate::integrations::mpris::cache_cover(img) {
+        {
+            self.details = details.clone();
+            if self.mpris_available.load(Ordering::Acquire) {
+                self.artwork = if let Some(raw) = &details.raw_cover {
+                    match crate::integrations::mpris::cache_cover_raw(&raw.bytes, raw.extension) {
                         Ok(f) => Some(f),
                         Err(e) => {
                             log::warn!("Cover cache: {e}");
                             None
                         }
-                    },
-                )
-            };
-            self.state.art_url = self
-                .artwork
-                .as_ref()
-                .and_then(|f| url::Url::from_file_path(f.path()).ok())
-                .map(|u| Arc::<str>::from(u.as_str()));
-            self.state.synced_lyrics =
-                crate::integrations::mpris::encode_synced_lyrics(_id, &details.lyrics);
-        } else {
-            self.artwork = None;
-            self.state.art_url = None;
-            self.state.synced_lyrics = None;
+                    }
+                } else {
+                    details.cover.as_ref().and_then(|img| {
+                        match crate::integrations::mpris::cache_cover(img) {
+                            Ok(f) => Some(f),
+                            Err(e) => {
+                                log::warn!("Cover cache: {e}");
+                                None
+                            }
+                        }
+                    })
+                };
+                self.state.art_url = self
+                    .artwork
+                    .as_ref()
+                    .and_then(|f| url::Url::from_file_path(f.path()).ok())
+                    .map(|u| Arc::<str>::from(u.as_str()));
+                self.state.synced_lyrics =
+                    crate::integrations::mpris::encode_synced_lyrics(_id, &details.lyrics);
+            } else {
+                self.artwork = None;
+                self.state.art_url = None;
+                self.state.synced_lyrics = None;
+            }
         }
-        (self.publish)(Event::Details(details));
+        self.sample_position();
+        let pos = self.pending_seek.unwrap_or(self.state.position);
+        (self.publish)(Event::Details(details, pos));
     }
     #[allow(clippy::too_many_arguments)]
     fn load(
@@ -475,18 +530,25 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         &mut self,
         t: Arc<Track>,
         status: Status,
-        source: rodio::Decoder<std::io::BufReader<std::fs::File>>,
+        source: impl Source + Send + 'static,
         position: Duration,
     ) -> Result<(), String> {
         let duration = source.total_duration().unwrap_or(t.duration);
         let changed = self.state.track.as_ref().is_none_or(|old| old.id != t.id);
+        let was_deferred = self.state.deferred;
         // A new sink starts at position zero, including while paused or stopped.
         let next = rodio::Player::connect_new(&self.mixer);
         next.pause();
         next.set_volume(self.state.volume);
+        #[cfg(target_os = "linux")]
+        self.online.active_stream.take();
         next.append(source);
         if !position.is_zero() {
-            let position = position.min(duration);
+            let position = if duration.is_zero() {
+                position
+            } else {
+                position.min(duration)
+            };
             if let Err(e) = next.try_seek(position) {
                 log::warn!("Restoring position for '{}': {e}", t.title);
                 if !changed && self.state.status != Status::Stopped {
@@ -499,6 +561,9 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             self.pending_seek = Some(Duration::ZERO);
         }
         self.player = next;
+        self.state.position = Duration::ZERO;
+        self.state.sampled_at = Instant::now();
+        self.state.input_seekable = true;
         self.state.deferred = false;
         self.state.duration = duration;
         self.state.track = Some(t.clone());
@@ -506,14 +571,17 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         if status == Status::Playing {
             self.player.play();
         }
-        if changed {
+        if changed || was_deferred {
             self.details(&t);
         }
         Ok(())
     }
     fn stop(&mut self) {
         #[cfg(target_os = "linux")]
-        self.cancel_load();
+        {
+            self.cancel_load();
+            self.online.active_stream.take();
+        }
         self.state.deferred = false;
         self.player.clear();
         self.state.status = Status::Stopped;
@@ -665,6 +733,28 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                 self.library_event();
             }
             #[cfg(target_os = "linux")]
+            Cmd::SearchCatalog(source, query, page) => {
+                self.search_catalog(source, query, page);
+                return Ok(());
+            }
+            #[cfg(target_os = "linux")]
+            Cmd::CancelCatalog => {
+                self.cancel_catalog();
+                return Ok(());
+            }
+            #[cfg(target_os = "linux")]
+            Cmd::AbortCatalogSearch => {
+                self.abort_catalog_search();
+                return Ok(());
+            }
+            #[cfg(target_os = "linux")]
+            Cmd::PlayCatalog(id, quality) => {
+                if let Err(err) = self.play_catalog(id, quality) {
+                    self.stop_if_drained();
+                    self.online_failure(err);
+                }
+            }
+            #[cfg(target_os = "linux")]
             Cmd::OnlineDone(done) => {
                 self.complete_online(done);
                 return Ok(());
@@ -810,6 +900,8 @@ mod tests {
                 mpris_available: Arc::new(AtomicBool::new(true)),
                 #[cfg(target_os = "linux")]
                 artwork: None,
+                #[cfg(target_os = "linux")]
+                details: metadata::TrackDetails::default(),
             };
             core.rebuild_order();
 
@@ -973,10 +1065,13 @@ mod tests {
             url.into()
         }
 
-        fn fixture_audio() -> Box<rodio::Decoder<std::io::BufReader<std::fs::File>>> {
+        fn fixture_audio() -> crate::online::PreparedAudio {
             let fixture =
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tagged.flac");
-            Box::new(local::decode(&fixture).unwrap())
+            crate::online::PreparedAudio {
+                source: Box::new(local::decode(&fixture).unwrap()),
+                stream: None,
+            }
         }
 
         #[test]
@@ -1095,11 +1190,14 @@ mod tests {
             reference.quality = "128k".into();
             h.core.cfg.current_online = Some(reference);
             h.core.cfg.lx_script = Some(fake_script(false));
+            h.core.cfg.progress = 12.5;
             h.events.lock().unwrap().clear();
 
             assert!(h.core.restore_online());
             assert!(h.core.state.deferred);
-            assert!(h.events.lock().unwrap().iter().any(|ev| matches!(ev, Event::Details(_))));
+            assert!(h.events.lock().unwrap().iter().any(
+                |ev| matches!(ev, Event::Details(_, pos) if *pos == Duration::from_secs_f32(12.5))
+            ));
 
             h.events.lock().unwrap().clear();
             h.core.handle(Cmd::Play).unwrap();
@@ -1496,6 +1594,153 @@ mod tests {
             h.core.complete_online(online::Completion::Prepared(id_target_a, Ok(fixture_audio())));
             assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&track_a.id));
             assert!(!h.core.state.can_previous);
+        }
+
+        #[test]
+        fn search_catalog_switches_sources_and_projects_active_script_qualities() {
+            let mut h = TestHarness::new(1);
+            let mut script = fake_script(true);
+            script.platforms.insert("kg".into(), vec!["320k".into()]);
+            h.core.cfg.lx_script = Some(script);
+
+            for source in ["kw", "kg", "tx", "wy", "mg"] {
+                h.events.lock().unwrap().clear();
+                h.core.handle(Cmd::SearchCatalog(source.into(), "Fade".into(), 1)).unwrap();
+                assert!(
+                    h.events
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|ev| matches!(ev, Event::Catalog(v) if v.source == source && v.page == 1 && v.busy))
+                );
+            }
+
+            // Leaving the Search page aborts an in-flight search, but preserves completed results.
+            h.core.handle(Cmd::SearchCatalog("wy".into(), "Fade".into(), 1)).unwrap();
+            let search_id = h.core.online.search_id().unwrap();
+            h.events.lock().unwrap().clear();
+            h.core.handle(Cmd::AbortCatalogSearch).unwrap();
+            assert!(
+                h.events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|ev| matches!(ev, Event::Catalog(v) if v.page == 0 && !v.busy))
+            );
+            h.core.complete_online(online::Completion::Search(
+                search_id,
+                Ok(crate::online::SearchPage {
+                    tracks: vec![],
+                    has_next: false,
+                }),
+            ));
+
+            h.core.handle(Cmd::SearchCatalog("wy".into(), "Fade".into(), 2)).unwrap();
+            let completed_id = h.core.online.search_id().unwrap();
+            let catalog_track =
+                OnlineTrack::parse(&wy_link(901, "CatalogSong")).unwrap().track().unwrap();
+            h.core.complete_online(online::Completion::Search(
+                completed_id,
+                Ok(crate::online::SearchPage {
+                    tracks: vec![catalog_track],
+                    has_next: true,
+                }),
+            ));
+            h.events.lock().unwrap().clear();
+            h.core.handle(Cmd::AbortCatalogSearch).unwrap();
+            assert!(h.events.lock().unwrap().is_empty());
+
+            // Invalid source cancels catalog view.
+            h.events.lock().unwrap().clear();
+            h.core.handle(Cmd::SearchCatalog("unknown".into(), "Fade".into(), 1)).unwrap();
+            assert!(
+                h.events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|ev| matches!(ev, Event::Catalog(v) if v.page == 0 && !v.busy))
+            );
+        }
+
+        #[test]
+        fn online_details_project_merge_and_wait_past_deferred_restore() {
+            let mut h = TestHarness::new(1);
+            h.core.cfg.lx_script = Some(fake_script(true));
+
+            // Deferred startup restore does NOT spawn network details until played.
+            let mut restored = OnlineTrack::parse(&wy_link(801, "DeferredOnline")).unwrap();
+            restored.quality = "128k".into();
+            h.core.cfg.current_online = Some(restored);
+            assert!(h.core.restore_online());
+            assert!(h.core.online.details_id().is_none());
+
+            // Pressing play and committing the previously deferred online track DOES schedule details.
+            h.core.handle(Cmd::Play).unwrap();
+            let pending_id = h.core.online.pending_id().unwrap();
+            h.core.complete_online(online::Completion::Prepared(pending_id, Ok(fixture_audio())));
+            let track_id = h.core.state.track.as_ref().unwrap().id.clone();
+            let details_id = h.core.online.details_id().unwrap();
+
+            // Simulate stream embedded cover arriving first, then API lyrics arriving via Completion::Details.
+            let embedded_cover = metadata::TrackDetails {
+                cover: Some(image::RgbaImage::new(4, 4)),
+                raw_cover: None,
+                lyrics: vec![],
+            };
+            assert!(h.core.merge_details(&track_id, embedded_cover, false));
+            assert!(h.core.state.art_url.is_some());
+            assert!(h.core.state.synced_lyrics.is_none());
+
+            let api_lyrics = metadata::TrackDetails {
+                cover: None,
+                raw_cover: None,
+                lyrics: vec![crate::library::lyrics::LyricLine {
+                    time: 1.5,
+                    duration: 2.0,
+                    text: "Online lyric".into(),
+                }],
+            };
+            h.core.complete_online(online::Completion::Details(
+                details_id,
+                track_id.clone(),
+                Some(api_lyrics),
+            ));
+            // Both embedded cover and API lyrics must be preserved together in state and MPRIS!
+            assert!(h.core.state.art_url.is_some());
+            assert!(
+                h.core.state.synced_lyrics.as_deref().is_some_and(|s| s.contains("Online lyric"))
+            );
+
+            // A subsequent embedded fallback with different lyrics must NOT overwrite API lyrics.
+            let late_embedded = metadata::TrackDetails {
+                cover: Some(image::RgbaImage::new(2, 2)),
+                raw_cover: None,
+                lyrics: vec![crate::library::lyrics::LyricLine {
+                    time: 0.0,
+                    duration: 1.0,
+                    text: "Fallback lyric".into(),
+                }],
+            };
+            assert!(!h.core.merge_details(&track_id, late_embedded, false));
+            assert!(
+                h.core.state.synced_lyrics.as_deref().is_some_and(|s| s.contains("Online lyric"))
+            );
+
+            // Switching from a sought track to another track must emit Details at 0s, not the old position.
+            let local = h.tracks[0].clone();
+            h.core.handle(Cmd::PlayTrack(local.id.clone())).unwrap();
+            h.core.handle(Cmd::SeekTo(None, Duration::from_secs(1))).unwrap();
+            h.events.lock().unwrap().clear();
+            h.core.handle(Cmd::PlayLink(wy_link(802, "FreshStart"), "128k".into())).unwrap();
+            let next_pending = h.core.online.pending_id().unwrap();
+            h.core.complete_online(online::Completion::Prepared(next_pending, Ok(fixture_audio())));
+            assert!(
+                h.events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|ev| matches!(ev, Event::Details(_, pos) if pos.is_zero()))
+            );
         }
     }
 }

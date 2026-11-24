@@ -9,9 +9,11 @@ export component LyricLine inherits Rectangle {
     in-out property <string> content;
     in-out property <bool> playing;
     in property <float> time;
+    in property <bool> can-seek;
     callback jump-to(float);
 
     area := TouchArea {
+        enabled: root.can-seek;
         clicked => { jump-to(root.time) }
     }
 
@@ -40,6 +42,7 @@ export component LyricsPanel inherits Rectangle {
     in property <[LyricItem]> lyrics;
     in property <int> active_lyric_index: -1;
     in-out property <length> lyric_viewport_y;
+    in property <bool> can-seek;
     callback jump-to(float);
     background: Theme.surface;
     HorizontalLayout {
@@ -93,6 +96,7 @@ export component LyricsPanel inherits Rectangle {
                 content-y <=> root.lyric_viewport_y;
                 for item[idx] in root.lyrics: LyricLine {
                     time: item.time;
+                    can-seek: root.can-seek;
                     content: item.text;
                     playing: idx == root.active_lyric_index;
                     jump-to(t) => { root.jump-to(t) }

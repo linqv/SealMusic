@@ -35,6 +35,7 @@ pub struct PlaybackState {
     pub can_play: bool,
     pub deferred: bool,
     pub sink_empty: bool,
+    pub input_seekable: bool,
     #[cfg(target_os = "linux")]
     pub art_url: Option<Arc<str>>,
     #[cfg(target_os = "linux")]
@@ -57,6 +58,7 @@ impl Default for PlaybackState {
             can_play: false,
             deferred: false,
             sink_empty: false,
+            input_seekable: true,
             #[cfg(target_os = "linux")]
             art_url: None,
             #[cfg(target_os = "linux")]
@@ -66,14 +68,22 @@ impl Default for PlaybackState {
 }
 impl PlaybackState {
     pub fn position_now(&self) -> Duration {
-        if self.status == Status::Playing && !self.sink_empty {
-            self.position.saturating_add(self.sampled_at.elapsed()).min(self.duration)
+        // Incomplete streams may stall between samples. Use Rodio's measured
+        // position there so UI and MPRIS don't count buffering time as playback.
+        if self.status == Status::Playing && !self.sink_empty && self.input_seekable {
+            let position = self.position.saturating_add(self.sampled_at.elapsed());
+            if self.duration.is_zero() {
+                position
+            } else {
+                position.min(self.duration)
+            }
         } else {
             self.position
         }
     }
     pub fn can_seek(&self) -> bool {
-        !self.deferred
+        self.input_seekable
+            && !self.deferred
             && !self.sink_empty
             && self.status != Status::Stopped
             && !self.duration.is_zero()
@@ -89,10 +99,12 @@ pub type SharedState = Arc<RwLock<PlaybackState>>;
 
 pub enum PlaybackEvent {
     State(Arc<PlaybackState>, Option<Duration>),
-    Details(TrackDetails),
+    Details(TrackDetails, Duration),
     Library(PathBuf, SortKey, bool, Vec<Arc<Track>>),
     Results(Vec<Arc<Track>>),
     Error(String),
+    #[cfg(target_os = "linux")]
+    Catalog(super::online::CatalogView),
     #[cfg(target_os = "linux")]
     Script(Option<crate::online::Script>, bool),
     #[cfg(target_os = "linux")]
@@ -327,6 +339,25 @@ mod tests {
         assert_eq!(q.step(Some(&c.id), true, LoopMode::None), None);
         assert_eq!(q.step(Some(&c.id), false, LoopMode::None), Some(b));
     }
+    #[test]
+    fn unknown_duration_advances_without_exposing_seek() {
+        let state = PlaybackState {
+            status: Status::Playing,
+            position: Duration::from_secs(4),
+            sampled_at: Instant::now() - Duration::from_secs(1),
+            ..Default::default()
+        };
+        assert!(state.position_now() >= Duration::from_secs(5));
+        assert!(!state.can_seek());
+        let buffering = PlaybackState {
+            duration: Duration::from_secs(8),
+            input_seekable: false,
+            ..state
+        };
+        assert!(!buffering.can_seek());
+        assert_eq!(buffering.position_now(), buffering.position);
+    }
+
     #[test]
     fn sink_empty_disables_seek_and_freezes_position() {
         let t = track("a");
