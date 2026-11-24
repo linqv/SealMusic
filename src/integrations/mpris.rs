@@ -32,7 +32,7 @@ use crate::{
     slint_types::LoopMode,
 };
 
-pub const SYNCED_LYRICS_KEY: &str = "com.gitee.gmg137.NeteaseCloudMusicGtk4:syncedLyrics";
+const SYNCED_LYRICS_KEY: &str = "com.gitee.gmg137.NeteaseCloudMusicGtk4:syncedLyrics";
 const MAX_SYNCED_LYRIC_LINES: usize = 2000;
 const MAX_SYNCED_LYRIC_BYTES: usize = 256 * 1024;
 const MAX_JS_SAFE_INTEGER: u64 = 9_007_199_254_740_991;

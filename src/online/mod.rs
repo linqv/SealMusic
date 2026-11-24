@@ -14,7 +14,7 @@ use std::{
 pub use details::{fetch_details, inline_details};
 pub use local::{enhance, local_action};
 pub use media::prepare;
-pub use search::{SearchPage, is_search_source, search};
+pub use search::{DEFAULT_SEARCH_SOURCE, SearchPage, is_search_source, search};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -83,6 +83,43 @@ fn find_http_scheme(s: &str) -> Option<usize> {
             None
         }
     })
+}
+
+const QUALITIES: [&str; 4] = ["128k", "320k", "flac", "flac24bit"];
+pub const DEFAULT_QUALITY: &str = "320k";
+
+pub fn is_quality(quality: &str) -> bool {
+    QUALITIES.contains(&quality)
+}
+
+fn quality_order(available: &[String], preferred: &str) -> Vec<String> {
+    let mut order = Vec::with_capacity(available.len());
+    let mut push_unique = |q: &str| {
+        if !q.is_empty()
+            && available.iter().any(|item| item == q)
+            && !order.iter().any(|existing| existing == q)
+        {
+            order.push(q.to_owned());
+        }
+    };
+
+    push_unique(preferred);
+
+    let target = QUALITIES
+        .iter()
+        .position(|&q| q == preferred)
+        .unwrap_or_else(|| QUALITIES.iter().position(|&q| q == DEFAULT_QUALITY).unwrap_or(1));
+
+    for &q in QUALITIES[..=target].iter().rev() {
+        push_unique(q);
+    }
+    for &q in &QUALITIES[target + 1..] {
+        push_unique(q);
+    }
+    for q in available {
+        push_unique(q);
+    }
+    order
 }
 
 fn field_error(platform: &str, field: &str) -> Failure {
@@ -185,6 +222,10 @@ impl OnlineTrack {
         serde_json::from_str(&self.music_info).unwrap_or(Value::Null)
     }
 
+    pub fn source(&self) -> String {
+        self.info()["source"].as_str().unwrap_or_default().into()
+    }
+
     pub fn qualities(&self, script: Option<&Script>) -> Vec<String> {
         let info = self.info();
         script
@@ -197,9 +238,13 @@ impl OnlineTrack {
             .collect()
     }
 
+    pub fn ordered_qualities(&self, script: Option<&Script>, preferred: &str) -> Vec<String> {
+        quality_order(&self.qualities(script), preferred)
+    }
+
     pub fn action(&self) -> Value {
         let info = self.info();
-        json!({"source":info["source"],"action":"musicUrl","info":{"type":self.quality,"musicInfo":info}})
+        json!({"source":info["source"],"action":"musicUrl","info":{"type":&self.quality,"musicInfo":info}})
     }
 }
 
@@ -478,5 +523,39 @@ mod tests {
         })))
         .unwrap_err();
         assert_eq!(missing_mg, (OnlineIssue::InvalidLink, "mg · copyrightId".into()));
+    }
+
+    #[test]
+    fn quality_order_prioritizes_preferred_then_downgrades_then_upgrades() {
+        let qs = |items: &[&str]| items.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+
+        let all = qs(&["128k", "320k", "flac", "flac24bit"]);
+        assert_eq!(quality_order(&all, "128k"), qs(&["128k", "320k", "flac", "flac24bit"]));
+        assert_eq!(quality_order(&all, "320k"), qs(&["320k", "128k", "flac", "flac24bit"]));
+        assert_eq!(quality_order(&all, "flac"), qs(&["flac", "320k", "128k", "flac24bit"]));
+        assert_eq!(quality_order(&all, "flac24bit"), qs(&["flac24bit", "flac", "320k", "128k"]));
+
+        // Downgrade-first before upgrade when preferred is missing.
+        assert_eq!(quality_order(&qs(&["128k", "flac"]), "320k"), qs(&["128k", "flac"]));
+        assert_eq!(
+            quality_order(&qs(&["128k", "320k", "flac24bit"]), "flac"),
+            qs(&["320k", "128k", "flac24bit"])
+        );
+
+        // Upgrade only when no lower canonical quality exists.
+        assert_eq!(quality_order(&qs(&["320k", "flac"]), "128k"), qs(&["320k", "flac"]));
+        assert_eq!(quality_order(&qs(&["flac24bit"]), "flac"), qs(&["flac24bit"]));
+
+        // Empty, duplicates, unknown/empty preferred, and non-canonical extras.
+        assert!(quality_order(&[], "320k").is_empty());
+        assert_eq!(
+            quality_order(&qs(&["flac", "128k", "flac", "ape"]), "unknown"),
+            qs(&["128k", "flac", "ape"])
+        );
+        assert_eq!(
+            quality_order(&qs(&["128k", "ape", "flac"]), "ape"),
+            qs(&["ape", "128k", "flac"])
+        );
+        assert_eq!(quality_order(&qs(&["flac", "128k"]), ""), qs(&["128k", "flac"]));
     }
 }

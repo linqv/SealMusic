@@ -12,7 +12,7 @@ use slint::{Model, ToSharedString, winit_030::WinitWindowAccessor};
 
 use crate::{
     config::Config,
-    library::Track,
+    library::{Track, TrackId},
     player::{
         self,
         command::{Controls, PlayerCommand as Cmd},
@@ -156,6 +156,7 @@ fn song(t: &Track) -> SongInfo {
         song_name: t.title.as_str().into(),
         singer: t.artist.as_str().into(),
         duration: format!("{:02}:{:02}", secs / 60, secs % 60).into(),
+        is_local: t.local_path().is_some(),
     }
 }
 fn model(tracks: Vec<Arc<Track>>) -> slint::ModelRc<SongInfo> {
@@ -205,7 +206,6 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
                     LyricItem {
                         time: l.time,
                         text: l.text.into(),
-                        duration: l.duration,
                     }
                 })
                 .collect();
@@ -224,33 +224,49 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
         Event::Library(dir, key, asc, tracks) => {
             display.set_song_dir(dir.display().to_shared_string());
             display.set_sort_key(key);
-            display.set_last_sort_key(key);
             display.set_sort_ascending(asc);
-            display.set_song_list(model(tracks));
+            display.set_library_songs(model(tracks));
             log::info!("Library ready");
         }
+        Event::Collections(selected, names, tracks, liked) => {
+            let collections = ui.global::<CollectionsGlobal>();
+            if collections.get_selected() != selected as i32 {
+                display.set_gallery_viewport_y(0.);
+            }
+            collections.set_names(slint::ModelRc::new(slint::VecModel::from(
+                std::iter::once(slint::SharedString::default())
+                    .chain(names.into_iter().map(Into::into))
+                    .collect::<Vec<_>>(),
+            )));
+            collections.set_selected(selected as i32);
+            collections.set_songs(model(tracks));
+            collections.set_liked_tracks(slint::ModelRc::new(slint::VecModel::from(
+                liked.into_iter().map(|id| id.0.into()).collect::<Vec<_>>(),
+            )));
+        }
+        Event::CollectionSaveFailed => ui.invoke_show_collection_save_error(),
         Event::Results(v) => display.set_search_results(model(v)),
         #[cfg(target_os = "linux")]
         Event::Catalog(view) => {
             let lx = ui.global::<OnlineGlobal>();
-            if !view.source.is_empty() {
-                lx.set_catalog_source(view.source.into());
-            }
+            lx.set_catalog_source(view.source.into());
             lx.set_catalog_query(view.query.into());
             lx.set_catalog_page(view.page as i32);
             lx.set_catalog_busy(view.busy);
             lx.set_catalog_failed(view.failed);
             lx.set_catalog_next(view.has_next);
-            let rows = view
+            lx.set_catalog_partial_failure(view.partial_failure);
+            let rows: Vec<_> = view
                 .rows
-                .into_iter()
-                .map(|(track, qs)| crate::slint_types::CatalogRow {
-                    song: song(&track),
-                    qualities: slint::ModelRc::new(slint::VecModel::from(
-                        qs.into_iter().map(slint::SharedString::from).collect::<Vec<_>>(),
-                    )),
+                .iter()
+                .map(|track| crate::slint_types::CatalogRow {
+                    song: song(track),
+                    source: match &track.origin {
+                        crate::library::TrackOrigin::Online(reference) => reference.source().into(),
+                        crate::library::TrackOrigin::Local(_) => Default::default(),
+                    },
                 })
-                .collect::<Vec<_>>();
+                .collect();
             lx.set_catalog_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
         }
         #[cfg(target_os = "linux")]
@@ -263,14 +279,12 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
             lx.set_script_summary(script.map(|s| s.summary()).unwrap_or_default().into());
         }
         #[cfg(target_os = "linux")]
-        Event::Link(query, title, qualities, issue) => {
+        Event::Link(query, title, issue, track) => {
             let lx = ui.global::<OnlineGlobal>();
             lx.set_preview_query(query.into());
             lx.set_preview_detail(title.into());
             lx.set_preview_issue(issue);
-            lx.set_qualities(slint::ModelRc::new(slint::VecModel::from(
-                qualities.into_iter().map(slint::SharedString::from).collect::<Vec<_>>(),
-            )));
+            lx.set_preview_track(track.as_ref().map(|t| t.id.0.as_str()).unwrap_or("").into());
             display.set_search_results(Default::default());
         }
         #[cfg(target_os = "linux")]
@@ -590,8 +604,34 @@ fn register_callbacks(
     can_run_hidden: Arc<AtomicBool>,
     sync: &UiSync,
 ) {
+    let collections = ui.global::<CollectionsGlobal>();
+    collections.on_contains_track(|tracks, id| tracks.iter().any(|track| track == id));
     let tx = controls.clone();
-    ui.on_play(move |t| tx.send(Cmd::PlayTrack(crate::library::TrackId(t.id.into()))));
+    collections.on_select_collection(move |index| tx.send(Cmd::SelectCollection(index as usize)));
+    let tx = controls.clone();
+    collections.on_create_collection(move |name| tx.send(Cmd::CreateCollection(name.into())));
+    let tx = controls.clone();
+    collections.on_toggle_like(move |id| tx.send(Cmd::ToggleLike(TrackId(id.into()))));
+    let weak = ui.as_weak();
+    collections.on_choose_collection(move |id| {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_show_collection_picker(id);
+        }
+    });
+    let tx = controls.clone();
+    collections.on_add_to_collection(move |index, id| {
+        tx.send(Cmd::AddToCollection(index as usize, TrackId(id.into())));
+    });
+    let tx = controls.clone();
+    collections.on_remove_from_collection(move |index, id| {
+        tx.send(Cmd::RemoveFromCollection(index as usize, TrackId(id.into())));
+    });
+    let tx = controls.clone();
+    collections.on_play_collection_track(move |index, id, via_lx| {
+        tx.send(Cmd::PlayCollectionTrack(index as usize, TrackId(id.into()), via_lx));
+    });
+    let tx = controls.clone();
+    ui.on_play(move |t| tx.send(Cmd::PlayTrack(TrackId(t.id.into()))));
     let tx = controls.clone();
     ui.on_toggle_play(move || tx.send(Cmd::TogglePlayPause));
     let tx = controls.clone();
@@ -651,9 +691,7 @@ fn register_callbacks(
         let tx = controls.clone();
         lx.on_cancel_catalog(move || tx.send(Cmd::CancelCatalog));
         let tx = controls.clone();
-        lx.on_play_catalog(move |id, q| {
-            tx.send(Cmd::PlayCatalog(crate::library::TrackId(id.into()), q.into()))
-        });
+        lx.on_play_catalog(move |id| tx.send(Cmd::PlayCatalog(crate::library::TrackId(id.into()))));
         let tx = controls.clone();
         lx.on_import_script(move || {
             if let Some(path) = rfd::FileDialog::new().add_filter("JavaScript", &["js"]).pick_file()
@@ -668,7 +706,9 @@ fn register_callbacks(
         let tx = controls.clone();
         lx.on_enable_script(move |enabled| tx.send(Cmd::EnableScript(enabled)));
         let tx = controls.clone();
-        lx.on_play_link(move |link, quality| tx.send(Cmd::PlayLink(link.into(), quality.into())));
+        lx.on_play_link(move |link| tx.send(Cmd::PlayLink(link.into())));
+        let tx = controls.clone();
+        lx.on_set_quality(move |quality| tx.send(Cmd::SetOnlineQuality(quality.into())));
     }
     ui.on_select_song_dir(move || {
         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
@@ -790,17 +830,13 @@ fn register_callbacks(
 }
 
 /// Center the window on the current monitor's work area (avoids taskbar/dock).
-/// Returns `true` if centering was applied, `false` if the window wasn't ready yet.
-fn center_window(ui: &MainWindow) -> bool {
+fn center_window(ui: &MainWindow) {
     let result = ui.window().with_winit_window(|w| {
         let window_size = w.inner_size();
         if window_size.width == 0 || window_size.height == 0 {
             return None;
         }
-        let monitor = match w.current_monitor() {
-            Some(m) => m,
-            None => return None,
-        };
+        let monitor = w.current_monitor()?;
         let monitor_size = monitor.size();
         let monitor_pos = monitor.position();
         let x = monitor_pos.x + (monitor_size.width as i32 - window_size.width as i32) / 2;
@@ -811,9 +847,6 @@ fn center_window(ui: &MainWindow) -> bool {
     if let Some(Some((x, y))) = result {
         ui.window().set_position(slint::PhysicalPosition::new(x, y));
         log::info!("window centered at ({}, {})", x, y);
-        true
-    } else {
-        false
     }
 }
 
@@ -867,6 +900,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let _ = slint::select_bundled_translation(&cfg.lang);
     display.set_song_dir(cfg.song_dir.display().to_shared_string());
     display.set_follow_system_theme(cfg.follow_system_theme);
+    #[cfg(target_os = "linux")]
+    {
+        let lx = ui.global::<OnlineGlobal>();
+        lx.set_quality(cfg.online_quality.as_str().into());
+        lx.set_search_source(cfg.online_search_source.as_str().into());
+    }
     ui.invoke_set_light_theme(cfg.light_ui);
     display.set_app_font_family(
         if cfg!(windows) {
@@ -918,7 +957,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             if let Event::State(s, seeked) = &event {
                 let _ = desktop.send((Arc::clone(s), *seeked));
             }
-            let restore = if matches!(event, Event::Library(..)) {
+            let restore = if matches!(event, Event::Collections(..)) {
                 scroll_y.take()
             } else {
                 None
@@ -961,6 +1000,18 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     cfg.current_page = ui.get_current_page();
     cfg.sidebar_expanded = ui.get_sidebar_expanded();
     cfg.gallery_viewport_y = display.get_gallery_viewport_y();
+    #[cfg(target_os = "linux")]
+    {
+        let lx = ui.global::<OnlineGlobal>();
+        let quality: String = lx.get_quality().into();
+        if crate::online::is_quality(&quality) {
+            cfg.online_quality = quality;
+        }
+        let source: String = lx.get_search_source().into();
+        if crate::online::is_search_source(&source) {
+            cfg.online_search_source = source;
+        }
+    }
     cfg.save()?;
     run?;
     Ok(())

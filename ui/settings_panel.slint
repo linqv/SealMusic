@@ -5,31 +5,35 @@ import {
     CheckBox,
 } from "std-widgets.slint";
 
-component LangButton inherits Rectangle {
-    in property <string> lang-code;
-    in property <string> current-lang;
+component ChoiceButton inherits Rectangle {
+    in property <string> value;
+    in property <string> current-value;
     in property <string> text;
     callback clicked(string);
     border-radius: 4px;
     border-width: 1px;
-    border-color: lang-code == current-lang ? Theme.accent : Theme.border;
-    background: lang-code == current-lang ? Theme.accent : Theme.hover;
+    border-color: value == current-value ? Theme.accent : Theme.border;
+    background: value == current-value ? Theme.accent : Theme.hover;
 
     HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
+        padding-left: 10px;
+        padding-right: 10px;
         padding-top: 4px;
         padding-bottom: 4px;
         alignment: center;
         Text {
             text: root.text;
-            color: lang-code == current-lang ? Theme.surface : Theme.text;
+            color: value == current-value ? Theme.surface : Theme.text;
             font-size: 13px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
         }
     }
 
     TouchArea {
-        clicked => { root.clicked(lang-code); }
+        mouse-cursor: pointer;
+        clicked => { root.clicked(value); }
     }
 }
 
@@ -121,28 +125,114 @@ export component SettingsPanel inherits Rectangle {
                 }
             }
 
-            if OnlineGlobal.available: VerticalLayout {
-                spacing: 8px;
-                Text { text: @tr("LX music source"); color: Theme.text; font-weight: 600; }
-                HorizontalLayout {
-                    spacing: 8px;
-                    alignment: start;
-                    Button {
-                        text: OnlineGlobal.importing ? @tr("Initializing…") : @tr("Import JS source…");
-                        enabled: !OnlineGlobal.importing;
-                        clicked => { OnlineGlobal.import-script(); }
+            if OnlineGlobal.available: Rectangle {
+                background: Theme.panel;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: Theme.border;
+
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 12px;
+
+                    Text {
+                        text: @tr("LX music source");
+                        font-size: 12px;
+                        font-weight: 600;
+                        color: Theme.text-tertiary;
+                        letter-spacing: 0.3px;
                     }
-                    if OnlineGlobal.installed: CheckBox {
-                        text: @tr("Enabled");
-                        checked <=> OnlineGlobal.enabled;
-                        enabled: !OnlineGlobal.importing;
-                        toggled => { OnlineGlobal.enable-script(self.checked); }
+
+                    Rectangle {
+                        height: 1px;
+                        background: Theme.divider;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        Button {
+                            text: OnlineGlobal.importing ? @tr("Initializing…") : @tr("Import JS source…");
+                            enabled: !OnlineGlobal.importing;
+                            clicked => { OnlineGlobal.import-script(); }
+                        }
+                        if OnlineGlobal.installed: CheckBox {
+                            text: @tr("Enabled");
+                            checked <=> OnlineGlobal.enabled;
+                            enabled: !OnlineGlobal.importing;
+                            toggled => { OnlineGlobal.enable-script(self.checked); }
+                        }
+                    }
+
+                    if OnlineGlobal.installed: Text {
+                        text: OnlineGlobal.script-summary;
+                        color: Theme.text-secondary;
+                        wrap: word-wrap;
+                    }
+
+                    VerticalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: @tr("Preferred audio quality");
+                            font-size: 13px;
+                            color: Theme.text-secondary;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            for q in ["128k", "320k", "flac", "flac24bit"]: ChoiceButton {
+                                value: q;
+                                current-value: OnlineGlobal.quality;
+                                text: OnlineGlobal.quality-name(q);
+                                clicked(code) => {
+                                    OnlineGlobal.quality = code;
+                                    OnlineGlobal.set-quality(code);
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: @tr("Used first when playing online tracks; switches automatically if unavailable.");
+                            font-size: 12px;
+                            color: Theme.text-tertiary;
+                            wrap: word-wrap;
+                        }
                     }
                 }
-                if OnlineGlobal.installed: Text {
-                    text: OnlineGlobal.script-summary;
-                    color: Theme.text-secondary;
-                    wrap: word-wrap;
+            }
+
+            if OnlineGlobal.available: Rectangle {
+                background: Theme.panel;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: Theme.border;
+
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 8px;
+
+                    Text {
+                        text: @tr("Online search source");
+                        font-size: 12px;
+                        font-weight: 600;
+                        color: Theme.text-tertiary;
+                        letter-spacing: 0.3px;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        for source in ["kw", "kg", "tx", "wy", "mg", "all"]: ChoiceButton {
+                            value: source;
+                            current-value: OnlineGlobal.search-source;
+                            text: OnlineGlobal.source-name(source);
+                            clicked(code) => {
+                                if OnlineGlobal.search-source != code {
+                                    OnlineGlobal.search-source = code;
+                                    OnlineGlobal.cancel-catalog();
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -190,9 +280,9 @@ export component SettingsPanel inherits Rectangle {
 
                         HorizontalLayout {
                             spacing: 8px;
-                            for lc[i] in ["", "zh_CN"]: LangButton {
-                                lang-code: lc;
-                                current-lang: root.lang;
+                            for lc in ["", "zh_CN"]: ChoiceButton {
+                                value: lc;
+                                current-value: root.lang;
                                 text: lc == "" ? "English" : "中文";
                                 clicked(code) => { root.lang = code; root.set_lang(code); }
                             }

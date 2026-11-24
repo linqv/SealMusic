@@ -1,0 +1,189 @@
+import { Button, LineEdit, ListView } from "std-widgets.slint";
+import { Icon, IconDisplay, IconSet } from "@lucide";
+import { Theme } from "theme.slint";
+import { SongInfo } from "types.slint";
+
+export global CollectionsGlobal {
+    in property <[string]> names: [""];
+    in property <int> selected;
+    in property <[SongInfo]> songs;
+    in property <[string]> liked-tracks;
+    pure callback contains-track([string], string) -> bool;
+    callback select-collection(int);
+    callback create-collection(string);
+    callback toggle-like(string);
+    callback choose-collection(string);
+    callback add-to-collection(int, string);
+    callback remove-from-collection(int, string);
+    callback play-collection-track(int, string, bool);
+
+    public pure function display-name(index: int, name: string) -> string {
+        return index == 0 ? @tr("My Likes") : name;
+    }
+
+    public pure function is-liked(track: string) -> bool {
+        return track != "" && root.contains-track(root.liked-tracks, track);
+    }
+}
+
+component CollectionIconButton inherits Rectangle {
+    in property <Icon> icon;
+    in property <string> label;
+    in property <bool> active;
+    callback clicked();
+    width: 32px;
+    height: 28px;
+    border-radius: 4px;
+    background: mouse.pressed ? Theme.press : mouse.has-hover ? Theme.hover : transparent;
+
+    mouse := TouchArea {
+        mouse-cursor: pointer;
+        accessible-role: button;
+        accessible-label: root.label;
+        accessible-action-default => { root.clicked(); }
+        clicked => { root.clicked(); }
+        Tooltip {
+            text: @markdown("\{root.label}");
+        }
+    }
+    IconDisplay {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        icon: root.icon;
+        size: 16px;
+        stroke: root.active ? Theme.accent : Theme.text-secondary;
+        stroke-fill: root.active ? Theme.accent : transparent;
+    }
+}
+
+export component LikeButton inherits CollectionIconButton {
+    in property <string> track;
+    icon: IconSet.Heart;
+    active: CollectionsGlobal.is-liked(root.track);
+    label: root.active ? @tr("Unlike") : @tr("Like");
+    clicked => { CollectionsGlobal.toggle-like(root.track); }
+}
+
+export component TrackActions inherits HorizontalLayout {
+    in property <string> track;
+    in property <int> collection: -1;
+    alignment: start;
+
+    LikeButton {
+        track: root.track;
+    }
+    CollectionIconButton {
+        icon: IconSet.ListPlus;
+        label: @tr("Add to collection");
+        clicked => { CollectionsGlobal.choose-collection(root.track); }
+    }
+    if root.collection > 0: CollectionIconButton {
+        icon: IconSet.ListMinus;
+        label: @tr("Remove from collection");
+        clicked => { CollectionsGlobal.remove-from-collection(root.collection, root.track); }
+    }
+}
+
+export component CollectionSelector inherits Rectangle {
+    width: 168px;
+    background: Theme.panel;
+    private property <bool> creating;
+    private property <string> name;
+    callback request-focus();
+
+    function create() {
+        if root.name != "" {
+            CollectionsGlobal.create-collection(root.name);
+            root.name = "";
+            root.creating = false;
+            root.request-focus();
+        }
+    }
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 8px;
+        new-collection := Button {
+            text: root.creating ? @tr("Cancel") : @tr("New collection");
+            clicked => { root.creating = !root.creating; }
+        }
+        if root.creating: LineEdit {
+            placeholder-text: @tr("Collection name");
+            text <=> root.name;
+            accepted => { root.create(); }
+        }
+        if root.creating: Button {
+            primary: true;
+            text: @tr("Create");
+            enabled: root.name != "";
+            clicked => { root.create(); }
+        }
+
+        ListView {
+            vertical-stretch: 1;
+            for name[index] in CollectionsGlobal.names: Rectangle {
+                height: 36px;
+                border-radius: 6px;
+                background: index == CollectionsGlobal.selected || item.has-hover ? Theme.hover : transparent;
+                Text {
+                    x: 9px;
+                    width: parent.width - 18px;
+                    height: 100%;
+                    text: CollectionsGlobal.display-name(index, name);
+                    vertical-alignment: center;
+                    overflow: elide;
+                    color: index == CollectionsGlobal.selected ? Theme.accent : Theme.text;
+                    font-weight: index == CollectionsGlobal.selected ? 600 : 400;
+                }
+                item := TouchArea {
+                    mouse-cursor: pointer;
+                    accessible-role: button;
+                    accessible-label: CollectionsGlobal.display-name(index, name);
+                    accessible-action-default => { self.clicked(); }
+                    clicked => {
+                        CollectionsGlobal.select-collection(index);
+                        root.request-focus();
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component CollectionPicker inherits Rectangle {
+    callback picked(int);
+    callback dismissed();
+    background: Theme.surface;
+    border-color: Theme.border;
+    border-width: 1px;
+    border-radius: 8px;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 8px;
+        Text {
+            text: @tr("Add to collection");
+            font-weight: 600;
+            color: Theme.text;
+        }
+        ListView {
+            vertical-stretch: 1;
+            for name[index] in CollectionsGlobal.names: Rectangle {
+                height: 36px;
+                Button {
+                    width: 100%;
+                    height: 32px;
+                    text: CollectionsGlobal.display-name(index, name);
+                    clicked => { root.picked(index); }
+                }
+            }
+        }
+        HorizontalLayout {
+            alignment: end;
+            Button {
+                text: @tr("Cancel");
+                clicked => { root.dismissed(); }
+            }
+        }
+    }
+}

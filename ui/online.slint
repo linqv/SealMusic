@@ -2,29 +2,32 @@ import { OnlineIssue, SongInfo } from "types.slint";
 
 export struct CatalogRow {
     song: SongInfo,
-    qualities: [string],
+    source: string,
 }
 
 export global OnlineGlobal {
     in property <bool> available;
-    in property <string> catalog-source: "kw";
+    in-out property <string> search-source;
+    in property <string> catalog-source;
     in property <string> catalog-query;
     in property <int> catalog-page;
     in property <bool> catalog-busy;
     in property <bool> catalog-failed;
     in property <bool> catalog-next;
+    in property <bool> catalog-partial-failure;
     in property <[CatalogRow]> catalog-rows;
     callback search-catalog(string, string, int);
     callback cancel-catalog();
-    callback play-catalog(string, string);
+    callback play-catalog(string);
     in property <bool> installed;
     in-out property <bool> enabled;
+    in-out property <string> quality: "320k";
     in property <bool> importing;
     in property <string> script-summary;
     in property <string> preview-query;
     in property <OnlineIssue> preview-issue;
     in property <string> preview-detail;
-    in property <[string]> qualities;
+    in property <string> preview-track;
     in property <string> loading;
     in property <bool> loading-paused;
     pure callback is-link(string) -> bool;
@@ -33,9 +36,19 @@ export global OnlineGlobal {
     callback play-local-source(string);
     callback import-script();
     callback enable-script(bool);
-    callback play-link(string, string);
+    callback play-link(string);
+    callback set-quality(string);
+
+    public pure function quality-name(quality: string) -> string {
+        if quality == "128k" { return @tr("Standard (128k)"); }
+        if quality == "320k" { return @tr("High (320k)"); }
+        if quality == "flac" { return @tr("Lossless (FLAC)"); }
+        if quality == "flac24bit" { return @tr("Hi-Res (24-bit)"); }
+        return quality;
+    }
 
     public pure function source-name(source: string) -> string {
+        if source == "all" { return @tr("All platforms"); }
         if source == "kw" { return @tr("Kuwo"); }
         if source == "kg" { return @tr("Kugou"); }
         if source == "tx" { return @tr("QQ Music"); }

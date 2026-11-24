@@ -101,6 +101,8 @@ pub enum PlaybackEvent {
     State(Arc<PlaybackState>, Option<Duration>),
     Details(TrackDetails, Duration),
     Library(PathBuf, SortKey, bool, Vec<Arc<Track>>),
+    Collections(usize, Vec<String>, Vec<Arc<Track>>, Vec<TrackId>),
+    CollectionSaveFailed,
     Results(Vec<Arc<Track>>),
     Error(String),
     #[cfg(target_os = "linux")]
@@ -108,7 +110,7 @@ pub enum PlaybackEvent {
     #[cfg(target_os = "linux")]
     Script(Option<crate::online::Script>, bool),
     #[cfg(target_os = "linux")]
-    Link(String, String, Vec<String>, crate::slint_types::OnlineIssue),
+    Link(String, String, crate::slint_types::OnlineIssue, Option<Arc<Track>>),
     #[cfg(target_os = "linux")]
     UpdateAlert(lx_probe::UpdateAlert),
     #[cfg(target_os = "linux")]
@@ -209,7 +211,7 @@ impl Queue {
     }
     /// Commit navigation only after the destination has successfully loaded.
     #[cfg(test)]
-    pub fn record(&mut self, old: Option<Arc<Track>>, new: &TrackId, next: Option<bool>) {
+    fn record(&mut self, old: Option<Arc<Track>>, new: &TrackId, next: Option<bool>) {
         self.record_navigation(old, new, next, 0, next.is_some());
     }
     pub fn record_navigation(

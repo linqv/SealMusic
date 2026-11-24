@@ -3,6 +3,7 @@ export struct SongInfo {
     song_name: string,
     singer: string,
     duration: string,
+    is-local: bool,
 }
 
 @rust-attr(derive(serde::Serialize, serde::Deserialize))
@@ -21,7 +22,6 @@ export enum LoopMode {
 
 export struct LyricItem {
     time: float,
-    duration: float,
     text: string,
 }
 

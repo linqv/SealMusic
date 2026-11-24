@@ -1,3 +1,4 @@
+pub mod collections;
 pub mod lyrics;
 pub mod metadata;
 pub mod scan;

@@ -2,12 +2,24 @@ use std::path::PathBuf;
 
 use crate::slint_types::{LoopMode, SortKey};
 
-fn config_path() -> PathBuf {
+pub(crate) fn config_path() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| home::home_dir().unwrap_or_default().join(".config"))
         .join("sealmusic/config.toml")
+}
+
+pub(crate) fn save_toml(
+    path: &std::path::Path,
+    value: &impl serde::Serialize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = path.parent().unwrap();
+    std::fs::create_dir_all(dir)?;
+    let temp = path.with_extension("tmp");
+    std::fs::write(&temp, toml::to_string_pretty(value)?)?;
+    std::fs::rename(temp, path)?;
+    Ok(())
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -17,6 +29,10 @@ pub struct Config {
     pub current_song_path: Option<PathBuf>,
     #[cfg(target_os = "linux")]
     pub lx_script: Option<crate::online::Script>,
+    #[cfg(target_os = "linux")]
+    pub online_quality: String,
+    #[cfg(target_os = "linux")]
+    pub online_search_source: String,
     #[cfg(target_os = "linux")]
     pub current_online: Option<crate::online::OnlineTrack>,
     pub progress: f32,
@@ -31,6 +47,8 @@ pub struct Config {
     pub current_page: i32,
     pub sidebar_expanded: bool,
     pub gallery_viewport_y: f32,
+    pub selected_collection: usize,
+    pub playing_collection: Option<usize>,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -39,6 +57,10 @@ impl Default for Config {
             current_song_path: None,
             #[cfg(target_os = "linux")]
             lx_script: None,
+            #[cfg(target_os = "linux")]
+            online_quality: crate::online::DEFAULT_QUALITY.into(),
+            #[cfg(target_os = "linux")]
+            online_search_source: crate::online::DEFAULT_SEARCH_SOURCE.into(),
             #[cfg(target_os = "linux")]
             current_online: None,
             progress: 0.,
@@ -53,6 +75,8 @@ impl Default for Config {
             current_page: 0,
             sidebar_expanded: false,
             gallery_viewport_y: 0.,
+            selected_collection: 0,
+            playing_collection: None,
         }
     }
 }
@@ -84,6 +108,14 @@ impl Config {
             cfg.progress = 0.;
         }
         cfg.current_page = cfg.current_page.clamp(0, 3);
+        #[cfg(target_os = "linux")]
+        if !crate::online::is_quality(&cfg.online_quality) {
+            cfg.online_quality = crate::online::DEFAULT_QUALITY.into();
+        }
+        #[cfg(target_os = "linux")]
+        if !crate::online::is_search_source(&cfg.online_search_source) {
+            cfg.online_search_source = crate::online::DEFAULT_SEARCH_SOURCE.into();
+        }
         Ok(cfg)
     }
     pub fn load() -> Self {
@@ -101,13 +133,7 @@ impl Config {
         }
     }
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let path = config_path();
-        let dir = path.parent().unwrap();
-        std::fs::create_dir_all(dir)?;
-        let temp = dir.join("config.tmp");
-        std::fs::write(&temp, toml::to_string_pretty(self)?)?;
-        std::fs::rename(temp, path)?;
-        Ok(())
+        save_toml(&config_path(), self)
     }
 }
 
@@ -128,6 +154,16 @@ mod tests {
             assert_eq!(
                 (cfg.loop_mode, cfg.shuffle, cfg.current_page, cfg.volume, cfg.lang.as_str()),
                 (looping, shuffle, 3, 0.42, "")
+            );
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let cfg =
+                Config::parse("online_quality='dsd'\nonline_search_source='unknown'").unwrap();
+            assert_eq!(
+                (cfg.online_quality.as_str(), cfg.online_search_source.as_str()),
+                ("320k", "kw")
             );
         }
     }

@@ -71,11 +71,6 @@ msgctxt "SearchPanel"
 msgid "{} result(s) found"
 msgstr ""
 
-#: ui/search_panel.slint:222
-msgctxt "SearchPanel"
-msgid "Type to search songs"
-msgstr ""
-
 #: ui/settings_panel.slint:69
 msgctxt "SettingsPanel"
 msgid "Playback"
@@ -114,11 +109,6 @@ msgstr ""
 #: ui/settings_panel.slint:185
 msgctxt "SettingsPanel"
 msgid "Upstream project"
-msgstr ""
-
-#: ui/sidebar.slint:137
-msgctxt "Sidebar"
-msgid "Gallery"
 msgstr ""
 
 #: ui/sidebar.slint:147
@@ -226,11 +216,6 @@ msgctxt "SearchPanel"
 msgid "Search songs or paste an LX track link"
 msgstr ""
 
-#: ui/search_panel.slint:135 ui/search_panel.slint:161
-msgctxt "SearchPanel"
-msgid "Play at {}"
-msgstr ""
-
 #: ui/settings_panel.slint:126
 msgctxt "SettingsPanel"
 msgid "LX music source"
@@ -329,4 +314,144 @@ msgstr ""
 #: ui/search_panel.slint:138
 msgctxt "SearchPanel"
 msgid "Retry"
+msgstr ""
+
+#: ui/online.slint:35
+msgctxt "OnlineGlobal"
+msgid "Standard (128k)"
+msgstr ""
+
+#: ui/online.slint:36
+msgctxt "OnlineGlobal"
+msgid "High (320k)"
+msgstr ""
+
+#: ui/online.slint:37
+msgctxt "OnlineGlobal"
+msgid "Lossless (FLAC)"
+msgstr ""
+
+#: ui/online.slint:38
+msgctxt "OnlineGlobal"
+msgid "Hi-Res (24-bit)"
+msgstr ""
+
+#: ui/search_panel.slint:169
+msgctxt "SearchPanel"
+msgid "Play"
+msgstr ""
+
+#: ui/settings_panel.slint:168
+msgctxt "SettingsPanel"
+msgid "Preferred audio quality"
+msgstr ""
+
+#: ui/settings_panel.slint:183
+msgctxt "SettingsPanel"
+msgid "Used first when playing online tracks; switches automatically if unavailable."
+msgstr ""
+
+#: ui/settings_panel.slint:215
+msgctxt "SettingsPanel"
+msgid "Online search source"
+msgstr ""
+
+#: ui/online.slint:50
+msgctxt "OnlineGlobal"
+msgid "All platforms"
+msgstr ""
+
+#: ui/search_panel.slint:90
+msgctxt "SearchPanel"
+msgid "Search online"
+msgstr ""
+
+#: ui/search_panel.slint:138
+msgctxt "SearchPanel"
+msgid "Some platforms could not be searched."
+msgstr ""
+
+#: ui/collections.slint:21
+msgctxt "CollectionsGlobal"
+msgid "My Likes"
+msgstr ""
+
+#: ui/collections.slint:63
+msgctxt "LikeButton"
+msgid "Unlike"
+msgstr ""
+
+#: ui/collections.slint:63
+msgctxt "LikeButton"
+msgid "Like"
+msgstr ""
+
+#: ui/collections.slint:77
+msgctxt "TrackActions"
+msgid "Add to collection"
+msgstr ""
+
+#: ui/collections.slint:82
+msgctxt "TrackActions"
+msgid "Remove from collection"
+msgstr ""
+
+#: ui/collections.slint:107
+msgctxt "CollectionSelector"
+msgid "Cancel"
+msgstr ""
+
+#: ui/collections.slint:107
+msgctxt "CollectionSelector"
+msgid "New collection"
+msgstr ""
+
+#: ui/collections.slint:111
+msgctxt "CollectionSelector"
+msgid "Collection name"
+msgstr ""
+
+#: ui/collections.slint:117
+msgctxt "CollectionSelector"
+msgid "Create"
+msgstr ""
+
+#: ui/collections.slint:165
+msgctxt "CollectionPicker"
+msgid "Add to collection"
+msgstr ""
+
+#: ui/collections.slint:184
+msgctxt "CollectionPicker"
+msgid "Cancel"
+msgstr ""
+
+#: ui/song_list.slint:297
+msgctxt "SongListView"
+msgid "Songs you like will appear here."
+msgstr ""
+
+#: ui/song_list.slint:298
+msgctxt "SongListView"
+msgid "Add songs from search or another collection."
+msgstr ""
+
+#: ui/song_list.slint:305
+msgctxt "SongListView"
+msgid "Find songs"
+msgstr ""
+
+#: ui/search_panel.slint:232
+msgctxt "SearchPanel"
+msgid "No local songs found."
+msgstr ""
+
+#: ui/app.slint:174
+msgctxt "MainWindow"
+msgid "Could not save collections."
+msgstr ""
+
+#: ui/sidebar.slint:137
+msgctxt "Sidebar"
+msgid "Collections"
 msgstr ""

@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { LikeButton } from "collections.slint";
 import { Slider } from "std-widgets.slint";
 import { SongInfo, LoopMode } from "types.slint";
 import { IconDisplay, IconSet } from "@lucide";
@@ -356,7 +357,7 @@ export component ControlPanel inherits Rectangle {
             }
 
             Rectangle {
-                width: 25%;
+                width: 20%;
                 TouchArea {
                     double-clicked => {
                         root.double-clicked()
@@ -368,6 +369,15 @@ export component ControlPanel inherits Rectangle {
                     text: root.progress-text + " / " + root.duration-text;
                     vertical-alignment: center;
                     horizontal-alignment: center;
+                }
+            }
+
+            Rectangle {
+                width: 5%;
+                if root.current_song.id != "": LikeButton {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    track: root.current_song.id;
                 }
             }
 

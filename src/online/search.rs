@@ -34,16 +34,64 @@ pub(super) const DESKTOP_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit
 pub struct SearchPage {
     pub tracks: Vec<Arc<Track>>,
     pub has_next: bool,
+    pub partial_failure: bool,
 }
 
+pub const DEFAULT_SEARCH_SOURCE: &str = "kw";
+
 pub fn is_search_source(source: &str) -> bool {
-    matches!(source, "kw" | "kg" | "tx" | "wy" | "mg")
+    matches!(source, "kw" | "kg" | "tx" | "wy" | "mg" | "all")
 }
 
 pub async fn search(source: &str, query: &str, page: u32) -> Result<SearchPage, ()> {
-    if page == 0 || !is_search_source(source) {
+    if page == 0 {
         return Err(());
     }
+    if source == "all" {
+        let (kw, kg, tx, wy, mg) = tokio::join!(
+            search_platform("kw", query, page),
+            search_platform("kg", query, page),
+            search_platform("tx", query, page),
+            search_platform("wy", query, page),
+            search_platform("mg", query, page),
+        );
+        return merge_platform_pages([kw, kg, tx, wy, mg]);
+    }
+    search_platform(source, query, page).await
+}
+
+fn merge_platform_pages(pages: [Result<SearchPage, ()>; 5]) -> Result<SearchPage, ()> {
+    let partial_failure = pages.iter().any(Result::is_err);
+    let mut has_next = false;
+    let mut platform_tracks: Vec<_> = pages
+        .into_iter()
+        .flatten()
+        .map(|page| {
+            has_next |= page.has_next;
+            page.tracks.into_iter()
+        })
+        .collect();
+    if platform_tracks.is_empty() {
+        return Err(());
+    }
+
+    // Interleave platform ranks so every successful platform appears near the top.
+    let mut tracks = Vec::new();
+    loop {
+        let count = tracks.len();
+        tracks.extend(platform_tracks.iter_mut().filter_map(Iterator::next));
+        if tracks.len() == count {
+            break;
+        }
+    }
+    Ok(SearchPage {
+        tracks,
+        has_next,
+        partial_failure,
+    })
+}
+
+async fn search_platform(source: &str, query: &str, page: u32) -> Result<SearchPage, ()> {
     let client = super::api_client().ok_or(())?;
     let timeout = Duration::from_secs(15);
     let response = match source {
@@ -92,7 +140,7 @@ pub async fn search(source: &str, query: &str, page: u32) -> Result<SearchPage, 
                     "keyword": query,
                     "needCorrect": "1",
                     "channel": "typing",
-                    "offset": PAGE_SIZE * (page - 1),
+                    "offset": u64::from(PAGE_SIZE) * u64::from(page - 1),
                     "scene": "normal",
                     "total": true,
                     "limit": PAGE_SIZE,
@@ -185,11 +233,11 @@ fn name(value: &Value) -> String {
     super::decode_html(value.as_str().unwrap_or_default())
 }
 
-fn format_singer(singers: &Value, key: &str) -> String {
+fn format_singer(singers: &Value) -> String {
     if let Some(arr) = singers.as_array() {
         let joined = arr
             .iter()
-            .filter_map(|item| item[key].as_str().or_else(|| item.as_str()))
+            .filter_map(|item| item["name"].as_str().or_else(|| item.as_str()))
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
@@ -241,6 +289,7 @@ fn collect_tracks(
     Ok(SearchPage {
         tracks,
         has_next: u64::from(page) * u64::from(PAGE_SIZE) < total,
+        partial_failure: false,
     })
 }
 
@@ -359,7 +408,7 @@ fn kg_track(item: &Value) -> Option<Arc<Track>> {
         format!("{base_name} {suffix}")
     };
     let singer = if item["Singers"].is_array() {
-        format_singer(&item["Singers"], "name")
+        format_singer(&item["Singers"])
     } else {
         name(&item["SingerName"])
     };
@@ -526,7 +575,7 @@ fn tx_track(item: &Value) -> Option<Arc<Track>> {
         "albumId": album_mid,
         "albumName": name(&item["album"]["name"]),
         "name": title,
-        "singer": format_singer(&item["singer"], "name"),
+        "singer": format_singer(&item["singer"]),
         "songId": item["id"],
         "interval": format_interval(secs),
         "img": img,
@@ -591,7 +640,7 @@ fn wy_track(entry: &Value) -> Option<Arc<Track>> {
         "source": "wy",
         "songmid": item["id"],
         "name": name(&item["name"]),
-        "singer": format_singer(&item["ar"], "name"),
+        "singer": format_singer(&item["ar"]),
         "albumName": name(&item["al"]["name"]),
         "albumId": super::id_string(&item["al"]["id"]).unwrap_or_default(),
         "interval": format_interval(secs),
@@ -622,6 +671,7 @@ fn parse_mg(body: Value, page: u32) -> Result<SearchPage, ()> {
         return Ok(SearchPage {
             tracks: vec![],
             has_next: false,
+            partial_failure: false,
         });
     }
     let total = number(&data["totalCount"]).unwrap_or_default();
@@ -668,7 +718,7 @@ fn mg_track(data: &Value) -> Option<Arc<Track>> {
         "songmid": song_id,
         "copyrightId": copyright_id,
         "name": name(&data["name"]),
-        "singer": format_singer(&data["singerList"], "name"),
+        "singer": format_singer(&data["singerList"]),
         "albumName": name(&data["album"]),
         "albumId": super::id_string(&data["albumId"]).unwrap_or_default(),
         "interval": format_interval(secs),
@@ -742,6 +792,45 @@ mod tests {
 
     fn fixtures() -> Value {
         serde_json::from_str(include_str!("../../tools/lx-probe/fixtures/tracks.json")).unwrap()
+    }
+
+    #[test]
+    fn aggregate_interleaves_results_and_keeps_successful_pages_on_failure() {
+        let fixtures = fixtures();
+        let track = |index: usize| {
+            OnlineTrack::from_info(fixtures[index]["info"]["musicInfo"].clone())
+                .unwrap()
+                .track()
+                .unwrap()
+        };
+        let first = track(0);
+        let second = kw_track(&json!({"MUSICRID": "MUSIC_7000", "SONGNAME": "Second"})).unwrap();
+        let another = track(2);
+        let pages = [
+            Ok(SearchPage {
+                tracks: vec![first.clone(), second.clone()],
+                has_next: false,
+                partial_failure: false,
+            }),
+            Err(()),
+            Ok(SearchPage {
+                tracks: vec![another.clone()],
+                has_next: true,
+                partial_failure: false,
+            }),
+            Ok(SearchPage {
+                tracks: vec![],
+                has_next: false,
+                partial_failure: false,
+            }),
+            Err(()),
+        ];
+        let merged = merge_platform_pages(pages).unwrap();
+        let ids: Vec<_> = merged.tracks.iter().map(|track| &track.id).collect();
+        assert_eq!(ids, [&first.id, &another.id, &second.id]);
+        assert!(merged.has_next);
+        assert!(merged.partial_failure);
+        assert!(merge_platform_pages([Err(()), Err(()), Err(()), Err(()), Err(())]).is_err());
     }
 
     #[test]

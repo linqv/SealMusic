@@ -72,11 +72,6 @@ msgctxt "SearchPanel"
 msgid "{} result(s) found"
 msgstr "找到 {} 个结果"
 
-#: ui/search_panel.slint:222
-msgctxt "SearchPanel"
-msgid "Type to search songs"
-msgstr "输入关键词搜索歌曲"
-
 #: ui/settings_panel.slint:69
 msgctxt "SettingsPanel"
 msgid "Playback"
@@ -116,11 +111,6 @@ msgstr "SealMusic {} · GPL-3.0"
 msgctxt "SettingsPanel"
 msgid "Upstream project"
 msgstr "上游项目"
-
-#: ui/sidebar.slint:137
-msgctxt "Sidebar"
-msgid "Gallery"
-msgstr "音乐列表"
 
 #: ui/sidebar.slint:147
 msgctxt "Sidebar"
@@ -227,11 +217,6 @@ msgctxt "SearchPanel"
 msgid "Search songs or paste an LX track link"
 msgstr "搜索歌曲或粘贴 LX 单曲链接"
 
-#: ui/search_panel.slint:135 ui/search_panel.slint:161
-msgctxt "SearchPanel"
-msgid "Play at {}"
-msgstr "以 {} 播放"
-
 #: ui/settings_panel.slint:126
 msgctxt "SettingsPanel"
 msgid "LX music source"
@@ -331,3 +316,143 @@ msgstr "{}搜索失败。"
 msgctxt "SearchPanel"
 msgid "Retry"
 msgstr "重试"
+
+#: ui/online.slint:35
+msgctxt "OnlineGlobal"
+msgid "Standard (128k)"
+msgstr "标准 (128k)"
+
+#: ui/online.slint:36
+msgctxt "OnlineGlobal"
+msgid "High (320k)"
+msgstr "高品质 (320k)"
+
+#: ui/online.slint:37
+msgctxt "OnlineGlobal"
+msgid "Lossless (FLAC)"
+msgstr "无损 (FLAC)"
+
+#: ui/online.slint:38
+msgctxt "OnlineGlobal"
+msgid "Hi-Res (24-bit)"
+msgstr "Hi-Res (24-bit)"
+
+#: ui/search_panel.slint:169
+msgctxt "SearchPanel"
+msgid "Play"
+msgstr "播放"
+
+#: ui/settings_panel.slint:168
+msgctxt "SettingsPanel"
+msgid "Preferred audio quality"
+msgstr "优先音质"
+
+#: ui/settings_panel.slint:183
+msgctxt "SettingsPanel"
+msgid "Used first when playing online tracks; switches automatically if unavailable."
+msgstr "播放在线歌曲时优先使用，不可用时自动切换其他音质。"
+
+#: ui/settings_panel.slint:215
+msgctxt "SettingsPanel"
+msgid "Online search source"
+msgstr "在线搜索源"
+
+#: ui/online.slint:50
+msgctxt "OnlineGlobal"
+msgid "All platforms"
+msgstr "聚合搜索"
+
+#: ui/search_panel.slint:90
+msgctxt "SearchPanel"
+msgid "Search online"
+msgstr "在线搜索"
+
+#: ui/search_panel.slint:138
+msgctxt "SearchPanel"
+msgid "Some platforms could not be searched."
+msgstr "部分平台搜索失败。"
+
+#: ui/collections.slint:21
+msgctxt "CollectionsGlobal"
+msgid "My Likes"
+msgstr "我的喜欢"
+
+#: ui/collections.slint:63
+msgctxt "LikeButton"
+msgid "Unlike"
+msgstr "取消喜欢"
+
+#: ui/collections.slint:63
+msgctxt "LikeButton"
+msgid "Like"
+msgstr "喜欢"
+
+#: ui/collections.slint:77
+msgctxt "TrackActions"
+msgid "Add to collection"
+msgstr "加入收藏列表"
+
+#: ui/collections.slint:82
+msgctxt "TrackActions"
+msgid "Remove from collection"
+msgstr "移出收藏列表"
+
+#: ui/collections.slint:107
+msgctxt "CollectionSelector"
+msgid "Cancel"
+msgstr "取消"
+
+#: ui/collections.slint:107
+msgctxt "CollectionSelector"
+msgid "New collection"
+msgstr "新建收藏列表"
+
+#: ui/collections.slint:111
+msgctxt "CollectionSelector"
+msgid "Collection name"
+msgstr "收藏列表名称"
+
+#: ui/collections.slint:117
+msgctxt "CollectionSelector"
+msgid "Create"
+msgstr "创建"
+
+#: ui/collections.slint:165
+msgctxt "CollectionPicker"
+msgid "Add to collection"
+msgstr "加入收藏列表"
+
+#: ui/collections.slint:184
+msgctxt "CollectionPicker"
+msgid "Cancel"
+msgstr "取消"
+
+#: ui/song_list.slint:297
+msgctxt "SongListView"
+msgid "Songs you like will appear here."
+msgstr "喜欢的歌曲会显示在这里。"
+
+#: ui/song_list.slint:298
+msgctxt "SongListView"
+msgid "Add songs from search or another collection."
+msgstr "可从搜索页或其他收藏列表添加歌曲。"
+
+#: ui/song_list.slint:305
+msgctxt "SongListView"
+msgid "Find songs"
+msgstr "查找歌曲"
+
+#: ui/search_panel.slint:232
+msgctxt "SearchPanel"
+msgid "No local songs found."
+msgstr "未找到本地歌曲。"
+
+#: ui/app.slint:174
+msgctxt "MainWindow"
+msgid "Could not save collections."
+msgstr "无法保存收藏列表。"
+
+#: ui/sidebar.slint:137
+msgctxt "Sidebar"
+msgid "Collections"
+msgstr "收藏列表"

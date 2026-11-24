@@ -1,3 +1,4 @@
+import { CollectionsGlobal, TrackActions } from "collections.slint";
 import { OnlineGlobal } from "online.slint";
 import { Theme } from "theme.slint";
 import {
@@ -26,7 +27,7 @@ component SortIcon inherits Rectangle {
 }
 
 component TitleBarItem inherits Rectangle {
-    in property <string> name:"name";
+    in property <string> name;
     in-out property <bool> display-sort-icon <=> arrow.display;
     in-out property <bool> ascending-sort <=> arrow.ascending;
     Rectangle {
@@ -35,7 +36,7 @@ component TitleBarItem inherits Rectangle {
         text := Text {
             text: name;
             color: Theme.text-tertiary;
-            x: parent.width * 0.4;
+            x: 12px;
             y: parent.height / 2 - self.height / 2;
         }
 
@@ -56,7 +57,6 @@ component SortColumn inherits Rectangle {
     in property <bool> ascending;
     callback clicked(SortKey, bool);
     height: 100%;
-    width: 33%;
 
     touch-area := TouchArea {
         clicked => {
@@ -81,8 +81,10 @@ component SortBar inherits Rectangle {
     background: Theme.surface;
 
     HorizontalLayout {
-        alignment: space-between;
+        x: 0px;
+        width: parent.width - 96px;
         SortColumn {
+            width: 40%;
             label: @tr("Title");
             sort-key: SortKey.BySongName;
             current-key: root.key;
@@ -93,6 +95,7 @@ component SortBar inherits Rectangle {
         }
 
         SortColumn {
+            width: 34%;
             label: @tr("Artist");
             sort-key: SortKey.BySinger;
             current-key: root.key;
@@ -117,68 +120,90 @@ component SortBar inherits Rectangle {
 export component SongItem inherits Rectangle {
     height: 30px;
     in property <SongInfo> info;
-    in property <bool> playing:false;
+    in property <bool> playing: false;
+    in property <int> collection: -1;
     callback double_clicked();
-    background: playing ? Theme.hover : (area.has-hover ? Theme.song-hover : Theme.surface);
-    VerticalLayout {
-        area := TouchArea {
-            double-clicked => {
-                double_clicked();
-            }
-            HorizontalLayout {
-                alignment: space-between;
-                Rectangle {
-                    width: 33%;
-                    Text {
-                        width: 100%;
-                        x: parent.width * 0.4;
-                        text: info.song-name;
-                        font-weight: root.playing ? 600 : 400;
-                        color: root.playing ? Theme.accent : Theme.text;
-                        overflow: elide;
-                    }
-                }
+    background: root.playing ? Theme.hover : (area.has-hover ? Theme.song-hover : Theme.surface);
 
-                Rectangle {
-                    width: 33%;
-                    Text {
-                        width: 100%;
-                        x: parent.width * 0.4;
-                        text: info.singer;
-                        color: root.playing ? Theme.accent : Theme.text;
-                        overflow: elide;
-                    }
-                }
+    area := TouchArea {
+        x: 0px;
+        width: parent.width - actions.width;
+        height: 100%;
+        double-clicked => { root.double_clicked(); }
 
-                Rectangle {
-                    width: 33%;
-                    Text {
-                        x: parent.width * 0.4;
-                        text: info.duration;
-                        color: root.playing ? Theme.accent : Theme.text;
-                    }
+        HorizontalLayout {
+            Rectangle {
+                width: 40%;
+                Text {
+                    x: 12px;
+                    width: parent.width - 18px;
+                    height: 100%;
+                    text: root.info.song-name;
+                    font-weight: root.playing ? 600 : 400;
+                    color: root.playing ? Theme.accent : Theme.text;
+                    vertical-alignment: center;
+                    overflow: elide;
                 }
             }
+            Rectangle {
+                width: 34%;
+                Text {
+                    x: 12px;
+                    width: parent.width - 18px;
+                    height: 100%;
+                    text: root.info.singer;
+                    color: root.playing ? Theme.accent : Theme.text;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+                Text {
+                    x: 12px;
+                    width: parent.width - 18px;
+                    height: 100%;
+                    text: root.info.duration;
+                    color: root.playing ? Theme.accent : Theme.text;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
 
-            Tooltip {
-                Rectangle {
-                    border-color: Theme.text;
-                    VerticalLayout {
-                        padding: 5px;
-                        Text {
-                            text: @tr("Title: {}\nArtist: {}\nDuration: {}", info.song-name, info.singer, info.duration);
-                        }
+        Tooltip {
+            Rectangle {
+                border-color: Theme.text;
+                VerticalLayout {
+                    padding: 5px;
+                    Text {
+                        text: @tr("Title: {}\nArtist: {}\nDuration: {}", info.song-name, info.singer, info.duration);
                     }
                 }
             }
         }
     }
 
-    if OnlineGlobal.local-playback: ContextMenuArea {
+    actions := TrackActions {
+        x: parent.width - self.width;
+        y: (parent.height - self.height) / 2;
+        width: root.collection >= 0 ? 96px : 64px;
+        height: 28px;
+        collection: root.collection;
+        track: root.info.id;
+    }
+
+    if root.info.is-local && OnlineGlobal.local-playback: ContextMenuArea {
         Menu {
             MenuItem {
                 title: @tr("Play using LX source");
-                activated => { OnlineGlobal.play-local-source(root.info.id); }
+                activated => {
+                    if root.collection >= 0 {
+                        CollectionsGlobal.play-collection-track(root.collection, root.info.id, true);
+                    } else {
+                        OnlineGlobal.play-local-source(root.info.id);
+                    }
+                }
             }
         }
     }
@@ -242,21 +267,19 @@ export component MessagePopup inherits Rectangle {
 export component SongListView inherits Rectangle {
     in-out property <bool> ascending;
     in-out property <SortKey> sort-key;
-    in-out property <SortKey> last-sort-key;
-    in-out property <[SongInfo]> song-list;
     in-out property <length> scroll-y;
     in property <SongInfo> current-song;
     callback sort-songs(SortKey, bool);
-    callback play-song(SongInfo);
+    callback browse();
     background: Theme.surface;
     VerticalLayout {
         width: 100%;
         height: 100%;
-        SortBar {
+        if CollectionsGlobal.songs.length > 0: SortBar {
             ascending: root.ascending;
             key: root.sort-key;
             sort-items(key, ascending) => {
-                if (root.last-sort-key == key) {
+                if (root.sort-key == key) {
                     root.sort-songs(key, !ascending);
                 } else {
                     root.sort-songs(key, true)
@@ -264,13 +287,35 @@ export component SongListView inherits Rectangle {
             }
         }
 
-        ListView {
+        if CollectionsGlobal.songs.length == 0: VerticalLayout {
+            vertical-stretch: 1;
+            alignment: center;
+            spacing: 12px;
+            Text {
+                text: CollectionsGlobal.selected == 0
+                    ? @tr("Songs you like will appear here.")
+                    : @tr("Add songs from search or another collection.");
+                horizontal-alignment: center;
+                color: Theme.text-secondary;
+            }
+            HorizontalLayout {
+                alignment: center;
+                Button {
+                    text: @tr("Find songs");
+                    clicked => { root.browse(); }
+                }
+            }
+        }
+
+        if CollectionsGlobal.songs.length > 0: ListView {
+            vertical-stretch: 1;
             content-y <=> root.scroll-y;
-            for item in root.song-list: SongItem {
+            for item in CollectionsGlobal.songs: SongItem {
+                collection: CollectionsGlobal.selected;
                 info: item;
                 playing: item.id == root.current-song.id;
                 double_clicked => {
-                    root.play-song(item);
+                    CollectionsGlobal.play-collection-track(CollectionsGlobal.selected, item.id, false);
                 }
             }
         }

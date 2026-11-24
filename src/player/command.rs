@@ -15,6 +15,12 @@ pub enum PlayerCommand {
     TogglePlayPause,
     Stop,
     PlayTrack(TrackId),
+    PlayCollectionTrack(usize, TrackId, bool),
+    SelectCollection(usize),
+    CreateCollection(String),
+    ToggleLike(TrackId),
+    AddToCollection(usize, TrackId),
+    RemoveFromCollection(usize, TrackId),
     Next,
     Previous,
     SeekTo(Option<TrackId>, Duration),
@@ -32,7 +38,7 @@ pub enum PlayerCommand {
     #[cfg(target_os = "linux")]
     AbortCatalogSearch,
     #[cfg(target_os = "linux")]
-    PlayCatalog(TrackId, String),
+    PlayCatalog(TrackId),
     #[cfg(target_os = "linux")]
     ImportScript(PathBuf),
     #[cfg(target_os = "linux")]
@@ -42,7 +48,9 @@ pub enum PlayerCommand {
     #[cfg(target_os = "linux")]
     PlayLocalSource(TrackId),
     #[cfg(target_os = "linux")]
-    PlayLink(String, String),
+    PlayLink(String),
+    #[cfg(target_os = "linux")]
+    SetOnlineQuality(String),
     #[cfg(target_os = "linux")]
     Raise,
     #[cfg(target_os = "linux")]

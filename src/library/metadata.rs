@@ -14,7 +14,7 @@ use super::{
     lyrics::{LyricLine, read_lyrics},
 };
 
-pub const MAX_COVER_DIMENSION: u32 = 512;
+const MAX_COVER_DIMENSION: u32 = 512;
 #[cfg(target_os = "linux")]
 const MAX_RAW_COVER_BYTES: usize = 512 * 1024;
 
@@ -51,12 +51,7 @@ pub struct TrackDetails {
     pub lyrics: Vec<LyricLine>,
 }
 
-#[cfg(target_os = "linux")]
-pub fn decode_network_cover(bytes: &[u8]) -> Option<image::RgbaImage> {
-    decode_cover(bytes)
-}
-
-fn decode_cover(bytes: &[u8]) -> Option<image::RgbaImage> {
+pub(crate) fn decode_cover(bytes: &[u8]) -> Option<image::RgbaImage> {
     let mut reader =
         image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
     let mut limits = image::Limits::default();

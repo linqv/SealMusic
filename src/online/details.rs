@@ -126,7 +126,7 @@ pub(super) async fn fetch_cover(
         req = req.header("Referer", referer);
     }
     let bytes = fetch_bytes(req, COVER_LIMIT).await?;
-    tokio::task::spawn_blocking(move || metadata::decode_network_cover(&bytes)).await.ok()?
+    tokio::task::spawn_blocking(move || metadata::decode_cover(&bytes)).await.ok()?
 }
 
 pub fn inline_details(reference: &OnlineTrack) -> TrackDetails {

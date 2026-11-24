@@ -132,10 +132,6 @@ impl Session {
         self.phase_with_timeout(command, Duration::from_secs(12)).await
     }
 
-    pub async fn initialize(script: String, worker_arg: &str) -> Result<Self> {
-        Self::initialize_with_alert(script, worker_arg, Box::new(|_| {})).await
-    }
-
     pub async fn initialize_with_alert(
         script: String,
         worker_arg: &str,

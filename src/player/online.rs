@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     path::PathBuf,
     sync::{Arc, Weak, mpsc},
     time::Duration,
@@ -8,6 +9,7 @@ use tokio::{runtime::Runtime, task::JoinHandle};
 
 use super::{
     Event, PlayerCore, Status,
+    collections::QueueSource,
     command::{PlayerCommand, Request},
 };
 use crate::{
@@ -37,10 +39,7 @@ impl Drop for Job {
     }
 }
 
-struct Pending {
-    job: Job,
-    track: Arc<Track>,
-    label: String,
+struct LoadContext {
     status: Status,
     paused_current: bool,
     direction: Option<bool>,
@@ -48,6 +47,15 @@ struct Pending {
     from_history: bool,
     finished: bool,
     position: Duration,
+    remaining_qualities: VecDeque<String>,
+    queue_source: Option<QueueSource>,
+}
+
+struct Pending {
+    job: Job,
+    track: Arc<Track>,
+    label: String,
+    ctx: LoadContext,
 }
 
 #[derive(Default, Clone)]
@@ -58,7 +66,8 @@ pub struct CatalogView {
     pub busy: bool,
     pub failed: bool,
     pub has_next: bool,
-    pub rows: Vec<(Arc<Track>, Vec<String>)>,
+    pub partial_failure: bool,
+    pub rows: Vec<Arc<Track>>,
 }
 
 pub(super) struct Online {
@@ -118,9 +127,23 @@ impl Online {
     pub fn loading(&self) -> bool {
         self.pending.is_some()
     }
+
+    pub(super) fn find_track(&self, id: &TrackId) -> Option<Arc<Track>> {
+        self.catalog.rows.iter().chain(&self.tracks).find(|track| &track.id == id).cloned()
+    }
+
+    pub(super) fn set_pending_queue(&mut self, source: QueueSource) {
+        if let Some(pending) = &mut self.pending {
+            pending.ctx.queue_source = Some(source);
+        }
+    }
     #[cfg(test)]
     pub(super) fn pending_id(&self) -> Option<u64> {
         self.pending.as_ref().map(|p| p.job.id)
+    }
+    #[cfg(test)]
+    pub(super) fn pending_track(&self) -> Option<&Arc<Track>> {
+        self.pending.as_ref().map(|p| &p.track)
     }
     #[cfg(test)]
     pub(super) fn import_id(&self) -> Option<u64> {
@@ -134,28 +157,28 @@ impl Online {
         let Some(p) = &self.pending else {
             return (None, 0);
         };
-        let skip = if p.direction == Some(next) {
-            p.history_skip + usize::from(p.from_history)
+        let skip = if p.ctx.direction == Some(next) {
+            p.ctx.history_skip + usize::from(p.ctx.from_history)
         } else {
             0
         };
         (Some(&p.track), skip)
     }
     pub fn target_status(&self) -> Option<Status> {
-        self.pending.as_ref().map(|p| p.status)
+        self.pending.as_ref().map(|p| p.ctx.status)
     }
     pub fn pause_pending(&mut self, paused_current: bool) -> Option<String> {
         let p = self.pending.as_mut()?;
-        p.status = Status::Paused;
+        p.ctx.status = Status::Paused;
         if paused_current {
-            p.paused_current = true;
+            p.ctx.paused_current = true;
         }
         Some(p.label.clone())
     }
     pub fn resume_pending(&mut self) -> Option<(String, bool)> {
         let p = self.pending.as_mut()?;
-        p.status = Status::Playing;
-        let resume_current = std::mem::take(&mut p.paused_current);
+        p.ctx.status = Status::Playing;
+        let resume_current = std::mem::take(&mut p.ctx.paused_current);
         Some((p.label.clone(), resume_current))
     }
     fn upsert(&mut self, t: Arc<Track>) {
@@ -256,7 +279,6 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         }
         self.rebuild_order();
         self.script_event();
-        self.catalog_event();
         self.results();
     }
 
@@ -308,7 +330,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         }
     }
 
-    fn link_info(&self, query: &str) -> online::Result<(OnlineTrack, Arc<Track>, Vec<String>)> {
+    pub(super) fn link_info(&self, query: &str) -> online::Result<(OnlineTrack, Arc<Track>)> {
         let reference = OnlineTrack::parse(query)?;
         let track = reference.track()?;
         let script = self
@@ -317,11 +339,10 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             .as_ref()
             .filter(|s| s.enabled)
             .ok_or((OnlineIssue::NoScript, track.title.clone()))?;
-        let qualities = reference.qualities(Some(script));
-        if qualities.is_empty() {
+        if reference.qualities(Some(script)).is_empty() {
             return Err((OnlineIssue::NoQuality, track.title.clone()));
         }
-        Ok((reference, track, qualities))
+        Ok((reference, track))
     }
 
     pub(super) fn search_catalog(&mut self, source: String, query: String, page: u32) {
@@ -369,53 +390,60 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         }
     }
 
-    fn catalog_event(&mut self) {
-        if self.online.catalog.page == 0 {
-            return;
-        }
-        for (track, qualities) in &mut self.online.catalog.rows {
-            if let TrackOrigin::Online(reference) = &track.origin {
-                *qualities = reference.qualities(self.cfg.lx_script.as_ref());
-            }
-        }
-        (self.publish)(Event::Catalog(self.online.catalog.clone()));
-    }
-
-    pub(super) fn play_catalog(&mut self, id: TrackId, quality: String) -> online::Result<()> {
-        let Some((track, _)) = self.online.catalog.rows.iter().find(|(t, _)| t.id == id) else {
+    pub(super) fn play_catalog(&mut self, id: TrackId) -> online::Result<()> {
+        let Some(track) = self.online.catalog.rows.iter().find(|t| t.id == id).cloned() else {
             return Ok(());
         };
-        let TrackOrigin::Online(mut reference) = track.origin.clone() else {
-            return Ok(());
-        };
-        reference.quality = quality;
-        self.begin_online(
-            reference.track()?,
-            Status::Playing,
-            None,
-            0,
-            false,
-            false,
-            Duration::ZERO,
-        )
+        self.begin_online(track, Status::Playing, None, 0, false, false, Duration::ZERO)?;
+        self.online.set_pending_queue(QueueSource::Library);
+        Ok(())
     }
 
     pub(super) fn preview_link(&mut self) {
-        let (title, qualities, issue) = match self.link_info(&self.query) {
-            Ok((_, t, qs)) => (format!("{} · {}", t.title, t.artist), qs, OnlineIssue::None),
-            Err((issue, detail)) => (detail, vec![], issue),
+        let (title, issue, track) = match self.link_info(&self.query) {
+            Ok((_, t)) => (format!("{} · {}", t.title, t.artist), OnlineIssue::None, Some(t)),
+            Err((issue, detail)) => (detail, issue, None),
         };
-        (self.publish)(Event::Link(self.query.clone(), title, qualities, issue));
+        (self.publish)(Event::Link(self.query.clone(), title, issue, track));
     }
 
-    pub(super) fn play_link(&mut self, query: String, quality: String) -> online::Result<()> {
-        let (mut reference, _, qualities) = self.link_info(&query)?;
-        if !qualities.contains(&quality) {
-            return Err((OnlineIssue::NoQuality, quality));
-        }
-        reference.quality = quality;
-        let track = reference.track()?;
-        self.begin_online(track, Status::Playing, None, 0, false, false, Duration::ZERO)
+    pub(super) fn play_link(&mut self, query: String) -> online::Result<()> {
+        let (_, track) = self.link_info(&query)?;
+        self.begin_online(track, Status::Playing, None, 0, false, false, Duration::ZERO)?;
+        self.online.set_pending_queue(QueueSource::Library);
+        Ok(())
+    }
+
+    fn spawn_prepare(
+        &mut self,
+        script: Script,
+        action: serde_json::Value,
+        track: Arc<Track>,
+        label: String,
+        ctx: LoadContext,
+    ) {
+        self.online.seq += 1;
+        let id = self.online.seq;
+        let tx = self.online.tx.clone();
+        let alert = self.online.alert_handler(id);
+        let resume = !ctx.position.is_zero();
+        let handle = self.online.runtime.spawn(async move {
+            let transfer_tx = tx.clone();
+            let result = online::prepare(script, action, alert, resume, move || {
+                Completion::TransferEnded(id).send(transfer_tx);
+            })
+            .await;
+            Completion::Prepared(id, result).send(tx);
+        });
+        self.online.pending = Some(Pending {
+            job: Job {
+                id,
+                handle,
+            },
+            track,
+            label,
+            ctx,
+        });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -436,46 +464,48 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             .as_ref()
             .filter(|s| s.enabled)
             .ok_or((OnlineIssue::NoScript, track.title.clone()))?;
-        let (action, label) = match &track.origin {
-            TrackOrigin::Local(_) if script.supports_local("musicUrl") => {
-                (online::local_action(&track, "musicUrl"), track.title.clone())
-            }
-            TrackOrigin::Online(reference)
-                if reference.qualities(Some(script)).contains(&reference.quality) =>
-            {
-                (reference.action(), format!("{} · {}", track.title, reference.quality))
+        let (track, action, label, remaining_qualities) = match &track.origin {
+            TrackOrigin::Local(_) if script.supports_local("musicUrl") => (
+                track.clone(),
+                online::local_action(&track, "musicUrl"),
+                track.title.clone(),
+                VecDeque::new(),
+            ),
+            TrackOrigin::Online(reference) => {
+                let mut candidates = VecDeque::from(
+                    reference.ordered_qualities(Some(script), &self.cfg.online_quality),
+                );
+                let Some(quality) = candidates.pop_front() else {
+                    return Err((OnlineIssue::NoQuality, track.title.clone()));
+                };
+                let mut chosen = reference.clone();
+                chosen.quality = quality;
+                let track = chosen.track()?;
+                let action = chosen.action();
+                let label = format!("{} · {}", track.title, chosen.quality);
+                (track, action, label, candidates)
             }
             _ => return Err((OnlineIssue::NoQuality, track.title.clone())),
         };
         (self.publish)(Event::Loading(label.clone(), status != Status::Playing));
         let script = script.clone();
-        self.online.seq += 1;
-        let id = self.online.seq;
-        let tx = self.online.tx.clone();
-        let alert = self.online.alert_handler(id);
-        let handle = self.online.runtime.spawn(async move {
-            let transfer_tx = tx.clone();
-            let result = online::prepare(script, action, alert, !position.is_zero(), move || {
-                Completion::TransferEnded(id).send(transfer_tx);
-            })
-            .await;
-            Completion::Prepared(id, result).send(tx);
-        });
-        self.online.pending = Some(Pending {
-            job: Job {
-                id,
-                handle,
-            },
+        self.spawn_prepare(
+            script,
+            action,
             track,
             label,
-            status,
-            paused_current: false,
-            direction,
-            history_skip,
-            from_history,
-            finished,
-            position,
-        });
+            LoadContext {
+                status,
+                paused_current: false,
+                direction,
+                history_skip,
+                from_history,
+                finished,
+                position,
+                remaining_qualities,
+                queue_source: None,
+            },
+        );
         Ok(())
     }
 
@@ -534,11 +564,12 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                 match result {
                     Ok(page) => {
                         view.has_next = page.has_next;
-                        view.rows = page.tracks.into_iter().map(|t| (t, vec![])).collect();
+                        view.partial_failure = page.partial_failure;
+                        view.rows = page.tracks;
                     }
                     Err(()) => view.failed = true,
                 }
-                self.catalog_event();
+                (self.publish)(Event::Catalog(self.online.catalog.clone()));
                 return;
             }
             Completion::Alert(id, alert)
@@ -599,9 +630,19 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             Completion::Prepared(id, result)
                 if self.online.pending.as_ref().is_some_and(|p| p.job.id == id) =>
             {
-                let p = self.online.pending.take().unwrap();
-                (self.publish)(Event::Loading(String::new(), false));
-                if p.track.local_path().is_some() && self.queue.get(&p.track.id).is_none() {
+                let mut p = self.online.pending.take().unwrap();
+                if p.track.local_path().is_some()
+                    && match p.ctx.queue_source {
+                        Some(QueueSource::Library) => {
+                            self.find_library_track(&p.track.id).is_none()
+                        }
+                        Some(QueueSource::Collection(index)) => {
+                            self.find_collection_track(index, &p.track.id).is_none()
+                        }
+                        None => self.queue.get(&p.track.id).is_none(),
+                    }
+                {
+                    (self.publish)(Event::Loading(String::new(), false));
                     self.stop_if_drained();
                     self.broadcast();
                     return;
@@ -614,36 +655,61 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                 });
                 match result {
                     Ok(prepared) => {
+                        (self.publish)(Event::Loading(String::new(), false));
                         let old = self.state.track.clone();
-                        match self.commit(p.track.clone(), p.status, prepared.source, p.position) {
-                            Ok(()) => {
-                                self.online.active_stream =
-                                    prepared.stream.map(|stream| (id, stream));
-                                self.sync_stream();
-                                if p.track.local_path().is_none() {
-                                    self.online.upsert(p.track.clone());
-                                    self.queue.upsert(p.track.clone());
-                                }
-                                self.queue.record_navigation(
-                                    old,
-                                    &p.track.id,
-                                    p.direction,
-                                    p.history_skip,
-                                    p.from_history,
-                                );
-                            }
-                            Err(_) => {
-                                if p.finished {
-                                    self.stop();
-                                } else {
-                                    self.stop_if_drained();
-                                }
-                                self.online_failure((OnlineIssue::Decode, p.track.title.clone()));
-                            }
+                        self.commit(p.track.clone(), p.ctx.status, prepared.source, p.ctx.position);
+                        self.online.active_stream = prepared.stream.map(|stream| (id, stream));
+                        self.sync_stream();
+                        if p.track.local_path().is_none() {
+                            self.online.upsert(p.track.clone());
                         }
+                        let changed_queue =
+                            p.ctx.queue_source.is_some_and(|source| self.switch_queue(source));
+                        if p.track.local_path().is_none()
+                            && (self.cfg.playing_collection.is_none()
+                                || self.queue.get(&p.track.id).is_some())
+                        {
+                            self.queue.upsert(p.track.clone());
+                        }
+                        self.queue.record_navigation(
+                            old.filter(|_| !changed_queue),
+                            &p.track.id,
+                            p.ctx.direction,
+                            p.ctx.history_skip,
+                            p.ctx.from_history,
+                        );
                     }
                     Err(err) => {
-                        if p.finished {
+                        if matches!(
+                            err.0,
+                            OnlineIssue::Resolve | OnlineIssue::Transfer | OnlineIssue::Decode
+                        ) && let Some(next_quality) = p.ctx.remaining_qualities.pop_front()
+                            && let Some(script) =
+                                self.cfg.lx_script.as_ref().filter(|s| s.enabled).cloned()
+                            && let TrackOrigin::Online(reference) = &p.track.origin
+                        {
+                            let mut next_ref = reference.clone();
+                            next_ref.quality = next_quality;
+                            if let Ok(next_track) = next_ref.track() {
+                                log::info!(
+                                    "Online quality '{}' failed for '{}' ({:?}); falling back to '{}'",
+                                    reference.quality,
+                                    p.track.title,
+                                    err.0,
+                                    next_ref.quality
+                                );
+                                let label = format!("{} · {}", next_track.title, next_ref.quality);
+                                (self.publish)(Event::Loading(
+                                    label.clone(),
+                                    p.ctx.status != Status::Playing,
+                                ));
+                                let action = next_ref.action();
+                                self.spawn_prepare(script, action, next_track, label, p.ctx);
+                                return;
+                            }
+                        }
+                        (self.publish)(Event::Loading(String::new(), false));
+                        if p.ctx.finished {
                             self.stop();
                         } else {
                             self.stop_if_drained();

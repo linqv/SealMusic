@@ -5,7 +5,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use reqwest::{Client, Method, Url, header};
 use serde_json::{Map, Value, json};
 
-pub const BODY_LIMIT: usize = 512 * 1024;
+const BODY_LIMIT: usize = 512 * 1024;
 
 pub fn http_url(value: &Value) -> Result<Url> {
     let url = Url::parse(value.as_str().ok_or_else(|| anyhow!("missing URL"))?)?;

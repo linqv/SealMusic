@@ -148,17 +148,25 @@ metadata = {{name = "Local desktop fixture"}}
             # Re-enable a source saved with the P1 configuration shape. The app
             # must import its local-only capability declaration from the JS file.
             time.sleep(.2)
-            cli('xdotool', 'mousemove', '--window', window, '226', '261', 'click', '1')
+            cli('xdotool', 'mousemove', '--window', window, '242', '290', 'click', '1')
             wait_for(lambda: includes('mpris:artUrl', 'file:'))
             capture('settings')
-            cli('xdotool', 'mousemove', '--window', window, '285', '478', 'click', '1')
-            cli('xdotool', 'key', 'F1')
+            cli('xdotool', 'mousemove', '--window', window, '450', '300',
+                'click', '5', 'click', '5', 'click', '5', 'click', '5',
+                'click', '5', 'click', '5', 'click', '5', 'click', '5')
+            time.sleep(.15)
+            cli('xdotool', 'mousemove', '--window', window, '285', '405', 'click', '1')
+            cli('xdotool', 'key', 'F2')
             time.sleep(.25)
             cli('xdotool', 'mousemove', '--window', window, '240', '84', 'click', '3')
             capture('source-menu-en')
             cli('xdotool', 'key', 'Escape', 'F4')
             time.sleep(.25)
-            cli('xdotool', 'mousemove', '--window', window, '675', '478', 'click', '1')
+            cli('xdotool', 'mousemove', '--window', window, '450', '300',
+                'click', '5', 'click', '5', 'click', '5', 'click', '5',
+                'click', '5', 'click', '5', 'click', '5', 'click', '5')
+            time.sleep(.15)
+            cli('xdotool', 'mousemove', '--window', window, '675', '405', 'click', '1')
             cli('xdotool', 'key', 'F3')
             lyrics_key = next(k for k in metadata() if k.endswith(':syncedLyrics'))
             assert includes(lyrics_key, 'First line')
@@ -185,7 +193,7 @@ metadata = {{name = "Local desktop fixture"}}
             assert '/media' not in server.paths
             assert before == {p: hashlib.sha256(p.read_bytes()).digest() for p in library.iterdir()}
             print('A → B → C: local audio advanced, stale artwork/lyrics cleared, oversized cover and worker exit isolated')
-            cli('xdotool', 'windowfocus', window, 'key', 'F1')
+            cli('xdotool', 'windowfocus', window, 'key', 'F2')
             time.sleep(.3)
             cli('xdotool', 'mousemove', '--window', window, '240', '84', 'click', '3')
             capture('source-menu')

@@ -1,7 +1,7 @@
 use std::{
     fs,
     io::{self, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use env_logger::Target;
@@ -34,12 +34,8 @@ fn get_log_path() -> PathBuf {
     }
 }
 
-pub fn init_default_logger(path: Option<impl AsRef<Path>>) {
-    let log_path = if let Some(p) = path {
-        p.as_ref().to_path_buf()
-    } else {
-        get_log_path()
-    };
+pub fn init_default_logger() {
+    let log_path = get_log_path();
     if log_path.exists() && fs::metadata(&log_path).unwrap().len() > 1024 * 1024 * 10 {
         fs::remove_file(&log_path).expect("Failed to remove old log file");
     }
