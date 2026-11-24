@@ -11,447 +11,522 @@ msgstr ""
 "Language: \n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
-#: ui/app.slint:76
+#: ui/app.slint:83
 msgctxt "AppTray"
 msgid "Show Window"
 msgstr ""
 
-#: ui/app.slint:81
+#: ui/app.slint:88
 msgctxt "AppTray"
 msgid "Play / Pause"
 msgstr ""
 
-#: ui/app.slint:85
+#: ui/app.slint:92
 msgctxt "AppTray"
 msgid "Stop"
 msgstr ""
 
-#: ui/app.slint:89
+#: ui/app.slint:96
 msgctxt "AppTray"
 msgid "Previous"
 msgstr ""
 
-#: ui/app.slint:93
+#: ui/app.slint:100
 msgctxt "AppTray"
 msgid "Next"
 msgstr ""
 
-#: ui/app.slint:97
+#: ui/app.slint:104
 msgctxt "AppTray"
 msgid "Rescan Songs"
 msgstr ""
 
-#: ui/app.slint:102
+#: ui/app.slint:109
 msgctxt "AppTray"
 msgid "Exit"
 msgstr ""
 
-#: ui/lyrics_panel.slint:72
-msgctxt "LyricsPanel"
-msgid "Artist: {}"
-msgstr ""
-
-#: ui/lyrics_panel.slint:81
-msgctxt "LyricsPanel"
-msgid "Title: {}"
-msgstr ""
-
-#: ui/search_panel.slint:68
+#: ui/search_panel.slint:186
 msgctxt "SearchPanel"
 msgid "Search songs or artists..."
 msgstr ""
 
-#: ui/search_panel.slint:116 ui/search_panel.slint:179
+#: ui/search_panel.slint:243 ui/search_panel.slint:310
 msgctxt "SearchPanel"
 msgid "No results found"
 msgstr ""
 
-#: ui/search_panel.slint:180
+#: ui/search_panel.slint:311
 msgctxt "SearchPanel"
 msgid "{} result(s) found"
 msgstr ""
 
-#: ui/settings_panel.slint:69
+#: ui/settings_panel.slint:78
 msgctxt "SettingsPanel"
 msgid "Playback"
 msgstr ""
 
-#: ui/settings_panel.slint:85
+#: ui/settings_panel.slint:94
 msgctxt "SettingsPanel"
 msgid "Music directory"
 msgstr ""
 
-#: ui/settings_panel.slint:112
+#: ui/settings_panel.slint:121
 msgctxt "SettingsPanel"
 msgid "Browse..."
 msgstr ""
 
-#: ui/settings_panel.slint:135
+#: ui/settings_panel.slint:255
 msgctxt "SettingsPanel"
 msgid "Appearance"
 msgstr ""
 
-#: ui/settings_panel.slint:149
+#: ui/settings_panel.slint:268
 msgctxt "SettingsPanel"
 msgid "Follow system theme"
 msgstr ""
 
-#: ui/settings_panel.slint:160
+#: ui/settings_panel.slint:276
+msgctxt "SettingsPanel"
+msgid "Light theme"
+msgstr ""
+
+#: ui/settings_panel.slint:292
 msgctxt "SettingsPanel"
 msgid "Language"
 msgstr ""
 
-#: ui/settings_panel.slint:180
+#: ui/settings_panel.slint:312
 msgctxt "SettingsPanel"
 msgid "SealMusic {} · GPL-3.0"
 msgstr ""
 
-#: ui/settings_panel.slint:185
+#: ui/settings_panel.slint:317
 msgctxt "SettingsPanel"
 msgid "Upstream project"
 msgstr ""
 
-#: ui/sidebar.slint:147
+#: ui/sidebar.slint:141
 msgctxt "Sidebar"
 msgid "Search"
 msgstr ""
 
-#: ui/sidebar.slint:157
-msgctxt "Sidebar"
-msgid "Lyrics"
-msgstr ""
-
-#: ui/sidebar.slint:176
+#: ui/sidebar.slint:188
 msgctxt "Sidebar"
 msgid "Settings"
 msgstr ""
 
-#: ui/song_list.slint:84
+#: ui/song_list.slint:88
 msgctxt "SortBar"
 msgid "Title"
 msgstr ""
 
-#: ui/song_list.slint:94
+#: ui/song_list.slint:99
 msgctxt "SortBar"
 msgid "Artist"
 msgstr ""
 
-#: ui/song_list.slint:104
+#: ui/song_list.slint:109
 msgctxt "SortBar"
 msgid "Duration"
 msgstr ""
 
-#: ui/song_list.slint:167
+#: ui/song_list.slint:127
 msgctxt "SongItem"
 msgid "Title: {}\nArtist: {}\nDuration: {}"
 msgstr ""
 
-#: ui/song_list.slint:193
+#: ui/song_list.slint:226
 msgctxt "MessagePopup"
 msgid "Operation failed"
 msgstr ""
 
-#: ui/song_list.slint:209
+#: ui/song_list.slint:273
 msgctxt "MessagePopup"
 msgid "Close"
 msgstr ""
 
-#: ui/control_panel.slint
-msgctxt "ControlPanel"
-msgid "Stop"
+#: ui/control_panel.slint:47
+msgctxt "VolumeButton"
+msgid "Volume"
 msgstr ""
 
-#: ui/online.slint:19
+#: ui/control_panel.slint:139
+msgctxt "SeekBar"
+msgid "Playback position"
+msgstr ""
+
+#: ui/control_panel.slint:359
+msgctxt "ControlPanel"
+msgid "No track selected"
+msgstr ""
+
+#: ui/control_panel.slint:225
+msgctxt "TransportButtons"
+msgid "Shuffle"
+msgstr ""
+
+#: ui/control_panel.slint:233
+msgctxt "TransportButtons"
+msgid "Previous track"
+msgstr ""
+
+#: ui/control_panel.slint:243
+msgctxt "TransportButtons"
+msgid "Play"
+msgstr ""
+
+#: ui/control_panel.slint:243
+msgctxt "TransportButtons"
+msgid "Pause"
+msgstr ""
+
+#: ui/control_panel.slint:249
+msgctxt "TransportButtons"
+msgid "Next track"
+msgstr ""
+
+#: ui/control_panel.slint:255
+msgctxt "TransportButtons"
+msgid "Repeat track"
+msgstr ""
+
+#: ui/control_panel.slint:255
+msgctxt "TransportButtons"
+msgid "Repeat playlist"
+msgstr ""
+
+#: ui/online.slint:61
 msgctxt "OnlineGlobal"
 msgid "Invalid LX link or missing field: {}"
 msgstr ""
 
-#: ui/online.slint:20
+#: ui/online.slint:62
 msgctxt "OnlineGlobal"
 msgid "Enable an LX source in Settings."
 msgstr ""
 
-#: ui/online.slint:21
+#: ui/online.slint:63
 msgctxt "OnlineGlobal"
 msgid "No compatible audio quality is available."
 msgstr ""
 
-#: ui/online.slint:22
+#: ui/online.slint:64
 msgctxt "OnlineGlobal"
 msgid "Could not read or save the LX source."
 msgstr ""
 
-#: ui/online.slint:23
+#: ui/online.slint:65
 msgctxt "OnlineGlobal"
 msgid "The LX source failed to initialize."
 msgstr ""
 
-#: ui/online.slint:24
+#: ui/online.slint:66
 msgctxt "OnlineGlobal"
 msgid "The source could not resolve the media URL ({})."
 msgstr ""
 
-#: ui/online.slint:25
+#: ui/online.slint:67
 msgctxt "OnlineGlobal"
 msgid "Media download failed ({})."
 msgstr ""
 
-#: ui/online.slint:26
+#: ui/online.slint:68
 msgctxt "OnlineGlobal"
 msgid "Audio decoding failed ({})."
 msgstr ""
 
-#: ui/app.slint:205
+#: ui/app.slint:217
 msgctxt "MainWindow"
 msgid "Loading {} (paused)"
 msgstr ""
 
-#: ui/app.slint:206
+#: ui/app.slint:218
 msgctxt "MainWindow"
 msgid "Loading {}"
 msgstr ""
 
-#: ui/search_panel.slint:68
+#: ui/app.slint:455
+msgctxt "MainWindow"
+msgid "Close window"
+msgstr ""
+
+#: ui/search_panel.slint:186
 msgctxt "SearchPanel"
 msgid "Search songs or paste an LX track link"
 msgstr ""
 
-#: ui/settings_panel.slint:126
+#: ui/settings_panel.slint:143
 msgctxt "SettingsPanel"
 msgid "LX music source"
 msgstr ""
 
-#: ui/settings_panel.slint:131
+#: ui/settings_panel.slint:159
 msgctxt "SettingsPanel"
 msgid "Initializing…"
 msgstr ""
 
-#: ui/settings_panel.slint:131
+#: ui/settings_panel.slint:159
 msgctxt "SettingsPanel"
 msgid "Import JS source…"
 msgstr ""
 
-#: ui/settings_panel.slint:136
+#: ui/settings_panel.slint:164
 msgctxt "SettingsPanel"
 msgid "Enabled"
 msgstr ""
 
-#: ui/song_list.slint
+#: ui/song_list.slint:137
 msgctxt "SongItem"
 msgid "Play using LX source"
 msgstr ""
 
-#: ui/song_list.slint
+#: ui/song_list.slint:269
 msgctxt "MessagePopup"
 msgid "Open update link"
 msgstr ""
 
-#: ui/app.slint
+#: ui/app.slint:520
 msgctxt "MainWindow"
 msgid "LX source update"
 msgstr ""
 
-#: ui/online.slint:38
+#: ui/online.slint:52
 msgctxt "OnlineGlobal"
 msgid "Kuwo"
 msgstr ""
 
-#: ui/online.slint:39
+#: ui/online.slint:53
 msgctxt "OnlineGlobal"
 msgid "Kugou"
 msgstr ""
 
-#: ui/online.slint:40
+#: ui/online.slint:54
 msgctxt "OnlineGlobal"
 msgid "QQ Music"
 msgstr ""
 
-#: ui/online.slint:41
+#: ui/online.slint:55
 msgctxt "OnlineGlobal"
 msgid "NetEase"
 msgstr ""
 
-#: ui/online.slint:42
+#: ui/online.slint:56
 msgctxt "OnlineGlobal"
 msgid "Migu"
 msgstr ""
 
-#: ui/search_panel.slint:91
+#: ui/search_panel.slint:204
 msgctxt "SearchPanel"
 msgid "Cancel"
 msgstr ""
 
-#: ui/search_panel.slint:91
+#: ui/search_panel.slint:204
 msgctxt "SearchPanel"
 msgid "Local library"
 msgstr ""
 
-#: ui/search_panel.slint:109
+#: ui/search_panel.slint:220
 msgctxt "SearchPanel"
 msgid "Previous page"
 msgstr ""
 
-#: ui/search_panel.slint:117
+#: ui/search_panel.slint:227
 msgctxt "SearchPanel"
 msgid "{} · Page {}"
 msgstr ""
 
-#: ui/search_panel.slint:124
+#: ui/search_panel.slint:234
 msgctxt "SearchPanel"
 msgid "Next page"
 msgstr ""
 
-#: ui/search_panel.slint:133
+#: ui/search_panel.slint:242
 msgctxt "SearchPanel"
 msgid "Searching {}…"
 msgstr ""
 
-#: ui/search_panel.slint:134
+#: ui/search_panel.slint:243
 msgctxt "SearchPanel"
 msgid "{} search failed."
 msgstr ""
 
-#: ui/search_panel.slint:138
+#: ui/search_panel.slint:252
 msgctxt "SearchPanel"
 msgid "Retry"
 msgstr ""
 
-#: ui/online.slint:35
+#: ui/online.slint:43
 msgctxt "OnlineGlobal"
 msgid "Standard (128k)"
 msgstr ""
 
-#: ui/online.slint:36
+#: ui/online.slint:44
 msgctxt "OnlineGlobal"
 msgid "High (320k)"
 msgstr ""
 
-#: ui/online.slint:37
+#: ui/online.slint:45
 msgctxt "OnlineGlobal"
 msgid "Lossless (FLAC)"
 msgstr ""
 
-#: ui/online.slint:38
+#: ui/online.slint:46
 msgctxt "OnlineGlobal"
 msgid "Hi-Res (24-bit)"
 msgstr ""
 
-#: ui/search_panel.slint:169
+#: ui/search_panel.slint:289
 msgctxt "SearchPanel"
 msgid "Play"
 msgstr ""
 
-#: ui/settings_panel.slint:168
+#: ui/settings_panel.slint:180
 msgctxt "SettingsPanel"
 msgid "Preferred audio quality"
 msgstr ""
 
-#: ui/settings_panel.slint:183
+#: ui/settings_panel.slint:199
 msgctxt "SettingsPanel"
 msgid "Used first when playing online tracks; switches automatically if unavailable."
 msgstr ""
 
-#: ui/settings_panel.slint:215
+#: ui/settings_panel.slint:219
 msgctxt "SettingsPanel"
 msgid "Online search source"
 msgstr ""
 
-#: ui/online.slint:50
+#: ui/online.slint:51
 msgctxt "OnlineGlobal"
 msgid "All platforms"
 msgstr ""
 
-#: ui/search_panel.slint:90
+#: ui/search_panel.slint:199
 msgctxt "SearchPanel"
 msgid "Search online"
 msgstr ""
 
-#: ui/search_panel.slint:138
+#: ui/search_panel.slint:247
 msgctxt "SearchPanel"
 msgid "Some platforms could not be searched."
 msgstr ""
 
-#: ui/collections.slint:21
+#: ui/collections.slint:28
 msgctxt "CollectionsGlobal"
 msgid "My Likes"
 msgstr ""
 
-#: ui/collections.slint:63
+#: ui/collections.slint:71
 msgctxt "LikeButton"
 msgid "Unlike"
 msgstr ""
 
-#: ui/collections.slint:63
+#: ui/collections.slint:71
 msgctxt "LikeButton"
 msgid "Like"
 msgstr ""
 
-#: ui/collections.slint:77
+#: ui/collections.slint:85
 msgctxt "TrackActions"
 msgid "Add to collection"
 msgstr ""
 
-#: ui/collections.slint:82
+#: ui/collections.slint:97
 msgctxt "TrackActions"
 msgid "Remove from collection"
 msgstr ""
 
-#: ui/collections.slint:107
+#: ui/collections.slint:188
 msgctxt "CollectionSelector"
 msgid "Cancel"
 msgstr ""
 
-#: ui/collections.slint:107
+#: ui/collections.slint:188
 msgctxt "CollectionSelector"
 msgid "New collection"
 msgstr ""
 
-#: ui/collections.slint:111
+#: ui/collections.slint:203
 msgctxt "CollectionSelector"
 msgid "Collection name"
 msgstr ""
 
-#: ui/collections.slint:117
+#: ui/collections.slint:211
 msgctxt "CollectionSelector"
 msgid "Create"
 msgstr ""
 
-#: ui/collections.slint:165
-msgctxt "CollectionPicker"
-msgid "Add to collection"
-msgstr ""
-
-#: ui/collections.slint:184
-msgctxt "CollectionPicker"
-msgid "Cancel"
-msgstr ""
-
-#: ui/song_list.slint:297
+#: ui/song_list.slint:309
 msgctxt "SongListView"
 msgid "Songs you like will appear here."
 msgstr ""
 
-#: ui/song_list.slint:298
+#: ui/song_list.slint:310
 msgctxt "SongListView"
 msgid "Add songs from search or another collection."
 msgstr ""
 
-#: ui/song_list.slint:305
+#: ui/song_list.slint:317
 msgctxt "SongListView"
 msgid "Find songs"
 msgstr ""
 
-#: ui/search_panel.slint:232
+#: ui/search_panel.slint:332
 msgctxt "SearchPanel"
 msgid "No local songs found."
 msgstr ""
 
-#: ui/app.slint:174
+#: ui/app.slint:175
 msgctxt "MainWindow"
 msgid "Could not save collections."
 msgstr ""
 
-#: ui/sidebar.slint:137
+#: ui/sidebar.slint:82
 msgctxt "Sidebar"
-msgid "Collections"
+msgid "My playlists"
+msgstr ""
+
+#: ui/settings_panel.slint:284
+msgctxt "SettingsPanel"
+msgid "Dynamic cover colors"
+msgstr ""
+
+#: ui/control_panel.slint:314
+msgctxt "ControlPanel"
+msgid "Open lyrics and play queue"
+msgstr ""
+
+#: ui/lyrics_panel.slint:174
+msgctxt "NowPlaying"
+msgid "Close now playing"
+msgstr ""
+
+#: ui/lyrics_panel.slint:225
+msgctxt "NowPlaying"
+msgid "No track selected"
+msgstr ""
+
+#: ui/lyrics_panel.slint:296
+msgctxt "NowPlaying"
+msgid "Volume"
+msgstr ""
+
+#: ui/lyrics_panel.slint:311
+msgctxt "NowPlaying"
+msgid "Lyrics"
+msgstr ""
+
+#: ui/lyrics_panel.slint:317
+msgctxt "NowPlaying"
+msgid "Play queue"
+msgstr ""
+
+#: ui/lyrics_panel.slint:377
+msgctxt "NowPlaying"
+msgid "The play queue is empty"
+msgstr ""
+
+#: ui/lyrics_panel.slint:377
+msgctxt "NowPlaying"
+msgid "No lyrics available"
 msgstr ""

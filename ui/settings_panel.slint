@@ -41,8 +41,11 @@ export component SettingsPanel inherits Rectangle {
     in-out property <string> song_dir;
     in-out property <string> lang;
     in-out property <bool> follow_system_theme;
+    in-out property <bool> light_ui;
+    in-out property <bool> cover_recoloring: true;
     callback set_lang(string);
     callback set_follow_system_theme(bool);
+    callback set_light_theme(bool);
     in property <string> version;
     callback open-upstream();
     callback select_song_dir();
@@ -57,6 +60,7 @@ export component SettingsPanel inherits Rectangle {
         layout := VerticalLayout {
             width: 100%;
             padding: 24px;
+            padding-right: 48px;
             spacing: 20px;
 
             // --- Playback Section ---
@@ -260,13 +264,25 @@ export component SettingsPanel inherits Rectangle {
                         background: Theme.divider;
                     }
 
-                    // Follow system theme
                     CheckBox {
                         text: @tr("Follow system theme");
                         checked <=> root.follow_system_theme;
                         toggled => {
                             root.set_follow_system_theme(self.checked);
                         }
+                    }
+
+                    CheckBox {
+                        text: @tr("Light theme");
+                        enabled: !root.follow_system_theme;
+                        checked <=> root.light_ui;
+                        toggled => { root.set_light_theme(self.checked); }
+                    }
+
+                    // Cover art recoloring
+                    CheckBox {
+                        text: @tr("Dynamic cover colors");
+                        checked <=> root.cover_recoloring;
                     }
 
                     // Language

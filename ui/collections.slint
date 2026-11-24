@@ -3,16 +3,23 @@ import { Icon, IconDisplay, IconSet } from "@lucide";
 import { Theme } from "theme.slint";
 import { SongInfo } from "types.slint";
 
+struct CollectionPickerAnchor {
+    track: string,
+    right: length,
+    top: length,
+    bottom: length,
+}
+
 export global CollectionsGlobal {
     in property <[string]> names: [""];
     in property <int> selected;
     in property <[SongInfo]> songs;
     in property <[string]> liked-tracks;
+    in-out property <CollectionPickerAnchor> picker-anchor;
     pure callback contains-track([string], string) -> bool;
     callback select-collection(int);
     callback create-collection(string);
     callback toggle-like(string);
-    callback choose-collection(string);
     callback add-to-collection(int, string);
     callback remove-from-collection(int, string);
     callback play-collection-track(int, string, bool);
@@ -30,6 +37,7 @@ component CollectionIconButton inherits Rectangle {
     in property <Icon> icon;
     in property <string> label;
     in property <bool> active;
+    in property <bool> show-tooltip;
     callback clicked();
     width: 32px;
     height: 28px;
@@ -42,7 +50,7 @@ component CollectionIconButton inherits Rectangle {
         accessible-label: root.label;
         accessible-action-default => { root.clicked(); }
         clicked => { root.clicked(); }
-        Tooltip {
+        if root.show-tooltip: Tooltip {
             text: @markdown("\{root.label}");
         }
     }
@@ -72,78 +80,171 @@ export component TrackActions inherits HorizontalLayout {
     LikeButton {
         track: root.track;
     }
-    CollectionIconButton {
+    add-button := CollectionIconButton {
         icon: IconSet.ListPlus;
         label: @tr("Add to collection");
-        clicked => { CollectionsGlobal.choose-collection(root.track); }
+        clicked => {
+            CollectionsGlobal.picker-anchor = {
+                track: root.track,
+                right: self.absolute-position.x + self.width,
+                top: self.absolute-position.y,
+                bottom: self.absolute-position.y + self.height,
+            };
+        }
     }
     if root.collection > 0: CollectionIconButton {
         icon: IconSet.ListMinus;
         label: @tr("Remove from collection");
+        show-tooltip: true;
         clicked => { CollectionsGlobal.remove-from-collection(root.collection, root.track); }
     }
 }
 
-export component CollectionSelector inherits Rectangle {
-    width: 168px;
-    background: Theme.panel;
+export component CollectionSelector inherits VerticalLayout {
+    in-out property <bool> expanded;
+    in property <string> title;
+    in property <bool> collection-page;
     private property <bool> creating;
     private property <string> name;
+    private property <length> row-height: 34px;
+    callback open-collection();
     callback request-focus();
+    min-width: 0px;
+    vertical-stretch: 0;
+    spacing: 4px;
+
+    function cancel-create() {
+        root.name = "";
+        root.creating = false;
+    }
 
     function create() {
-        if root.name != "" {
+        if !root.name.is-empty {
             CollectionsGlobal.create-collection(root.name);
-            root.name = "";
-            root.creating = false;
-            root.request-focus();
+            root.cancel-create();
+            root.open-collection();
         }
     }
 
-    VerticalLayout {
-        padding: 10px;
-        spacing: 8px;
-        new-collection := Button {
-            text: root.creating ? @tr("Cancel") : @tr("New collection");
-            clicked => { root.creating = !root.creating; }
-        }
-        if root.creating: LineEdit {
-            placeholder-text: @tr("Collection name");
-            text <=> root.name;
-            accepted => { root.create(); }
-        }
-        if root.creating: Button {
-            primary: true;
-            text: @tr("Create");
-            enabled: root.name != "";
-            clicked => { root.create(); }
-        }
+    HorizontalLayout {
+        height: 38px;
 
-        ListView {
-            vertical-stretch: 1;
-            for name[index] in CollectionsGlobal.names: Rectangle {
-                height: 36px;
-                border-radius: 6px;
-                background: index == CollectionsGlobal.selected || item.has-hover ? Theme.hover : transparent;
-                Text {
-                    x: 9px;
-                    width: parent.width - 18px;
-                    height: 100%;
-                    text: CollectionsGlobal.display-name(index, name);
+        Rectangle {
+            border-radius: 6px;
+            background: toggle.pressed ? Theme.press : toggle.has-hover ? Theme.hover : transparent;
+            accessible-role: button;
+            accessible-label: heading.text;
+            accessible-expandable: true;
+            accessible-expanded: root.expanded;
+            accessible-action-default => { toggle.clicked(); }
+
+            HorizontalLayout {
+                padding-left: 14px;
+                spacing: 10px;
+                Rectangle {
+                    width: 20px;
+                    IconDisplay {
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        icon: IconSet.ListMusic;
+                        size: 18px;
+                        stroke: Theme.text-secondary;
+                        stroke-width: 1.8;
+                    }
+                }
+                heading := Text {
+                    min-width: 0px;
+                    horizontal-stretch: 1;
+                    text: root.title;
+                    font-weight: 400;
                     vertical-alignment: center;
                     overflow: elide;
-                    color: index == CollectionsGlobal.selected ? Theme.accent : Theme.text;
-                    font-weight: index == CollectionsGlobal.selected ? 600 : 400;
+                    color: Theme.text-secondary.with-alpha(0.68);
                 }
-                item := TouchArea {
-                    mouse-cursor: pointer;
-                    accessible-role: button;
-                    accessible-label: CollectionsGlobal.display-name(index, name);
-                    accessible-action-default => { self.clicked(); }
-                    clicked => {
-                        CollectionsGlobal.select-collection(index);
-                        root.request-focus();
+                Rectangle {
+                    width: 16px;
+                    IconDisplay {
+                        y: (parent.height - self.height) / 2;
+                        icon: root.expanded ? IconSet.ChevronDown : IconSet.ChevronRight;
+                        size: 16px;
+                        stroke: Theme.text-secondary.with-alpha(0.68);
                     }
+                }
+            }
+
+            toggle := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    root.expanded = !root.expanded;
+                    root.cancel-create();
+                    root.request-focus();
+                }
+            }
+        }
+
+        CollectionIconButton {
+            height: 38px;
+            icon: root.creating ? IconSet.X : IconSet.Plus;
+            label: root.creating ? @tr("Cancel") : @tr("New collection");
+            show-tooltip: true;
+            clicked => {
+                if root.creating {
+                    root.cancel-create();
+                    root.request-focus();
+                } else {
+                    root.expanded = true;
+                    root.creating = true;
+                }
+            }
+        }
+    }
+
+    if root.creating: LineEdit {
+        placeholder-text: @tr("Collection name");
+        text <=> root.name;
+        init => { self.focus(); }
+        accepted => { root.create(); }
+    }
+
+    if root.creating: Button {
+        primary: true;
+        text: @tr("Create");
+        enabled: !root.name.is-empty;
+        clicked => { root.create(); }
+    }
+
+    if root.expanded: ListView {
+        property <int> selected-index: CollectionsGlobal.selected;
+        min-height: root.row-height;
+        preferred-height: self.max-height;
+        max-height: CollectionsGlobal.names.length * root.row-height;
+        vertical-stretch: 0;
+        init => { self.ensure-row-visible(self.selected-index, ScrollBehavior.instant); }
+        changed selected-index => { self.ensure-row-visible(self.selected-index, ScrollBehavior.instant); }
+
+        for name[index] in CollectionsGlobal.names: Rectangle {
+            property <bool> selected: root.collection-page && index == CollectionsGlobal.selected;
+            height: root.row-height;
+            border-radius: 6px;
+            background: item.pressed ? Theme.press : selected || item.has-hover ? Theme.hover : transparent;
+            Text {
+                x: 24px;
+                width: parent.width - 32px;
+                height: 100%;
+                text: CollectionsGlobal.display-name(index, name);
+                vertical-alignment: center;
+                overflow: elide;
+                color: parent.selected ? Theme.accent : Theme.text;
+                font-weight: parent.selected ? 600 : 400;
+            }
+            item := TouchArea {
+                mouse-cursor: pointer;
+                accessible-role: button;
+                accessible-label: CollectionsGlobal.display-name(index, name);
+                accessible-action-default => { self.clicked(); }
+                clicked => {
+                    CollectionsGlobal.select-collection(index);
+                    root.open-collection();
                 }
             }
         }
@@ -152,37 +253,50 @@ export component CollectionSelector inherits Rectangle {
 
 export component CollectionPicker inherits Rectangle {
     callback picked(int);
-    callback dismissed();
+    private property <length> item-height: 34px;
+    width: 216px;
+    height: min(6, CollectionsGlobal.names.length) * root.item-height + 8px;
     background: Theme.surface;
-    border-color: Theme.border;
-    border-width: 1px;
     border-radius: 8px;
 
-    VerticalLayout {
-        padding: 16px;
-        spacing: 8px;
-        Text {
-            text: @tr("Add to collection");
-            font-weight: 600;
-            color: Theme.text;
-        }
-        ListView {
-            vertical-stretch: 1;
-            for name[index] in CollectionsGlobal.names: Rectangle {
-                height: 36px;
-                Button {
-                    width: 100%;
-                    height: 32px;
-                    text: CollectionsGlobal.display-name(index, name);
-                    clicked => { root.picked(index); }
-                }
+    ListView {
+        x: 4px;
+        y: 4px;
+        width: parent.width - 8px;
+        height: parent.height - 8px;
+        for name[index] in CollectionsGlobal.names: Rectangle {
+            property <string> label: CollectionsGlobal.display-name(index, name);
+            height: root.item-height;
+            border-radius: 4px;
+            background: item.pressed ? Theme.press : item.has-hover || keyboard.has-focus ? Theme.hover : transparent;
+
+            Text {
+                x: 12px;
+                width: parent.width - 24px;
+                height: 100%;
+                text: parent.label;
+                color: Theme.text;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+                accessible-role: none;
             }
-        }
-        HorizontalLayout {
-            alignment: end;
-            Button {
-                text: @tr("Cancel");
-                clicked => { root.dismissed(); }
+            item := TouchArea {
+                mouse-cursor: pointer;
+                accessible-role: button;
+                accessible-label: parent.label;
+                accessible-action-default => { self.clicked(); }
+                clicked => { root.picked(index); }
+            }
+            keyboard := FocusScope {
+                width: 0px;
+                key-pressed(event) => {
+                    if event.text == Key.Space || event.text == Key.Return {
+                        item.clicked();
+                        return accept;
+                    }
+                    return reject;
+                }
             }
         }
     }

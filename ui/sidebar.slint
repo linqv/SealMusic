@@ -1,5 +1,6 @@
 import { Theme } from "theme.slint";
 import { Icon, IconDisplay, IconSet } from "@lucide";
+import { CollectionSelector } from "collections.slint";
 
 export component SidebarNavItem inherits Rectangle {
     in property <Icon> icon;
@@ -77,11 +78,14 @@ export component SidebarNavItem inherits Rectangle {
 export component Sidebar inherits Rectangle {
     in-out property <bool> expanded: false;
     in property <int> current_page: 0;
+    private property <bool> collections-expanded;
+    private property <string> collections-title: @tr("My playlists");
     callback change_page(int);
     callback request_focus();
 
     width: root.expanded ? 200px : 54px;
     background: Theme.panel;
+    clip: true;
     animate width {
         duration: 200ms;
         easing: ease-out-quad;
@@ -133,16 +137,6 @@ export component Sidebar inherits Rectangle {
         }
 
         SidebarNavItem {
-            icon: IconSet.ListMusic;
-            label: @tr("Collections");
-            selected: root.current_page == 0;
-            expanded: root.expanded;
-            clicked => {
-                root.change_page(0);
-            }
-        }
-
-        SidebarNavItem {
             icon: IconSet.Search;
             label: @tr("Search");
             selected: root.current_page == 1;
@@ -152,17 +146,35 @@ export component Sidebar inherits Rectangle {
             }
         }
 
-        SidebarNavItem {
-            icon: IconSet.Captions;
-            label: @tr("Lyrics");
-            selected: root.current_page == 2;
-            expanded: root.expanded;
+        if root.expanded: CollectionSelector {
+            expanded <=> root.collections-expanded;
+            title: root.collections-title;
+            collection-page: root.current_page == 0;
+            open-collection => {
+                if root.current_page != 0 {
+                    root.change_page(0);
+                } else {
+                    root.request_focus();
+                }
+            }
+            request-focus => { root.request_focus(); }
+        }
+
+        if !root.expanded: SidebarNavItem {
+            icon: IconSet.ListMusic;
+            label: root.collections-title;
+            selected: root.current_page == 0;
+            accessible-role: button;
+            accessible-label: self.label;
+            accessible-action-default => { self.clicked(); }
             clicked => {
-                root.change_page(2);
+                root.collections-expanded = true;
+                root.expanded = true;
+                root.request_focus();
             }
         }
 
-        Rectangle {
+        WindowMoveArea {
             vertical-stretch: 1;
         }
 

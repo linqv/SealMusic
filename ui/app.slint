@@ -1,17 +1,18 @@
 import { CatalogRow, OnlineGlobal } from "online.slint";
 export { CatalogRow, OnlineGlobal }
-import { CollectionPicker, CollectionSelector, CollectionsGlobal } from "collections.slint";
+import { CollectionPicker, CollectionsGlobal } from "collections.slint";
 export { CollectionsGlobal }
 import { Theme } from "theme.slint";
+export { Theme }
 import { Palette } from "std-widgets.slint";
+import { IconDisplay, IconSet } from "@lucide";
 import { ControlPanel } from "control_panel.slint";
 import { Sidebar } from "sidebar.slint";
-import { LyricsPanel } from "lyrics_panel.slint";
+import { NowPlaying } from "lyrics_panel.slint";
 import {
     SongListView,
     MessagePopup,
 } from "song_list.slint";
-import { TitleBar } from "title_bar.slint";
 import { SettingsPanel } from "settings_panel.slint";
 import { SearchPanel } from "search_panel.slint";
 import {
@@ -36,7 +37,6 @@ export global PlaybackGlobal {
     in-out property <float> progress;
     in-out property <float> duration;
     in-out property <bool> paused;
-    in-out property <bool> dragging;
     in-out property <LoopMode> loop_mode;
     in-out property <bool> shuffle;
     in-out property <float> volume;
@@ -48,7 +48,7 @@ export global DisplayGlobal {
     in-out property <[LyricItem]> lyrics;
     in-out property <int> active_lyric_index: -1;
     in property <length> lyric_viewport_y;
-    in-out property <length> lyric_line_height: 40px;
+    in property <[SongInfo]> upcoming;
     in property <image> album_image;
     in-out property <string> song_dir;
 
@@ -127,7 +127,7 @@ export component MainWindow inherits Window {
     forward-focus: content-pane;
     callback toggle_play();
     callback play(SongInfo);
-    callback stop();
+    callback play_queued(string);
     callback play_next();
     callback play_prev();
     callback change_progress(float);
@@ -142,16 +142,23 @@ export component MainWindow inherits Window {
     callback select_song_dir();
     callback search_songs(string);
     pure callback format_duration(float) -> string;
-    callback window_minimize();
-    callback window_maximize();
-    callback window_close();
-    callback window_drag_delta(float, float);
     pure callback open_url_in_browser(string);
     pure callback prev-lyric-time(float, [LyricItem]) -> float;
     pure callback next-lyric-time(float, [LyricItem]) -> float;
     callback page_changed(int);
+    callback lyrics_visibility_changed();
     in property <string> version;
     in-out property <int> current_page: 0;
+    private property <bool> now-playing-open;
+    private property <float> now-playing-offset: root.now-playing-open ? 0 : 1;
+    animate now-playing-offset {
+        duration: 320ms;
+        easing: ease-in-out;
+    }
+    private property <bool> show-queue;
+    out property <bool> lyrics-visible: root.now-playing-open && !root.show-queue;
+    out property <length> lyric-line-height: now-playing.lyric-line-height;
+    out property <length> lyric-view-height: now-playing.lyric-view-height;
     in-out property <bool> sidebar_expanded: false;
     in-out property <string> operation_error_message: "";
     public function set_light_theme(yes: bool) {
@@ -173,11 +180,25 @@ export component MainWindow inherits Window {
         root.operation_error_message = @tr("Could not save collections.");
         operation-popup.show();
     }
-    private property <string> collection-picker-track;
-    public function show_collection_picker(track: string) {
-        root.collection-picker-track = track;
-        collection-picker.show();
+    function close-collection-picker() {
+        CollectionsGlobal.picker-anchor.track = "";
     }
+    function set-now-playing(open: bool) {
+        root.close-collection-picker();
+        if open && root.now-playing-offset == 1 { root.show-queue = false; }
+        root.now-playing-open = open;
+        root.focus();
+    }
+    function navigate(page: int) {
+        root.now-playing-open = false;
+        root.current_page = page;
+        root.page_changed(page);
+        root.focus();
+    }
+    changed lyrics-visible => { root.lyrics_visibility_changed(); }
+    changed current_page => { root.close-collection-picker(); }
+    changed width => { root.close-collection-picker(); }
+    changed height => { root.close-collection-picker(); }
     window-frame := Rectangle {
         width: 100%;
         height: 100%;
@@ -187,33 +208,16 @@ export component MainWindow inherits Window {
         background: Theme.panel;
         clip: true;
 
-        title-bar := TitleBar {
-            y: 0;
-            width: 100%;
-            is_light_theme <=> DisplayGlobal.light_ui;
-            theme_toggle_enabled: !DisplayGlobal.follow_system_theme;
-            close => { root.window_close(); }
-            minimize => { root.window_minimize(); }
-            maximize => { root.window_maximize(); }
-            toggle_theme => {
-                DisplayGlobal.follow_system_theme = false;
-                root.set_light_theme(!DisplayGlobal.light_ui);
-            }
-            drag_delta(dx, dy) => {
-                root.window_drag_delta(dx, dy);
-            }
-        }
-
         loading-strip := Rectangle {
             x: 0px;
-            y: title-bar.height;
+            y: 0px;
             width: 100%;
             height: OnlineGlobal.loading == "" ? 0px : 28px;
             clip: true;
             background: Theme.panel;
             Text {
                 x: 12px;
-                width: parent.width - 24px;
+                width: parent.width - 60px;
                 text: OnlineGlobal.loading-paused
                     ? @tr("Loading {} (paused)", OnlineGlobal.loading)
                     : @tr("Loading {}", OnlineGlobal.loading);
@@ -222,262 +226,293 @@ export component MainWindow inherits Window {
             }
         }
 
-        HorizontalLayout {
+        content-pane := FocusScope {
             x: 0px;
-            y: title-bar.height + loading-strip.height;
+            y: loading-strip.height;
             width: 100%;
-            height: root.height - title-bar.height - loading-strip.height;
-            spacing: 0px;
+            height: root.height - self.y;
 
-            sidebar := Sidebar {
-                expanded <=> root.sidebar_expanded;
-                current_page: root.current_page;
-                change_page(p) => {
-                    root.current_page = p;
-                    root.page_changed(p);
-                    root.focus();
-                }
-                request_focus => {
-                    root.focus();
-                }
-            }
+            Rectangle {
+                visible: root.now-playing-offset > 0;
 
-            content-pane := FocusScope {
-                horizontal-stretch: 1;
-                height: 100%;
+                HorizontalLayout {
+                    Sidebar {
+                        expanded <=> root.sidebar_expanded;
+                        current_page: root.current_page;
+                        change_page(page) => { root.navigate(page); }
+                        request_focus => { root.focus(); }
+                    }
 
-                content-rect := Rectangle {
-                    width: 100%;
-                    height: 100%;
-                    border-top-left-radius: 10px;
-                    clip: true;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
 
-                    if root.current_page == 0: VerticalLayout {
-                        width: 100%;
-                        height: 100%;
-                        HorizontalLayout {
+                        Rectangle {
                             vertical-stretch: 1;
-                            CollectionSelector {
-                                request-focus => { root.focus(); }
-                            }
-                            SongListView {
-                                horizontal-stretch: 1;
+                            border-top-left-radius: 10px;
+                            clip: true;
+
+                            if root.current_page == 0: SongListView {
+                                width: 100%;
+                                height: 100%;
                                 ascending <=> DisplayGlobal.sort_ascending;
                                 sort-key <=> DisplayGlobal.sort_key;
                                 scroll-y <=> DisplayGlobal.gallery_viewport_y;
                                 current-song: DisplayGlobal.current_song;
-                                sort-songs(key, asc) => {
-                                    root.sort_song_list(key, asc);
+                                sort-songs(key, asc) => { root.sort_song_list(key, asc); }
+                                browse => { root.navigate(1); }
+                            }
+
+                            if root.current_page == 1: SearchPanel {
+                                x: 0px;
+                                y: 0px;
+                                width: 100%;
+                                height: 100%;
+                                search-query <=> DisplayGlobal.search_query;
+                                library-songs: DisplayGlobal.library_songs;
+                                search-results <=> DisplayGlobal.search_results;
+                                current-song <=> DisplayGlobal.current_song;
+                                search(query) => {
+                                    root.search_songs(query);
                                 }
-                                browse => {
-                                    root.current_page = 1;
-                                    root.page_changed(1);
-                                    root.focus();
+                                play-song(info) => {
+                                    root.play(info);
+                                }
+                            }
+
+                            if root.current_page == 3: Rectangle {
+                                width: 100%;
+                                height: 100%;
+                                background: Theme.surface;
+                                TouchArea {
+                                    clicked => {
+                                        root.focus();
+                                    }
+                                }
+
+                                SettingsPanel {
+                                    width: 100%;
+                                    height: 100%;
+                                    version: root.version;
+                                    open-upstream => { root.open_url_in_browser("https://github.com/Jordan-Haidee/zeedle"); }
+                                    song_dir <=> DisplayGlobal.song_dir;
+                                    lang <=> DisplayGlobal.lang;
+                                    follow_system_theme <=> DisplayGlobal.follow_system_theme;
+                                    light_ui <=> DisplayGlobal.light_ui;
+                                    cover_recoloring <=> Theme.cover-recoloring;
+                                    set_lang(l) => {
+                                        root.set_lang(l);
+                                    }
+                                    set_follow_system_theme(yes) => {
+                                        root.set_follow_system_theme(yes);
+                                    }
+                                    set_light_theme(yes) => {
+                                        root.set_light_theme(yes);
+                                    }
+                                    select_song_dir => {
+                                        root.select_song_dir();
+                                    }
                                 }
                             }
                         }
 
                         ControlPanel {
                             can-seek: PlaybackGlobal.can-seek;
-                            max-height: 80px;
-                            min-height: 50px;
-                            preferred-height: 60px;
-                            progress <=> PlaybackGlobal.progress;
-                            duration <=> PlaybackGlobal.duration;
-                            paused <=> PlaybackGlobal.paused;
-                            dragging <=> PlaybackGlobal.dragging;
+                            progress: PlaybackGlobal.progress;
+                            duration: PlaybackGlobal.duration;
+                            paused: PlaybackGlobal.paused;
                             shuffle: PlaybackGlobal.shuffle;
-                            set-shuffle(s) => { root.set_shuffle(s); }
-                            loop_mode <=> PlaybackGlobal.loop_mode;
-                            current_song <=> DisplayGlobal.current_song;
-                            album_image <=> DisplayGlobal.album_image;
+                            loop_mode: PlaybackGlobal.loop_mode;
+                            current_song: DisplayGlobal.current_song;
+                            album_image: DisplayGlobal.album_image;
                             volume <=> PlaybackGlobal.volume;
-                            change-progress(p) => {
-                                root.change_progress(p);
-                                root.focus();
-                            }
-                            toggle-play() => {
-                                root.toggle_play();
-                            }
-                            stop => { root.stop(); }
-                            play-next() => {
-                                root.play_next();
-                            }
-                            play-prev() => {
-                                root.play_prev();
-                            }
-                            switch-mode(m) => {
-                                root.switch_mode(m);
-                            }
-                            change-volume(v) => {
-                                root.change_volume(v);
-                                root.focus();
-                            }
-                            double-clicked() => {
-                                root.current_page = 2;
-                                root.page_changed(2);
-                            }
-                            format-duration(d) => {
-                                return root.format_duration(d);
-                            }
+                            change-progress(pos) => { root.change_progress(pos); root.focus(); }
+                            toggle-play => { root.toggle_play(); }
+                            play-next => { root.play_next(); }
+                            play-prev => { root.play_prev(); }
+                            set-shuffle(value) => { root.set_shuffle(value); }
+                            switch-mode(mode) => { root.switch_mode(mode); }
+                            change-volume(value) => { root.change_volume(value); }
+                            open-now-playing => { root.set-now-playing(true); }
+                            format-duration(value) => { return root.format_duration(value); }
                         }
                     }
+                }
+            }
 
-                    if root.current_page == 1: SearchPanel {
-                        x: 0px;
-                        y: 0px;
-                        width: 100%;
-                        height: 100%;
-                        search-query <=> DisplayGlobal.search_query;
-                        library-songs: DisplayGlobal.library_songs;
-                        search-results <=> DisplayGlobal.search_results;
-                        current-song <=> DisplayGlobal.current_song;
-                        search(query) => {
-                            root.search_songs(query);
-                        }
-                        play-song(info) => {
-                            root.play(info);
-                        }
+            now-playing := NowPlaying {
+                y: parent.height * root.now-playing-offset;
+                visible: root.now-playing-offset < 1;
+                album-image: DisplayGlobal.album_image;
+                current-song: DisplayGlobal.current_song;
+                upcoming: DisplayGlobal.upcoming;
+                lyrics: DisplayGlobal.lyrics;
+                active-lyric-index: DisplayGlobal.active_lyric_index;
+                lyric-scroll-y <=> DisplayGlobal.lyric_viewport_y;
+                show-queue <=> root.show-queue;
+                can-seek: PlaybackGlobal.can-seek;
+                progress: PlaybackGlobal.progress;
+                duration: PlaybackGlobal.duration;
+                paused: PlaybackGlobal.paused;
+                shuffle: PlaybackGlobal.shuffle;
+                loop-mode: PlaybackGlobal.loop_mode;
+                volume <=> PlaybackGlobal.volume;
+                dismiss => { root.set-now-playing(false); }
+                seek(pos) => { root.change_progress(pos); root.focus(); }
+                toggle-play => { root.toggle_play(); }
+                play-next => { root.play_next(); }
+                play-prev => { root.play_prev(); }
+                play-queued(id) => { root.play_queued(id); }
+                set-shuffle(value) => { root.set_shuffle(value); }
+                switch-mode(mode) => { root.switch_mode(mode); }
+                change-volume(value) => { root.change_volume(value); }
+                format-duration(value) => { return root.format_duration(value); }
+            }
+
+            TouchArea {
+                enabled: root.now-playing-open ? root.now-playing-offset > 0 : root.now-playing-offset < 1;
+                scroll-event => { return accept; }
+            }
+
+            key-pressed(event) => {
+                if event.text == Key.Escape && root.now-playing-open {
+                    root.set-now-playing(false);
+                    return accept;
+                }
+                return reject;
+            }
+
+            KeyBinding {
+                keys: @keys(Control + Q);
+                activated => { root.quit(); }
+            }
+
+            KeyBinding {
+                keys: @keys(Space);
+                activated => { root.toggle_play(); root.focus(); }
+            }
+
+            KeyBinding {
+                keys: @keys(RightArrow);
+                activated => {
+                    if (root.lyrics-visible && DisplayGlobal.lyrics.length > 0) {
+                        root.change_progress(root.next-lyric-time(PlaybackGlobal.progress, DisplayGlobal.lyrics));
+                    } else {
+                        root.seek_relative(15);
                     }
+                    root.focus();
+                }
+            }
 
-                    if root.current_page == 2: Rectangle {
-                        width: 100%;
-                        height: 100%;
-                        z: -5;
-                        TouchArea {
-                            double-clicked => {
-                                root.current_page = 0;
-                                root.page_changed(0);
-                            }
-                        }
+            KeyBinding {
+                keys: @keys(DownArrow);
+                activated => { root.play_next(); root.focus(); }
+            }
 
-                        LyricsPanel {
-                            can-seek: PlaybackGlobal.can-seek;
-                            width: 100%;
-                            height: 100%;
-                            album_image <=> DisplayGlobal.album_image;
-                            current_song <=> DisplayGlobal.current_song;
-                            lyrics <=> DisplayGlobal.lyrics;
-                            active_lyric_index: DisplayGlobal.active_lyric_index;
-                            lyric_viewport_y <=> DisplayGlobal.lyric_viewport_y;
-                            jump-to(t) => { root.change_progress(t); }
-                        }
+            KeyBinding {
+                keys: @keys(LeftArrow);
+                activated => {
+                    if (root.lyrics-visible && DisplayGlobal.lyrics.length > 0) {
+                        root.change_progress(root.prev-lyric-time(PlaybackGlobal.progress, DisplayGlobal.lyrics));
+                    } else {
+                        root.seek_relative(-15);
                     }
-
-                    if root.current_page == 3: Rectangle {
-                        width: 100%;
-                        height: 100%;
-                        background: Theme.surface;
-                        TouchArea {
-                            clicked => {
-                                root.focus();
-                            }
-                        }
-
-                        SettingsPanel {
-                            width: 100%;
-                            height: 100%;
-                            version: root.version;
-                            open-upstream => { root.open_url_in_browser("https://github.com/Jordan-Haidee/zeedle"); }
-                            song_dir <=> DisplayGlobal.song_dir;
-                            lang <=> DisplayGlobal.lang;
-                            follow_system_theme <=> DisplayGlobal.follow_system_theme;
-                            set_lang(l) => {
-                                root.set_lang(l);
-                            }
-                            set_follow_system_theme(yes) => {
-                                root.set_follow_system_theme(yes);
-                            }
-                            select_song_dir => {
-                                root.select_song_dir();
-                            }
-                        }
-                    }
-
+                    root.focus();
                 }
+            }
 
-                KeyBinding {
-                    keys: @keys(Control + Q);
-                    activated => { root.quit(); }
-                }
+            KeyBinding {
+                keys: @keys(UpArrow);
+                activated => { root.play_prev(); root.focus(); }
+            }
 
-                KeyBinding {
-                    keys: @keys(Space);
-                    activated => { root.toggle_play(); root.focus(); }
-                }
+            KeyBinding {
+                keys: @keys(F1);
+                activated => { root.navigate(0); }
+            }
 
-                KeyBinding {
-                    keys: @keys(RightArrow);
-                    activated => {
-                        if (root.current_page == 2 && DisplayGlobal.lyrics.length > 0) {
-                            root.change_progress(root.next-lyric-time(PlaybackGlobal.progress, DisplayGlobal.lyrics));
-                        } else {
-                            root.seek_relative(15);
-                        }
-                        root.focus();
-                    }
-                }
+            KeyBinding {
+                keys: @keys(F2);
+                activated => { root.navigate(1); }
+            }
 
-                KeyBinding {
-                    keys: @keys(DownArrow);
-                    activated => { root.play_next(); root.focus(); }
-                }
+            KeyBinding {
+                keys: @keys(F3);
+                activated => { root.set-now-playing(!root.now-playing-open); }
+            }
 
-                KeyBinding {
-                    keys: @keys(LeftArrow);
-                    activated => {
-                        if (root.current_page == 2 && DisplayGlobal.lyrics.length > 0) {
-                            root.change_progress(root.prev-lyric-time(PlaybackGlobal.progress, DisplayGlobal.lyrics));
-                        } else {
-                            root.seek_relative(-15);
-                        }
-                        root.focus();
-                    }
-                }
-
-                KeyBinding {
-                    keys: @keys(UpArrow);
-                    activated => { root.play_prev(); root.focus(); }
-                }
-
-                KeyBinding {
-                    keys: @keys(F1);
-                    activated => { root.current_page = 0; root.page_changed(0); root.focus(); }
-                }
-
-                KeyBinding {
-                    keys: @keys(F2);
-                    activated => { root.current_page = 1; root.page_changed(1); root.focus(); }
-                }
-
-                KeyBinding {
-                    keys: @keys(F3);
-                    activated => { root.current_page = 2; root.page_changed(2); root.focus(); }
-                }
-
-                KeyBinding {
-                    keys: @keys(F4);
-                    activated => { root.current_page = 3; root.page_changed(3); root.focus(); }
-                }
-
+            KeyBinding {
+                keys: @keys(F4);
+                activated => { root.navigate(3); }
             }
         }
 
-        collection-picker-anchor := Rectangle {
-            x: (root.width - 300px) / 2;
-            y: (root.height - 250px) / 2;
-            width: 1px;
-            height: 1px;
-            collection-picker := PopupWindow {
-                width: 300px;
-                height: 250px;
-                close-policy: close-on-click-outside;
-                CollectionPicker {
-                    picked(index) => {
-                        CollectionsGlobal.add-to-collection(index, root.collection-picker-track);
-                        collection-picker.close();
+        close-button := Rectangle {
+            property <color> button-surface: root.now-playing-open && Theme.cover-active
+                ? Theme.surface.mix(Theme.cover-color-0, 0.7)
+                : Theme.surface;
+
+            x: parent.width - self.width - 10px;
+            y: 10px;
+            width: 24px;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: self.button-surface.mix(Theme.text, close-touch.pressed ? 0.76 : close-touch.has-hover ? 0.82 : 0.88);
+            border-width: close-focus.has-focus ? 1px : 0px;
+            border-color: Theme.accent;
+            animate background { duration: 150ms; }
+            forward-focus: close-focus;
+            accessible-role: button;
+            accessible-label: @tr("Close window");
+            accessible-action-default => { root.close(); }
+
+            IconDisplay {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                icon: IconSet.X;
+                size: 14px;
+                stroke: Theme.text;
+                stroke-width: 3;
+            }
+
+            close-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.close(); }
+            }
+
+            close-focus := FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.Space || event.text == Key.Return {
+                        root.close();
+                        return accept;
                     }
-                    dismissed => { collection-picker.close(); }
+                    return reject;
+                }
+            }
+        }
+
+        if CollectionsGlobal.picker-anchor.track != "": FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.close-collection-picker();
+                    return accept;
+                }
+                return reject;
+            }
+
+            TouchArea {
+                clicked => { root.close-collection-picker(); }
+                scroll-event => { return accept; }
+            }
+
+            CollectionPicker {
+                x: (CollectionsGlobal.picker-anchor.right - self.width).clamp(8px, root.width - self.width - 8px);
+                y: CollectionsGlobal.picker-anchor.bottom + self.height + 12px <= root.height
+                    ? CollectionsGlobal.picker-anchor.bottom + 4px
+                    : CollectionsGlobal.picker-anchor.top - self.height - 4px;
+                picked(index) => {
+                    CollectionsGlobal.add-to-collection(index, CollectionsGlobal.picker-anchor.track);
+                    root.close-collection-picker();
                 }
             }
         }

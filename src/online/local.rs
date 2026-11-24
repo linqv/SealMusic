@@ -41,9 +41,11 @@ pub async fn enhance(
         && script.supports_local("pic")
         && let Ok(url) = session.resolve(&local_action(track, "pic")).await
         && let Some(client) = super::api_client()
+        && let Some((cover, palette)) = details::fetch_cover(client, &url, None).await
     {
-        details.cover = details::fetch_cover(client, &url, None).await;
-        changed |= details.cover.is_some();
+        details.cover = Some(cover);
+        details.palette = palette;
+        changed = true;
     }
     changed.then_some(details)
 }

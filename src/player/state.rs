@@ -99,6 +99,7 @@ pub type SharedState = Arc<RwLock<PlaybackState>>;
 
 pub enum PlaybackEvent {
     State(Arc<PlaybackState>, Option<Duration>),
+    Upcoming(Vec<Arc<Track>>),
     Details(TrackDetails, Duration),
     Library(PathBuf, SortKey, bool, Vec<Arc<Track>>),
     Collections(usize, Vec<String>, Vec<Arc<Track>>, Vec<TrackId>),
@@ -129,10 +130,12 @@ pub struct Queue {
     index_by_id: HashMap<TrackId, usize>,
     back: VecDeque<TrackId>,
     forward: VecDeque<TrackId>,
+    projected_upcoming: Option<(Option<usize>, bool)>,
 }
 
 impl Queue {
     pub fn rebuild(&mut self, tracks: &[Arc<Track>], shuffle: bool, current: Option<&TrackId>) {
+        self.projected_upcoming = None;
         self.order = tracks.to_vec();
         if shuffle {
             self.order.shuffle(&mut rand::rng());
@@ -150,6 +153,7 @@ impl Queue {
     }
     #[cfg(target_os = "linux")]
     pub fn upsert(&mut self, track: Arc<Track>) {
+        self.projected_upcoming = None;
         if let Some(&i) = self.index_by_id.get(&track.id) {
             self.order[i] = track;
         } else {
@@ -160,6 +164,32 @@ impl Queue {
     pub fn get(&self, id: &TrackId) -> Option<Arc<Track>> {
         self.index_by_id.get(id).map(|&idx| Arc::clone(&self.order[idx]))
     }
+
+    pub fn upcoming_if_changed(
+        &mut self,
+        current: Option<&TrackId>,
+        looping: LoopMode,
+    ) -> Option<Vec<Arc<Track>>> {
+        let current = current.and_then(|id| self.index_by_id.get(id).copied());
+        let wraps = looping != LoopMode::None;
+        let projection = Some((current, wraps));
+        if self.projected_upcoming == projection {
+            return None;
+        }
+        self.projected_upcoming = projection;
+
+        // Next consumes forward history before continuing through the queue order.
+        let mut upcoming: Vec<_> =
+            self.forward.iter().rev().filter_map(|id| self.get(id)).collect();
+        let anchor =
+            upcoming.last().and_then(|track| self.index_by_id.get(&track.id).copied()).or(current);
+        upcoming.extend(self.order[anchor.map_or(0, |i| i + 1)..].iter().cloned());
+        if wraps && let Some(i) = anchor {
+            upcoming.extend(self.order[..i].iter().cloned());
+        }
+        Some(upcoming)
+    }
+
     pub fn step(
         &self,
         current: Option<&TrackId>,
@@ -225,6 +255,7 @@ impl Queue {
         if old.as_ref().is_some_and(|t| t.id == *new) {
             return;
         }
+        self.projected_upcoming = None;
         let (source, dest) = if next == Some(false) {
             (&mut self.back, &mut self.forward)
         } else {
@@ -276,6 +307,22 @@ mod tests {
         q.rebuild(std::slice::from_ref(&a), false, Some(&a.id));
         assert!(q.step(Some(&a.id), true, LoopMode::None).is_none());
         assert_eq!(q.step(Some(&a.id), true, LoopMode::Playlist), Some(a));
+    }
+    #[test]
+    fn upcoming_follows_forward_history_then_queue_order() {
+        let (a, b, c) = (track("a"), track("b"), track("c"));
+        let mut q = Queue::default();
+        q.rebuild(&[a.clone(), b.clone(), c.clone()], false, Some(&a.id));
+        assert_eq!(
+            q.upcoming_if_changed(Some(&a.id), LoopMode::None),
+            Some(vec![b.clone(), c.clone()])
+        );
+        assert_eq!(q.upcoming_if_changed(Some(&a.id), LoopMode::None), None);
+
+        q.record(Some(a.clone()), &c.id, None);
+        q.record(Some(c.clone()), &a.id, Some(false));
+        assert_eq!(q.upcoming_if_changed(Some(&a.id), LoopMode::None), Some(vec![c.clone()]));
+        assert_eq!(q.upcoming_if_changed(Some(&a.id), LoopMode::Playlist), Some(vec![c, a, b]));
     }
     #[test]
     fn seek_rejects_stale_track_and_stopped_state() {

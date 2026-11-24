@@ -74,7 +74,7 @@ component SortColumn inherits Rectangle {
 }
 
 component SortBar inherits Rectangle {
-    height: 30px;
+    height: 40px;
     in-out property <SortKey> key;
     in-out property <bool> ascending;
     callback sort-items(SortKey, bool);
@@ -117,7 +117,36 @@ component SortBar inherits Rectangle {
     }
 }
 
-export component SongItem inherits Rectangle {
+export component SongDetails inherits Rectangle {
+    in property <SongInfo> info;
+    in property <string> artist: root.info.singer;
+    border-color: Theme.text;
+    VerticalLayout {
+        padding: 5px;
+        Text {
+            text: @tr("SongItem" => "Title: {}\nArtist: {}\nDuration: {}", root.info.song-name, root.artist, root.info.duration);
+        }
+    }
+}
+
+export component LocalSongMenu inherits ContextMenuArea {
+    in property <string> track;
+    in property <int> collection: -1;
+    Menu {
+        MenuItem {
+            title: @tr("SongItem" => "Play using LX source");
+            activated => {
+                if root.collection >= 0 {
+                    CollectionsGlobal.play-collection-track(root.collection, root.track, true);
+                } else {
+                    OnlineGlobal.play-local-source(root.track);
+                }
+            }
+        }
+    }
+}
+
+component SongItem inherits Rectangle {
     height: 30px;
     in property <SongInfo> info;
     in property <bool> playing: false;
@@ -172,14 +201,8 @@ export component SongItem inherits Rectangle {
         }
 
         Tooltip {
-            Rectangle {
-                border-color: Theme.text;
-                VerticalLayout {
-                    padding: 5px;
-                    Text {
-                        text: @tr("Title: {}\nArtist: {}\nDuration: {}", info.song-name, info.singer, info.duration);
-                    }
-                }
+            SongDetails {
+                info: root.info;
             }
         }
     }
@@ -193,19 +216,9 @@ export component SongItem inherits Rectangle {
         track: root.info.id;
     }
 
-    if root.info.is-local && OnlineGlobal.local-playback: ContextMenuArea {
-        Menu {
-            MenuItem {
-                title: @tr("Play using LX source");
-                activated => {
-                    if root.collection >= 0 {
-                        CollectionsGlobal.play-collection-track(root.collection, root.info.id, true);
-                    } else {
-                        OnlineGlobal.play-local-source(root.info.id);
-                    }
-                }
-            }
-        }
+    if root.info.is-local && OnlineGlobal.local-playback: LocalSongMenu {
+        track: root.info.id;
+        collection: root.collection;
     }
 }
 

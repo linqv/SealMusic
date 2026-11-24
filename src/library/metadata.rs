@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use image::{DynamicImage, GenericImageView, RgbaImage};
 use lofty::{
     config::ParseOptions,
     error::LoftyError,
@@ -15,6 +16,8 @@ use super::{
 };
 
 const MAX_COVER_DIMENSION: u32 = 512;
+const PALETTE_COVER_DIMENSION: u32 = 384;
+const PALETTE_QUALITY: u8 = 5;
 #[cfg(target_os = "linux")]
 const MAX_RAW_COVER_BYTES: usize = 512 * 1024;
 
@@ -36,6 +39,20 @@ pub fn read_meta_info(path: &Path) -> Result<Track, LoftyError> {
     Ok(track)
 }
 
+pub const MAX_PALETTE_COLORS: usize = 3;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CoverPalette {
+    colors: [[u8; 3]; MAX_PALETTE_COLORS],
+    len: u8,
+}
+
+impl CoverPalette {
+    pub fn as_slice(&self) -> &[[u8; 3]] {
+        &self.colors[..usize::from(self.len)]
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[derive(Clone)]
 pub struct RawCover {
@@ -45,13 +62,88 @@ pub struct RawCover {
 
 #[derive(Clone, Default)]
 pub struct TrackDetails {
-    pub cover: Option<image::RgbaImage>,
+    pub cover: Option<RgbaImage>,
+    pub palette: Option<CoverPalette>,
     #[cfg(target_os = "linux")]
     pub raw_cover: Option<RawCover>,
     pub lyrics: Vec<LyricLine>,
 }
 
-pub(crate) fn decode_cover(bytes: &[u8]) -> Option<image::RgbaImage> {
+// GdkPixbuf's nearest-neighbor scaler starts at half a step and uses 16.16 coordinates.
+fn nearest_samples(source: u32, target: u32) -> impl Iterator<Item = u32> {
+    let step = (u64::from(source) << 16) / u64::from(target);
+    (0..target).map(move |index| ((u64::from(index) * step + step / 2) >> 16) as u32)
+}
+
+fn is_palette_sample(r: u8, g: u8, b: u8, a: u8) -> bool {
+    a >= 125 && !(r > 250 && g > 250 && b > 250)
+}
+
+pub(crate) fn extract_palette(img: &DynamicImage) -> Option<CoverPalette> {
+    let (source_width, source_height) = img.dimensions();
+    if source_width == 0 || source_height == 0 {
+        return None;
+    }
+    let ratio = source_width as f32 / source_height as f32;
+    let size = PALETTE_COVER_DIMENSION;
+    let (width, height) = if ratio > 1.0 {
+        (size, (size as f32 / ratio) as u32)
+    } else {
+        ((size as f32 * ratio) as u32, size)
+    };
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    let (format, channels) = if img.color().has_alpha() {
+        (color_thief::ColorFormat::Rgba, 4)
+    } else {
+        (color_thief::ColorFormat::Rgb, 3)
+    };
+    // Match the scaled Pixbuf byte layout that Amberol passes to color-thief.
+    let row_bytes = width as usize * channels;
+    let stride = row_bytes.next_multiple_of(4);
+    let x_samples: Vec<_> = nearest_samples(source_width, width).collect();
+    let mut pixels = vec![0; stride * (height as usize - 1) + row_bytes];
+    let mut has_color = false;
+    for (y, row) in nearest_samples(source_height, height).zip(pixels.chunks_mut(stride)) {
+        for (&x, sample) in x_samples.iter().zip(row[..row_bytes].chunks_exact_mut(channels)) {
+            let pixel = img.get_pixel(x, y).0;
+            has_color = has_color || is_palette_sample(pixel[0], pixel[1], pixel[2], pixel[3]);
+            sample.copy_from_slice(&pixel[..channels]);
+        }
+    }
+
+    // Padding must not create a palette for white artwork. The quantizer can also
+    // return synthetic white when none of its sampled pixels pass the filter.
+    let has_sample = has_color
+        && pixels.chunks_exact(channels).step_by(channels * usize::from(PALETTE_QUALITY)).any(
+            |pixel| {
+                is_palette_sample(
+                    pixel[0],
+                    pixel[1],
+                    pixel[2],
+                    pixel.get(3).copied().unwrap_or(255),
+                )
+            },
+        );
+    if !has_sample {
+        return None;
+    }
+    let palette = color_thief::get_palette(&pixels, format, PALETTE_QUALITY, 4).ok()?;
+    let mut colors = [[0u8; 3]; MAX_PALETTE_COLORS];
+    let mut len = 0usize;
+    for c in palette.into_iter().take(MAX_PALETTE_COLORS) {
+        colors[len] = [c.r, c.g, c.b];
+        len += 1;
+    }
+    (len > 0).then_some(CoverPalette {
+        colors,
+        len: len as u8,
+    })
+}
+
+pub(crate) fn decode_cover(bytes: &[u8]) -> Option<(RgbaImage, Option<CoverPalette>)> {
     let mut reader =
         image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
     let mut limits = image::Limits::default();
@@ -60,10 +152,11 @@ pub(crate) fn decode_cover(bytes: &[u8]) -> Option<image::RgbaImage> {
     limits.max_image_height = Some(8192);
     reader.limits(limits);
     let img = reader.decode().ok()?;
-    Some(resize_cover(img))
+    let palette = extract_palette(&img);
+    Some((resize_cover(img), palette))
 }
 
-fn resize_cover(img: image::DynamicImage) -> image::RgbaImage {
+fn resize_cover(img: DynamicImage) -> RgbaImage {
     let resized = if img.width() > MAX_COVER_DIMENSION || img.height() > MAX_COVER_DIMENSION {
         img.resize(MAX_COVER_DIMENSION, MAX_COVER_DIMENSION, image::imageops::FilterType::Triangle)
     } else {
@@ -89,7 +182,9 @@ fn extract_details(tagged: Option<&lofty::file::TaggedFile>, path: Option<&Path>
     let picture = tag.and_then(|tag| {
         tag.get_picture_type(PictureType::CoverFront).or_else(|| tag.pictures().first())
     });
-    let cover = picture.and_then(|pic| decode_cover(pic.data()));
+    let (cover, palette) = picture
+        .and_then(|pic| decode_cover(pic.data()))
+        .map_or((None, None), |(cover, palette)| (Some(cover), palette));
     #[cfg(target_os = "linux")]
     let raw_cover = picture.and_then(|pic| {
         if cover.is_none() || pic.data().len() > MAX_RAW_COVER_BYTES {
@@ -110,6 +205,7 @@ fn extract_details(tagged: Option<&lofty::file::TaggedFile>, path: Option<&Path>
     };
     TrackDetails {
         cover,
+        palette,
         #[cfg(target_os = "linux")]
         raw_cover,
         lyrics,
@@ -155,7 +251,7 @@ mod tests {
         let img = image::RgbaImage::new(1024, 512);
         let mut encoded = Vec::new();
         img.write_to(&mut Cursor::new(&mut encoded), image::ImageFormat::Png).unwrap();
-        let decoded = decode_cover(&encoded).unwrap();
+        let (decoded, _) = decode_cover(&encoded).unwrap();
         assert_eq!(decoded.dimensions(), (MAX_COVER_DIMENSION, MAX_COVER_DIMENSION / 2));
 
         // Craft a minimal PNG IHDR header declaring 9000x9000 (> 8192 limit) so decode_cover
@@ -166,5 +262,37 @@ mod tests {
         oversized_png.extend_from_slice(&9000u32.to_be_bytes());
         oversized_png.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
         assert!(decode_cover(&oversized_png).is_none());
+    }
+
+    #[test]
+    fn extract_palette_handles_empty_white_and_transparent_covers() {
+        let empty = RgbaImage::new(0, 0);
+        assert!(extract_palette(&empty.into()).is_none());
+
+        let transparent = RgbaImage::from_pixel(16, 16, image::Rgba([40, 80, 210, 0]));
+        assert!(extract_palette(&transparent.into()).is_none());
+
+        let white = image::RgbImage::from_pixel(9, 15, image::Rgb([255, 255, 255]));
+        assert!(extract_palette(&white.into()).is_none());
+    }
+
+    #[test]
+    fn decode_cover_matches_amberol_palettes_for_rgb_and_rgba() {
+        let rgb = image::RgbImage::from_fn(9, 15, |x, y| {
+            image::Rgb([(x * 22) as u8, (y * 13) as u8, ((x * 27 + y * 11) % 256) as u8])
+        });
+        let rgb = DynamicImage::from(rgb);
+        let rgba = DynamicImage::from(rgb.to_rgba8());
+        // Reference outputs from GdkPixbuf nearest-neighbor scaling and color-thief 0.2.2.
+        for (image, expected) in [
+            (rgb, [[0x56, 0x50, 0x4e], [0x57, 0xcc, 0x72], [0xda, 0x73, 0x5c]]),
+            (rgba, [[0x33, 0x58, 0x89], [0x5d, 0x5a, 0x1f], [0x79, 0x61, 0xe6]]),
+        ] {
+            let mut encoded = Cursor::new(Vec::new());
+            image.write_to(&mut encoded, image::ImageFormat::Png).unwrap();
+            let (cover, palette) = decode_cover(encoded.get_ref()).unwrap();
+            assert_eq!(cover.dimensions(), (9, 15));
+            assert_eq!(palette.unwrap().as_slice(), &expected);
+        }
     }
 }

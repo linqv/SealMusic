@@ -1,397 +1,433 @@
-import { Theme } from "theme.slint";
-import { LikeButton } from "collections.slint";
+import { Icon, IconDisplay, IconSet } from "@lucide";
 import { Slider } from "std-widgets.slint";
-import { SongInfo, LoopMode } from "types.slint";
-import { IconDisplay, IconSet } from "@lucide";
+import { LikeButton } from "collections.slint";
+import { Theme } from "theme.slint";
+import { LoopMode, SongInfo } from "types.slint";
 
-export component SkipButton inherits Rectangle {
+export component PlaybackButton inherits Rectangle {
+    in property <Icon> icon;
+    in property <string> label;
+    in property <length> icon-size: 16px;
+    in property <bool> filled;
+    in property <bool> active;
+    in property <bool> prominent;
     callback clicked();
-    in property <bool> forward: true;
+
+    width: 36px;
+    height: 36px;
     border-radius: 8px;
-    clip: true;
-    border-width: 0px;
-    property <bool> hovered: touch.has-hover;
-    property <bool> pressed: touch.pressed;
-    property <color> icon-color: pressed ? Theme.accent : (hovered ? Theme.text : Theme.text-secondary);
-    background: pressed ? Theme.press : (hovered ? Theme.hover : transparent);
-    animate background {
-        duration: 120ms;
-        easing: ease-out-quad;
+    background: touch.pressed || touch.has-hover
+        ? (root.prominent ? Theme.text.with-alpha(0.19) : Theme.hover)
+        : (root.prominent ? Theme.text.with-alpha(0.11) : transparent);
+    animate background { duration: 120ms; }
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+
+    IconDisplay {
+        icon: root.icon;
+        size: root.icon-size;
+        stroke: root.active ? Theme.accent : root.filled || touch.has-hover ? Theme.text : Theme.text.with-alpha(0.6);
+        stroke-fill: root.filled ? Theme.text : transparent;
+        stroke-width: root.filled ? 1.2 : 1.8;
     }
 
     touch := TouchArea {
         mouse-cursor: pointer;
-        width: 100%;
-        height: 100%;
-        clicked => {
-            root.clicked();
-        }
-    }
-
-    IconDisplay {
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-        icon: root.forward ? IconSet.SkipForward : IconSet.SkipBack;
-        size: min(parent.width, parent.height) * 0.72;
-        stroke: root.icon-color;
-        stroke-width: 2.2;
-        absolute-stroke-width: true;
+        clicked => { root.clicked(); }
     }
 }
 
-export component PlayPauseButton inherits Rectangle {
-    in-out property <bool> paused:true;
-    callback toggled();
-    border-radius: 9px;
-    clip: true;
-    border-width: 0px;
-    property <bool> hovered: touch.has-hover;
-    property <bool> pressed: touch.pressed;
-    property <color> icon-color: Theme.accent;
-    background: pressed ? Theme.press : (hovered ? Theme.hover : transparent);
-    animate background {
-        duration: 120ms;
-        easing: ease-out-quad;
-    }
-
-    touch := TouchArea {
-        width: 100%;
-        height: 100%;
-        mouse-cursor: pointer;
-        clicked => {
-            root.toggled();
-        }
-    }
-
-    IconDisplay {
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-        icon: root.paused ? IconSet.Play : IconSet.Pause;
-        size: min(parent.width, parent.height) * 0.72;
-        stroke: root.icon-color;
-        stroke-width: 2.2;
-        absolute-stroke-width: true;
-    }
-}
-
-export component LoopModeButton inherits Rectangle {
-    in-out property <bool> selected;
-    in-out property <bool> recursive: false;
-    callback clicked();
-    TouchArea {
-        width: 100%;
-        height: 100%;
-        clicked => {
-            root.clicked();
-        }
-    }
-
-    IconDisplay {
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-        icon: root.recursive ? IconSet.Repeat2 : IconSet.Repeat;
-        size: min(parent.width, parent.height) * 0.9;
-        stroke: root.selected ? Theme.accent : Theme.text;
-        stroke-width: 1.8;
-    }
-}
-
-
-export component OverlapButton inherits Rectangle {
-    in-out property <LoopMode> mode;
-    callback clicked();
-    LoopModeButton {
-        width: 100%;
-        height: 100%;
-        recursive: mode == LoopMode.Track;
-        selected: mode == LoopMode.Track || mode == LoopMode.Playlist;
-        clicked => {
-            root.clicked();
-        }
-    }
-}
-
-export component RandomButton inherits Rectangle {
-    callback clicked();
-    in-out property <bool> selected;
-    TouchArea {
-        width: 100%;
-        height: 100%;
-        clicked => {
-            root.clicked();
-        }
-        IconDisplay {
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            icon: IconSet.Shuffle;
-            size: min(parent.width, parent.height) * 0.9;
-            stroke: root.selected ? Theme.accent : Theme.text;
-            stroke-width: 1.8;
-        }
-    }
-}
-
-export component MusicVolumeButton inherits Rectangle {
-    in property <length> slider-height;
-    in property <length> icon-height;
+component VolumeButton inherits PlaybackButton {
     in-out property <float> volume;
-    property <bool> selected: icon.has-hover;
     callback change-volume(float);
-    icon := TouchArea {
-        if selected:
-            Rectangle {
-            z: 10;
-            Slider {
-                x: parent.width * 0.7;
-                height: root.slider-height;
-                minimum: 0;
-                maximum: 1;
-                value <=> root.volume;
-                orientation: vertical;
-                released(value) => {
-                    root.change-volume(value);
+
+    icon: root.volume > 0 ? IconSet.Volume2 : IconSet.VolumeX;
+    icon-size: 19px;
+    label: @tr("Volume");
+    active: volume-popup.is-open;
+    accessible-expandable: true;
+    accessible-expanded: volume-popup.is-open;
+    clicked => { volume-popup.show(); }
+
+    volume-popup := PopupWindow {
+        x: (root.width - self.width) / 2;
+        y: -self.height - 2px;
+        width: 64px;
+        height: 182px;
+        close-policy: close-on-click-outside;
+        forward-focus: popup-keys;
+
+        popup-keys := FocusScope {
+            forward-focus: volume-slider;
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    volume-popup.close();
+                    return accept;
+                }
+                return reject;
+            }
+
+            Path {
+                x: (parent.width - self.width) / 2;
+                y: card.y + card.height - 2px;
+                width: 14px;
+                height: 8px;
+                viewbox-width: 14;
+                viewbox-height: 8;
+                commands: "M 0 0 L 7 7 L 14 0 Z";
+                fill: Theme.panel;
+                stroke: Theme.border;
+                stroke-width: 1px;
+            }
+
+            card := Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: 4px;
+                width: 52px;
+                height: 168px;
+                background: Theme.panel;
+                border-color: Theme.border;
+                border-width: 1px;
+                border-radius: 12px;
+                drop-shadow-color: #00000026;
+                drop-shadow-offset-y: 2px;
+                drop-shadow-blur: 6px;
+
+                Text {
+                    y: 10px;
+                    width: 100%;
+                    horizontal-alignment: center;
+                    text: "\{round(root.volume * 100)}%";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                }
+
+                volume-slider := Slider {
+                    x: (parent.width - self.width) / 2;
+                    y: 32px;
+                    width: 28px;
+                    height: 126px;
+                    minimum: 0;
+                    maximum: 1;
+                    step: 0.01;
+                    orientation: vertical;
+                    accessible-label: root.label;
+                    value <=> root.volume;
+                    released(v) => { root.change-volume(v); }
                 }
             }
         }
+    }
+}
+
+export component SeekBar inherits Rectangle {
+    in property <bool> enabled;
+    in property <float> position;
+    in property <float> duration;
+    in property <string> track;
+    out property <float> displayed-position: touch.pressed && root.drag-track == root.track
+        ? root.preview-position : root.position;
+    callback seek(float);
+    private property <string> drag-track;
+    private property <float> preview-position;
+    private property <float> pointer-position: (touch.mouse-x / max(1px, touch.width)).clamp(0, 1) * root.duration;
+
+    forward-focus: seek-keys;
+    accessible-role: slider;
+    accessible-label: @tr("Playback position");
+    accessible-enabled: root.enabled;
+    accessible-orientation: horizontal;
+    accessible-value: root.displayed-position;
+    accessible-value-minimum: 0;
+    accessible-value-maximum: root.duration;
+    accessible-value-step: 1;
+    accessible-action-set-value(value) => {
+        if root.enabled && value.is-float() {
+            root.seek(value.to-float().clamp(0, root.duration));
+        }
+    }
+    accessible-action-increment => {
+        if root.enabled { root.seek(min(root.duration, root.position + 1)); }
+    }
+    accessible-action-decrement => {
+        if root.enabled { root.seek(max(0, root.position - 1)); }
+    }
+
+    Rectangle {
+        width: 100%;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.text.with-alpha(0.1);
+
         Rectangle {
-            height: root.icon-height;
-            IconDisplay {
-                x: (parent.width - self.width) / 2;
-                y: (parent.height - self.height) / 2;
-                icon: IconSet.Volume2;
-                size: root.icon-height;
-                stroke: root.selected ? Theme.accent : Theme.text;
-                stroke-width: 1.8;
+            x: 0px;
+            width: parent.width * (root.displayed-position / max(0.001, root.duration)).clamp(0, 1);
+            visible: root.duration > 0 && root.displayed-position > 0;
+            height: 100%;
+            border-radius: 2px;
+            background: root.enabled && touch.has-hover ? Theme.text : Theme.text.with-alpha(0.75);
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        moved => { root.preview-position = root.pointer-position; }
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left {
+                if event.kind == PointerEventKind.down {
+                    root.preview-position = root.pointer-position;
+                    root.drag-track = root.track;
+                } else if event.kind == PointerEventKind.up && root.drag-track == root.track {
+                    root.seek(root.pointer-position);
+                }
+            }
+        }
+    }
+
+    seek-keys := FocusScope {
+        enabled: root.enabled;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Home {
+                root.seek(0);
+                return accept;
+            }
+            if event.text == Key.End {
+                root.seek(root.duration);
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+export component TransportButtons inherits HorizontalLayout {
+    in property <bool> paused;
+    in property <bool> shuffle;
+    in property <LoopMode> loop-mode;
+    in property <bool> expanded;
+    callback toggle-play();
+    callback play-next();
+    callback play-prev();
+    callback set-shuffle(bool);
+    callback switch-mode(LoopMode);
+
+    height: root.expanded ? 44px : 40px;
+    alignment: center;
+    spacing: root.expanded ? max(4px, (root.width - 220px) / 4) : 6px;
+
+    PlaybackButton {
+        icon: IconSet.Shuffle;
+        icon-size: root.expanded ? 18px : 16px;
+        active: root.shuffle;
+        label: @tr("Shuffle");
+        accessible-checkable: true;
+        accessible-checked: root.shuffle;
+        clicked => { root.set-shuffle(!root.shuffle); }
+    }
+    PlaybackButton {
+        icon: IconSet.Rewind;
+        icon-size: root.expanded ? 20px : 16px;
+        filled: true;
+        label: @tr("Previous track");
+        clicked => { root.play-prev(); }
+    }
+    PlaybackButton {
+        width: root.expanded ? 52px : 44px;
+        height: root.height;
+        icon-size: root.expanded ? 27px : 23px;
+        prominent: root.expanded;
+        icon: root.paused ? IconSet.Play : IconSet.Pause;
+        filled: true;
+        label: root.paused ? @tr("Play") : @tr("Pause");
+        clicked => { root.toggle-play(); }
+    }
+    PlaybackButton {
+        icon: IconSet.FastForward;
+        icon-size: root.expanded ? 20px : 16px;
+        filled: true;
+        label: @tr("Next track");
+        clicked => { root.play-next(); }
+    }
+    PlaybackButton {
+        icon: root.loop-mode == LoopMode.Track ? IconSet.Repeat1 : IconSet.Repeat;
+        icon-size: root.expanded ? 18px : 16px;
+        active: root.loop-mode != LoopMode.None;
+        label: root.loop-mode == LoopMode.Track ? @tr("Repeat track") : @tr("Repeat playlist");
+        accessible-checkable: true;
+        accessible-checked: root.loop-mode != LoopMode.None;
+        clicked => {
+            if root.loop-mode == LoopMode.Playlist {
+                root.switch-mode(LoopMode.Track);
+            } else if root.loop-mode == LoopMode.Track {
+                root.switch-mode(LoopMode.None);
+            } else {
+                root.switch-mode(LoopMode.Playlist);
             }
         }
     }
 }
 
 export component ControlPanel inherits Rectangle {
+    height: 84px;
     background: Theme.surface;
 
-    in-out property <float> progress;
+    in property <float> progress;
     in property <bool> can-seek;
     in property <float> duration;
     in property <bool> paused;
     in property <LoopMode> loop_mode;
-    in-out property <bool> dragging;
+    in property <bool> shuffle;
     in property <SongInfo> current_song;
     in property <image> album_image;
     in-out property <float> volume;
 
     callback change-progress(float);
     callback toggle-play();
-    callback stop();
     callback play-next();
     callback play-prev();
-    in property <bool> shuffle;
     callback set-shuffle(bool);
     callback switch-mode(LoopMode);
     callback change-volume(float);
-    callback double-clicked();
+    callback open-now-playing();
     pure callback format-duration(float) -> string;
-    private property <int> progress-secs: floor(max(0, root.progress));
-    private property <int> duration-secs: floor(max(0, root.duration));
-    private property <string> progress-text: root.format-duration(root.progress-secs);
-    private property <string> duration-text: root.duration > 0 ? root.format-duration(root.duration-secs) : "–:––";
 
-    VerticalLayout {
-        width: 100%;
-        height: 100%;
-        Slider {
-            minimum: 0;
-            enabled: root.can-seek;
-            maximum: root.duration > 0 ? root.duration : max(1, root.progress);
-            value <=> root.progress;
-            released(v) => {
-                root.dragging = false;
-                change_progress(v);
+    private property <bool> has-track: root.current_song.id != "";
+    private property <length> side-padding: 18px;
+
+    HorizontalLayout {
+        x: root.side-padding;
+        y: (parent.height - self.height) / 2;
+        width: min(270px, transport.x - self.x - 16px);
+        height: 48px;
+        spacing: 4px;
+
+        cover-button := Rectangle {
+            width: 48px;
+            height: 48px;
+            border-radius: 8px;
+            background: Theme.panel;
+            drop-shadow-color: #00000030;
+            drop-shadow-blur: 6px;
+            drop-shadow-offset-y: 2px;
+            forward-focus: cover-focus;
+            accessible-role: button;
+            accessible-label: @tr("Open lyrics and play queue");
+            accessible-action-default => { root.open-now-playing(); }
+
+            Rectangle {
+                border-radius: 8px;
+                clip: true;
+                Image {
+                    width: 100%;
+                    height: 100%;
+                    source: root.has-track ? root.album_image : @image-url("cover.svg");
+                    image-fit: cover;
+                }
+                Rectangle {
+                    opacity: cover-touch.has-hover || cover-focus.has-focus ? 1 : 0;
+                    animate opacity { duration: 120ms; }
+                    background: #00000069;
+                    IconDisplay {
+                        icon: IconSet.ChevronsUp;
+                        size: 22px;
+                        stroke: white;
+                    }
+                }
             }
-            changed(_) => {
-                root.dragging = true;
+            cover-focus := FocusScope {
+                focus-on-click: false;
+                key-pressed(event) => {
+                    if event.text == Key.Space || event.text == Key.Return {
+                        root.open-now-playing();
+                        return accept;
+                    }
+                    return reject;
+                }
             }
+            cover-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.open-now-playing(); }
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            padding-left: 8px;
+            spacing: 2px;
+            Text {
+                text: root.has-track ? root.current_song.song_name : @tr("No track selected");
+                font-weight: 600;
+                color: Theme.text;
+                overflow: elide;
+            }
+            if root.current_song.singer != "": Text {
+                text: root.current_song.singer;
+                font-size: 12px;
+                color: Theme.text.with-alpha(0.6);
+                overflow: elide;
+            }
+        }
+
+        if root.has-track: LikeButton {
+            track: root.current_song.id;
+        }
+    }
+
+    transport := VerticalLayout {
+        x: max(220px, (parent.width - self.width) / 2);
+        y: (parent.height - self.height) / 2;
+        width: (parent.width * 0.42).clamp(280px, 520px);
+        height: 60px;
+
+        TransportButtons {
+            paused: root.paused;
+            shuffle: root.shuffle;
+            loop-mode: root.loop_mode;
+            toggle-play => { root.toggle-play(); }
+            play-next => { root.play-next(); }
+            play-prev => { root.play-prev(); }
+            set-shuffle(value) => { root.set-shuffle(value); }
+            switch-mode(mode) => { root.switch-mode(mode); }
         }
 
         HorizontalLayout {
-            height: 80%;
-            alignment: center;
-            TouchArea {
-                width: 30%;
-                height: 100%;
-                double-clicked => {
-                    root.double-clicked()
-                };
-                HorizontalLayout {
-                    alignment: start;
-                    spacing: 3px;
-                    Rectangle {
-                        width: 20%;
-                        height: 100%;
-                        Rectangle {
-                            width: 40px;
-                            height: 40px;
-                            border-radius: 4px;
-                            clip: true;
-                            background: transparent;
-                            drop-shadow-blur: 6px;
-                            Image {
-                                y: parent.height / 2 - self.height / 2;
-                                width: 100%;
-                                height: 100%;
-                                source: root.album_image;
-                                image-fit: contain;
-                            }
-                        }
-                    }
-
-                    Rectangle {
-                        width: 80%;
-                        height: 100%;
-                        cur_song_text := Text {
-                            width: 100%;
-                            x: parent.width / 2 - self.width / 2;
-                            text: root.current_song.song_name + " - " + root.current_song.singer;
-                            vertical-alignment: center;
-                            horizontal-alignment: center;
-                            overflow: TextOverflow.elide;
-                            Tooltip {
-                                text: @markdown("\{cur_song_text.text}");
-                            }
-                        }
-                    }
-                }
+            height: 20px;
+            spacing: 8px;
+            Text {
+                width: 36px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                text: root.format-duration(seek-bar.displayed-position);
+                font-size: 11px;
+                color: Theme.text.with-alpha(0.6);
             }
-
-            Rectangle {
-                width: 6%;
-                OverlapButton {
-                    x: parent.width / 2 - self.width / 2;
-                    y: parent.height / 2 - self.height / 2;
-                    width: 20px;
-                    height: 20px;
-                    mode: root.loop_mode;
-                    clicked => {
-                        if (root.loop_mode == LoopMode.Playlist) {
-                            root.switch_mode(LoopMode.Track);
-                        } else if (root.loop_mode == LoopMode.Track) {
-                            root.switch_mode(LoopMode.None);
-                        } else {
-                            root.switch_mode(LoopMode.Playlist);
-                        }
-                    }
-                }
+            seek-bar := SeekBar {
+                horizontal-stretch: 1;
+                enabled: root.can-seek && root.duration > 0;
+                position: root.progress;
+                duration: root.duration;
+                track: root.current_song.id;
+                seek(v) => { root.change-progress(v); }
             }
-
-            Rectangle {
-                width: 6%;
-                SkipButton {
-                    forward: false;
-                    x: parent.width / 2 - self.width / 2;
-                    y: parent.height / 2 - self.height / 2;
-                    width: 36px;
-                    height: 36px;
-                    clicked => {
-                        root.play_prev();
-                    }
-                }
-            }
-
-            Rectangle {
-                width: 6%;
-                PlayPauseButton {
-                    x: parent.width / 2 - self.width / 2;
-                    y: parent.height / 2 - self.height / 2;
-                    width: 36px;
-                    height: 36px;
-                    paused: root.paused;
-                    toggled => {
-                        root.toggle_play();
-                    }
-                }
-            }
-
-            Rectangle {
-                width: 5%;
-                TouchArea {
-                    accessible-role: button;
-                    accessible-label: @tr("Stop");
-                    clicked => { root.stop(); }
-                    IconDisplay {
-                        x: (parent.width - self.width) / 2;
-                        y: (parent.height - self.height) / 2;
-                        icon: IconSet.Square;
-                        size: 16px;
-                        stroke: Theme.text;
-                    }
-                }
-            }
-
-            Rectangle {
-                width: 6%;
-                SkipButton {
-                    forward: true;
-                    x: parent.width / 2 - self.width / 2;
-                    y: parent.height / 2 - self.height / 2;
-                    width: 36px;
-                    height: 36px;
-                    clicked => {
-                        root.play_next();
-                    }
-                }
-            }
-
-            Rectangle {
-                width: 6%;
-                border-color: transparent;
-                RandomButton {
-                    x: parent.width / 2 - self.width / 2;
-                    y: parent.height / 2 - self.height / 2;
-                    selected: root.shuffle;
-                    width: 20px;
-                    height: 20px;
-                    clicked => {
-                        root.set-shuffle(!root.shuffle);
-                    }
-                }
-            }
-
-            Rectangle {
-                width: 20%;
-                TouchArea {
-                    double-clicked => {
-                        root.double-clicked()
-                    }
-                }
-
-                Text {
-                    x: parent.width / 2 - self.width / 2;
-                    text: root.progress-text + " / " + root.duration-text;
-                    vertical-alignment: center;
-                    horizontal-alignment: center;
-                }
-            }
-
-            Rectangle {
-                width: 5%;
-                if root.current_song.id != "": LikeButton {
-                    x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
-                    track: root.current_song.id;
-                }
-            }
-
-            Rectangle {
-                width: 10%;
-                MusicVolumeButton {
-                    icon-height: 20px;
-                    slider-height: 55px;
-                    volume <=> root.volume;
-                    change-volume(v) => {
-                        root.change-volume(v)
-                    }
-                }
+            Text {
+                width: 36px;
+                vertical-alignment: center;
+                text: root.duration > 0 ? root.format-duration(root.duration) : "–:––";
+                font-size: 11px;
+                color: Theme.text.with-alpha(0.6);
             }
         }
+    }
+
+    VolumeButton {
+        x: parent.width - self.width - root.side-padding;
+        y: (parent.height - self.height) / 2;
+        volume <=> root.volume;
+        change-volume(v) => { root.change-volume(v); }
     }
 }

@@ -1,11 +1,119 @@
 import { OnlineGlobal } from "online.slint";
 import { OnlineIssue } from "types.slint";
-import { TrackActions } from "collections.slint";
+import { CollectionsGlobal, TrackActions } from "collections.slint";
 import { Theme } from "theme.slint";
-import { Button, LineEdit } from "std-widgets.slint";
-import { ListView } from "std-widgets.slint";
-import { SongItem } from "song_list.slint";
+import { Button, LineEdit, ListView } from "std-widgets.slint";
+import { LocalSongMenu, SongDetails } from "song_list.slint";
 import { SongInfo } from "types.slint";
+
+component SearchResultRow inherits Rectangle {
+    in property <SongInfo> info;
+    in property <int> number;
+    in property <bool> playing;
+    in property <bool> play-on-click;
+    in property <string> source;
+    private property <string> artist: root.source == "" ? root.info.singer : root.info.singer + " · " + root.source;
+    private property <color> text-color: root.playing ? Theme.accent : Theme.text;
+    private property <bool> show-actions: row-input.has-hover || CollectionsGlobal.picker-anchor.track == root.info.id;
+    callback play();
+
+    height: 48px;
+    background: root.playing ? Theme.hover : root.show-actions ? Theme.song-hover : Theme.surface;
+    border-width: keyboard.has-focus ? 1px : 0px;
+    border-color: Theme.accent;
+    forward-focus: keyboard;
+
+    row-input := TouchArea {
+        mouse-cursor: pointer;
+        accessible-role: button;
+        accessible-label: root.info.song-name + " · " + root.artist;
+        accessible-action-default => { root.play(); }
+        clicked => {
+            if root.play-on-click { root.play(); }
+        }
+        double-clicked => {
+            if !root.play-on-click { root.play(); }
+        }
+
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 24px;
+            spacing: 12px;
+
+            Text {
+                width: 36px;
+                text: "\{root.number}";
+                color: Theme.text-tertiary;
+                vertical-alignment: center;
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                HorizontalLayout {
+                    x: 0px;
+                    width: 100%;
+                    height: 100%;
+                    spacing: 16px;
+                    Text {
+                        width: (parent.width - 16px) * 0.58;
+                        text: root.info.song-name;
+                        color: root.text-color;
+                        font-weight: root.playing ? 600 : 400;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.artist;
+                        color: root.text-color;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                Tooltip {
+                    SongDetails {
+                        info: root.info;
+                        artist: root.artist;
+                    }
+                }
+            }
+
+            Rectangle {
+                width: 64px;
+                TrackActions {
+                    width: 100%;
+                    height: 28px;
+                    visible: root.show-actions;
+                    track: root.info.id;
+                }
+            }
+
+            Text {
+                width: 56px;
+                text: root.info.duration;
+                color: root.text-color;
+                vertical-alignment: center;
+                horizontal-alignment: right;
+                overflow: elide;
+            }
+        }
+    }
+
+    keyboard := FocusScope {
+        width: 0px;
+        enabled: root.play-on-click;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.play();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    if root.info.is-local && OnlineGlobal.local-playback: LocalSongMenu {
+        track: root.info.id;
+    }
+}
 
 export component SearchPanel inherits Rectangle {
     in-out property <string> search-query;
@@ -68,7 +176,7 @@ export component SearchPanel inherits Rectangle {
                     height: 100%;
                     spacing: 8px;
                     padding-left: 12px;
-                    padding-right: 12px;
+                    padding-right: 48px;
                     padding-top: 8px;
                     padding-bottom: 8px;
 
@@ -154,20 +262,13 @@ export component SearchPanel inherits Rectangle {
                 }
                 ListView {
                     vertical-stretch: 1;
-                    for row in OnlineGlobal.catalog-rows: HorizontalLayout {
-                        padding-top: 2px;
-                        padding-bottom: 2px;
-                        Button {
-                            horizontal-stretch: 1;
-                            primary: row.song.id == root.current-song.id;
-                            text: row.song.song-name + " · " + row.song.singer
-                                + (OnlineGlobal.catalog-source == "all" ? " · " + OnlineGlobal.source-name(row.source) : "");
-                            clicked => { OnlineGlobal.play-catalog(row.song.id); }
-                        }
-                        TrackActions {
-                            width: 64px;
-                            track: row.song.id;
-                        }
+                    for row[index] in OnlineGlobal.catalog-rows: SearchResultRow {
+                        info: row.song;
+                        number: index + 1;
+                        playing: row.song.id == root.current-song.id;
+                        play-on-click: true;
+                        source: OnlineGlobal.catalog-source == "all" ? OnlineGlobal.source-name(row.source) : "";
+                        play => { OnlineGlobal.play-catalog(row.song.id); }
                     }
                 }
             }
@@ -219,12 +320,11 @@ export component SearchPanel inherits Rectangle {
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
 
-                for item in root.search-query == "" ? root.library-songs : root.search-results: SongItem {
+                for item[index] in root.search-query == "" ? root.library-songs : root.search-results: SearchResultRow {
                     info: item;
+                    number: index + 1;
                     playing: item.id == root.current-song.id;
-                    double_clicked => {
-                        root.play-song(item);
-                    }
+                    play => { root.play-song(item); }
                 }
             }
 

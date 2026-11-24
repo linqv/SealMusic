@@ -6,6 +6,7 @@ description = "Music at the speed of a blink, designed for pure simplicity\nBuil
 repository = "https://github.com/linqv/SealMusic"
 
 [dependencies]
+color-thief = "0.2"
 dark-light = "2"
 chrono = "0.4.42"
 env_logger = "0.11.8"
@@ -43,6 +44,7 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 mpris-server = "0.9"
 futures-channel = "0.3"
 futures-lite = "2"
+slint = { version = "=1.19.0", default-features = false, features = ["renderer-skia-vulkan"] }
 url = "2"
 tempfile = "3"
 

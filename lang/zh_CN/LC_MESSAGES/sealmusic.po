@@ -12,447 +12,522 @@ msgstr ""
 "Plural-Forms: nplurals=1; plural=0;\n"
 "X-Generator: Poedit 3.7\n"
 
-#: ui/app.slint:76
+#: ui/app.slint:83
 msgctxt "AppTray"
 msgid "Show Window"
 msgstr "显示窗口"
 
-#: ui/app.slint:81
+#: ui/app.slint:88
 msgctxt "AppTray"
 msgid "Play / Pause"
 msgstr "播放 / 暂停"
 
-#: ui/app.slint:85
+#: ui/app.slint:92
 msgctxt "AppTray"
 msgid "Stop"
 msgstr "停止"
 
-#: ui/app.slint:89
+#: ui/app.slint:96
 msgctxt "AppTray"
 msgid "Previous"
 msgstr "上一首"
 
-#: ui/app.slint:93
+#: ui/app.slint:100
 msgctxt "AppTray"
 msgid "Next"
 msgstr "下一首"
 
-#: ui/app.slint:97
+#: ui/app.slint:104
 msgctxt "AppTray"
 msgid "Rescan Songs"
 msgstr "重新扫描歌曲"
 
-#: ui/app.slint:102
+#: ui/app.slint:109
 msgctxt "AppTray"
 msgid "Exit"
 msgstr "退出"
 
-#: ui/lyrics_panel.slint:72
-msgctxt "LyricsPanel"
-msgid "Artist: {}"
-msgstr "艺术家：{}"
-
-#: ui/lyrics_panel.slint:81
-msgctxt "LyricsPanel"
-msgid "Title: {}"
-msgstr "歌曲：{}"
-
-#: ui/search_panel.slint:68
+#: ui/search_panel.slint:186
 msgctxt "SearchPanel"
 msgid "Search songs or artists..."
 msgstr "搜索歌曲或艺术家..."
 
-#: ui/search_panel.slint:116 ui/search_panel.slint:179
+#: ui/search_panel.slint:243 ui/search_panel.slint:310
 msgctxt "SearchPanel"
 msgid "No results found"
 msgstr "未找到结果"
 
-#: ui/search_panel.slint:180
+#: ui/search_panel.slint:311
 msgctxt "SearchPanel"
 msgid "{} result(s) found"
 msgstr "找到 {} 个结果"
 
-#: ui/settings_panel.slint:69
+#: ui/settings_panel.slint:78
 msgctxt "SettingsPanel"
 msgid "Playback"
 msgstr "播放"
 
-#: ui/settings_panel.slint:85
+#: ui/settings_panel.slint:94
 msgctxt "SettingsPanel"
 msgid "Music directory"
 msgstr "音乐文件夹"
 
-#: ui/settings_panel.slint:112
+#: ui/settings_panel.slint:121
 msgctxt "SettingsPanel"
 msgid "Browse..."
 msgstr "浏览..."
 
-#: ui/settings_panel.slint:135
+#: ui/settings_panel.slint:255
 msgctxt "SettingsPanel"
 msgid "Appearance"
 msgstr "外观"
 
-#: ui/settings_panel.slint:149
+#: ui/settings_panel.slint:268
 msgctxt "SettingsPanel"
 msgid "Follow system theme"
 msgstr "跟随系统主题"
 
-#: ui/settings_panel.slint:160
+#: ui/settings_panel.slint:276
+msgctxt "SettingsPanel"
+msgid "Light theme"
+msgstr "浅色主题"
+
+#: ui/settings_panel.slint:292
 msgctxt "SettingsPanel"
 msgid "Language"
 msgstr "语言"
 
-#: ui/settings_panel.slint:180
+#: ui/settings_panel.slint:312
 msgctxt "SettingsPanel"
 msgid "SealMusic {} · GPL-3.0"
 msgstr "SealMusic {} · GPL-3.0"
 
-#: ui/settings_panel.slint:185
+#: ui/settings_panel.slint:317
 msgctxt "SettingsPanel"
 msgid "Upstream project"
 msgstr "上游项目"
 
-#: ui/sidebar.slint:147
+#: ui/sidebar.slint:141
 msgctxt "Sidebar"
 msgid "Search"
 msgstr "搜索"
 
-#: ui/sidebar.slint:157
-msgctxt "Sidebar"
-msgid "Lyrics"
-msgstr "歌词"
-
-#: ui/sidebar.slint:176
+#: ui/sidebar.slint:188
 msgctxt "Sidebar"
 msgid "Settings"
 msgstr "设置"
 
-#: ui/song_list.slint:84
+#: ui/song_list.slint:88
 msgctxt "SortBar"
 msgid "Title"
 msgstr "歌曲"
 
-#: ui/song_list.slint:94
+#: ui/song_list.slint:99
 msgctxt "SortBar"
 msgid "Artist"
 msgstr "艺术家"
 
-#: ui/song_list.slint:104
+#: ui/song_list.slint:109
 msgctxt "SortBar"
 msgid "Duration"
 msgstr "时长"
 
-#: ui/song_list.slint:167
+#: ui/song_list.slint:127
 msgctxt "SongItem"
 msgid "Title: {}\nArtist: {}\nDuration: {}"
 msgstr "标题：{}\n艺术家：{}\n时长：{}"
 
-#: ui/song_list.slint:193
+#: ui/song_list.slint:226
 msgctxt "MessagePopup"
 msgid "Operation failed"
 msgstr "操作失败"
 
-#: ui/song_list.slint:209
+#: ui/song_list.slint:273
 msgctxt "MessagePopup"
 msgid "Close"
 msgstr "关闭"
 
-#: ui/control_panel.slint
-msgctxt "ControlPanel"
-msgid "Stop"
-msgstr "停止"
+#: ui/control_panel.slint:47
+msgctxt "VolumeButton"
+msgid "Volume"
+msgstr "音量"
 
-#: ui/online.slint:19
+#: ui/control_panel.slint:139
+msgctxt "SeekBar"
+msgid "Playback position"
+msgstr "播放进度"
+
+#: ui/control_panel.slint:359
+msgctxt "ControlPanel"
+msgid "No track selected"
+msgstr "未选择歌曲"
+
+#: ui/control_panel.slint:225
+msgctxt "TransportButtons"
+msgid "Shuffle"
+msgstr "随机播放"
+
+#: ui/control_panel.slint:233
+msgctxt "TransportButtons"
+msgid "Previous track"
+msgstr "上一首"
+
+#: ui/control_panel.slint:243
+msgctxt "TransportButtons"
+msgid "Play"
+msgstr "播放"
+
+#: ui/control_panel.slint:243
+msgctxt "TransportButtons"
+msgid "Pause"
+msgstr "暂停"
+
+#: ui/control_panel.slint:249
+msgctxt "TransportButtons"
+msgid "Next track"
+msgstr "下一首"
+
+#: ui/control_panel.slint:255
+msgctxt "TransportButtons"
+msgid "Repeat track"
+msgstr "单曲循环"
+
+#: ui/control_panel.slint:255
+msgctxt "TransportButtons"
+msgid "Repeat playlist"
+msgstr "列表循环"
+
+#: ui/online.slint:61
 msgctxt "OnlineGlobal"
 msgid "Invalid LX link or missing field: {}"
 msgstr "LX 链接无效或缺少字段：{}"
 
-#: ui/online.slint:20
+#: ui/online.slint:62
 msgctxt "OnlineGlobal"
 msgid "Enable an LX source in Settings."
 msgstr "请先在设置中启用 LX 音乐源。"
 
-#: ui/online.slint:21
+#: ui/online.slint:63
 msgctxt "OnlineGlobal"
 msgid "No compatible audio quality is available."
 msgstr "曲目与音乐源没有共同支持的音质。"
 
-#: ui/online.slint:22
+#: ui/online.slint:64
 msgctxt "OnlineGlobal"
 msgid "Could not read or save the LX source."
 msgstr "无法读取或保存 LX 音乐源。"
 
-#: ui/online.slint:23
+#: ui/online.slint:65
 msgctxt "OnlineGlobal"
 msgid "The LX source failed to initialize."
 msgstr "LX 音乐源初始化失败。"
 
-#: ui/online.slint:24
+#: ui/online.slint:66
 msgctxt "OnlineGlobal"
 msgid "The source could not resolve the media URL ({})."
 msgstr "音乐源取址失败（{}）。"
 
-#: ui/online.slint:25
+#: ui/online.slint:67
 msgctxt "OnlineGlobal"
 msgid "Media download failed ({})."
 msgstr "音频下载失败（{}）。"
 
-#: ui/online.slint:26
+#: ui/online.slint:68
 msgctxt "OnlineGlobal"
 msgid "Audio decoding failed ({})."
 msgstr "音频解码失败（{}）。"
 
-#: ui/app.slint:205
+#: ui/app.slint:217
 msgctxt "MainWindow"
 msgid "Loading {} (paused)"
 msgstr "正在加载 {}（已暂停）"
 
-#: ui/app.slint:206
+#: ui/app.slint:218
 msgctxt "MainWindow"
 msgid "Loading {}"
 msgstr "正在加载 {}"
 
-#: ui/search_panel.slint:68
+#: ui/app.slint:455
+msgctxt "MainWindow"
+msgid "Close window"
+msgstr "关闭窗口"
+
+#: ui/search_panel.slint:186
 msgctxt "SearchPanel"
 msgid "Search songs or paste an LX track link"
 msgstr "搜索歌曲或粘贴 LX 单曲链接"
 
-#: ui/settings_panel.slint:126
+#: ui/settings_panel.slint:143
 msgctxt "SettingsPanel"
 msgid "LX music source"
 msgstr "LX 音乐源"
 
-#: ui/settings_panel.slint:131
+#: ui/settings_panel.slint:159
 msgctxt "SettingsPanel"
 msgid "Initializing…"
 msgstr "正在初始化…"
 
-#: ui/settings_panel.slint:131
+#: ui/settings_panel.slint:159
 msgctxt "SettingsPanel"
 msgid "Import JS source…"
 msgstr "导入 JS 音乐源…"
 
-#: ui/settings_panel.slint:136
+#: ui/settings_panel.slint:164
 msgctxt "SettingsPanel"
 msgid "Enabled"
 msgstr "启用"
 
-#: ui/song_list.slint
+#: ui/song_list.slint:137
 msgctxt "SongItem"
 msgid "Play using LX source"
 msgstr "使用 LX 音源播放"
 
-#: ui/song_list.slint
+#: ui/song_list.slint:269
 msgctxt "MessagePopup"
 msgid "Open update link"
 msgstr "打开更新链接"
 
-#: ui/app.slint
+#: ui/app.slint:520
 msgctxt "MainWindow"
 msgid "LX source update"
 msgstr "LX 音源更新"
 
-#: ui/online.slint:38
+#: ui/online.slint:52
 msgctxt "OnlineGlobal"
 msgid "Kuwo"
 msgstr "酷我"
 
-#: ui/online.slint:39
+#: ui/online.slint:53
 msgctxt "OnlineGlobal"
 msgid "Kugou"
 msgstr "酷狗"
 
-#: ui/online.slint:40
+#: ui/online.slint:54
 msgctxt "OnlineGlobal"
 msgid "QQ Music"
 msgstr "QQ音乐"
 
-#: ui/online.slint:41
+#: ui/online.slint:55
 msgctxt "OnlineGlobal"
 msgid "NetEase"
 msgstr "网易云"
 
-#: ui/online.slint:42
+#: ui/online.slint:56
 msgctxt "OnlineGlobal"
 msgid "Migu"
 msgstr "咪咕"
 
-#: ui/search_panel.slint:91
+#: ui/search_panel.slint:204
 msgctxt "SearchPanel"
 msgid "Cancel"
 msgstr "取消"
 
-#: ui/search_panel.slint:91
+#: ui/search_panel.slint:204
 msgctxt "SearchPanel"
 msgid "Local library"
 msgstr "本地曲库"
 
-#: ui/search_panel.slint:109
+#: ui/search_panel.slint:220
 msgctxt "SearchPanel"
 msgid "Previous page"
 msgstr "上一页"
 
-#: ui/search_panel.slint:117
+#: ui/search_panel.slint:227
 msgctxt "SearchPanel"
 msgid "{} · Page {}"
 msgstr "{} · 第 {} 页"
 
-#: ui/search_panel.slint:124
+#: ui/search_panel.slint:234
 msgctxt "SearchPanel"
 msgid "Next page"
 msgstr "下一页"
 
-#: ui/search_panel.slint:133
+#: ui/search_panel.slint:242
 msgctxt "SearchPanel"
 msgid "Searching {}…"
 msgstr "正在搜索{}…"
 
-#: ui/search_panel.slint:134
+#: ui/search_panel.slint:243
 msgctxt "SearchPanel"
 msgid "{} search failed."
 msgstr "{}搜索失败。"
 
-#: ui/search_panel.slint:138
+#: ui/search_panel.slint:252
 msgctxt "SearchPanel"
 msgid "Retry"
 msgstr "重试"
 
-#: ui/online.slint:35
+#: ui/online.slint:43
 msgctxt "OnlineGlobal"
 msgid "Standard (128k)"
 msgstr "标准 (128k)"
 
-#: ui/online.slint:36
+#: ui/online.slint:44
 msgctxt "OnlineGlobal"
 msgid "High (320k)"
 msgstr "高品质 (320k)"
 
-#: ui/online.slint:37
+#: ui/online.slint:45
 msgctxt "OnlineGlobal"
 msgid "Lossless (FLAC)"
 msgstr "无损 (FLAC)"
 
-#: ui/online.slint:38
+#: ui/online.slint:46
 msgctxt "OnlineGlobal"
 msgid "Hi-Res (24-bit)"
 msgstr "Hi-Res (24-bit)"
 
-#: ui/search_panel.slint:169
+#: ui/search_panel.slint:289
 msgctxt "SearchPanel"
 msgid "Play"
 msgstr "播放"
 
-#: ui/settings_panel.slint:168
+#: ui/settings_panel.slint:180
 msgctxt "SettingsPanel"
 msgid "Preferred audio quality"
 msgstr "优先音质"
 
-#: ui/settings_panel.slint:183
+#: ui/settings_panel.slint:199
 msgctxt "SettingsPanel"
 msgid "Used first when playing online tracks; switches automatically if unavailable."
 msgstr "播放在线歌曲时优先使用，不可用时自动切换其他音质。"
 
-#: ui/settings_panel.slint:215
+#: ui/settings_panel.slint:219
 msgctxt "SettingsPanel"
 msgid "Online search source"
 msgstr "在线搜索源"
 
-#: ui/online.slint:50
+#: ui/online.slint:51
 msgctxt "OnlineGlobal"
 msgid "All platforms"
 msgstr "聚合搜索"
 
-#: ui/search_panel.slint:90
+#: ui/search_panel.slint:199
 msgctxt "SearchPanel"
 msgid "Search online"
 msgstr "在线搜索"
 
-#: ui/search_panel.slint:138
+#: ui/search_panel.slint:247
 msgctxt "SearchPanel"
 msgid "Some platforms could not be searched."
 msgstr "部分平台搜索失败。"
 
-#: ui/collections.slint:21
+#: ui/collections.slint:28
 msgctxt "CollectionsGlobal"
 msgid "My Likes"
 msgstr "我的喜欢"
 
-#: ui/collections.slint:63
+#: ui/collections.slint:71
 msgctxt "LikeButton"
 msgid "Unlike"
 msgstr "取消喜欢"
 
-#: ui/collections.slint:63
+#: ui/collections.slint:71
 msgctxt "LikeButton"
 msgid "Like"
 msgstr "喜欢"
 
-#: ui/collections.slint:77
+#: ui/collections.slint:85
 msgctxt "TrackActions"
 msgid "Add to collection"
 msgstr "加入收藏列表"
 
-#: ui/collections.slint:82
+#: ui/collections.slint:97
 msgctxt "TrackActions"
 msgid "Remove from collection"
 msgstr "移出收藏列表"
 
-#: ui/collections.slint:107
+#: ui/collections.slint:188
 msgctxt "CollectionSelector"
 msgid "Cancel"
 msgstr "取消"
 
-#: ui/collections.slint:107
+#: ui/collections.slint:188
 msgctxt "CollectionSelector"
 msgid "New collection"
 msgstr "新建收藏列表"
 
-#: ui/collections.slint:111
+#: ui/collections.slint:203
 msgctxt "CollectionSelector"
 msgid "Collection name"
 msgstr "收藏列表名称"
 
-#: ui/collections.slint:117
+#: ui/collections.slint:211
 msgctxt "CollectionSelector"
 msgid "Create"
 msgstr "创建"
 
-#: ui/collections.slint:165
-msgctxt "CollectionPicker"
-msgid "Add to collection"
-msgstr "加入收藏列表"
-
-#: ui/collections.slint:184
-msgctxt "CollectionPicker"
-msgid "Cancel"
-msgstr "取消"
-
-#: ui/song_list.slint:297
+#: ui/song_list.slint:309
 msgctxt "SongListView"
 msgid "Songs you like will appear here."
 msgstr "喜欢的歌曲会显示在这里。"
 
-#: ui/song_list.slint:298
+#: ui/song_list.slint:310
 msgctxt "SongListView"
 msgid "Add songs from search or another collection."
 msgstr "可从搜索页或其他收藏列表添加歌曲。"
 
-#: ui/song_list.slint:305
+#: ui/song_list.slint:317
 msgctxt "SongListView"
 msgid "Find songs"
 msgstr "查找歌曲"
 
-#: ui/search_panel.slint:232
+#: ui/search_panel.slint:332
 msgctxt "SearchPanel"
 msgid "No local songs found."
 msgstr "未找到本地歌曲。"
 
-#: ui/app.slint:174
+#: ui/app.slint:175
 msgctxt "MainWindow"
 msgid "Could not save collections."
 msgstr "无法保存收藏列表。"
 
-#: ui/sidebar.slint:137
+#: ui/sidebar.slint:82
 msgctxt "Sidebar"
-msgid "Collections"
-msgstr "收藏列表"
+msgid "My playlists"
+msgstr "我的歌单"
+
+#: ui/settings_panel.slint:284
+msgctxt "SettingsPanel"
+msgid "Dynamic cover colors"
+msgstr "封面动态取色"
+
+#: ui/control_panel.slint:314
+msgctxt "ControlPanel"
+msgid "Open lyrics and play queue"
+msgstr "打开歌词和待播清单"
+
+#: ui/lyrics_panel.slint:174
+msgctxt "NowPlaying"
+msgid "Close now playing"
+msgstr "收起正在播放"
+
+#: ui/lyrics_panel.slint:225
+msgctxt "NowPlaying"
+msgid "No track selected"
+msgstr "未选择歌曲"
+
+#: ui/lyrics_panel.slint:296
+msgctxt "NowPlaying"
+msgid "Volume"
+msgstr "音量"
+
+#: ui/lyrics_panel.slint:311
+msgctxt "NowPlaying"
+msgid "Lyrics"
+msgstr "歌词"
+
+#: ui/lyrics_panel.slint:317
+msgctxt "NowPlaying"
+msgid "Play queue"
+msgstr "待播清单"
+
+#: ui/lyrics_panel.slint:377
+msgctxt "NowPlaying"
+msgid "The play queue is empty"
+msgstr "待播清单为空"
+
+#: ui/lyrics_panel.slint:377
+msgctxt "NowPlaying"
+msgid "No lyrics available"
+msgstr "暂无歌词"

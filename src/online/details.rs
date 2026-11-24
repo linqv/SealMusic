@@ -119,7 +119,7 @@ pub(super) async fn fetch_cover(
     client: &Client,
     url: &str,
     referer: Option<&str>,
-) -> Option<image::RgbaImage> {
+) -> Option<(image::RgbaImage, Option<metadata::CoverPalette>)> {
     let url = as_http_url(url)?;
     let mut req = client.get(url).header("User-Agent", DESKTOP_UA);
     if let Some(referer) = referer {
@@ -178,8 +178,9 @@ async fn fetch_details_with(
     );
 
     let mut changed = false;
-    if let Some(img) = cover {
+    if let Some((img, palette)) = cover {
         details.cover = Some(img);
+        details.palette = palette;
         details.raw_cover = None;
         changed = true;
     }
@@ -291,7 +292,7 @@ async fn resolve_and_fetch_cover(
     endpoints: &Endpoints,
     source: &str,
     info: &Value,
-) -> Option<image::RgbaImage> {
+) -> Option<(image::RgbaImage, Option<metadata::CoverPalette>)> {
     let referer = cover_referer(source);
     let mut tried = Vec::new();
 

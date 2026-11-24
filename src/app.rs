@@ -83,13 +83,15 @@ fn sync_lyrics_view(
     if active != prev {
         display.set_active_lyric_index(active);
     }
-    if active >= 0
-        && (active != prev || force_scroll)
-        && Instant::now() >= scroll.allow_scroll.get()
+    if force_scroll
+        || (active != prev && active >= 0 && Instant::now() >= scroll.allow_scroll.get())
     {
-        let next_y =
-            -((active as usize).saturating_sub(5) as f32) * display.get_lyric_line_height();
+        let height = ui.get_lyric_line_height();
+        let max_scroll =
+            (timeline.borrow().len() as f32 * height - ui.get_lyric_view_height()).max(0.);
+        let next_y = -((active - 2).max(0) as f32 * height).min(max_scroll);
         scroll.last_y.set(next_y);
+        scroll.allow_scroll.set(Instant::now());
         display.set_lyric_viewport_y(next_y);
     }
 }
@@ -101,17 +103,10 @@ fn sync_visible_progress(
     scroll: &ScrollGuard,
     force_scroll: bool,
 ) {
-    let page = ui.get_current_page();
-    if page != 0 && page != 2 {
-        return;
-    }
     let playback = ui.global::<PlaybackGlobal>();
-    if playback.get_dragging() {
-        return;
-    }
     let pos = state.read().unwrap().position_now().as_secs_f32();
     playback.set_progress(pos);
-    if page == 2 {
+    if ui.get_lyrics_visible() {
         sync_lyrics_view(ui, timeline, pos, scroll, force_scroll);
     }
 }
@@ -162,6 +157,27 @@ fn song(t: &Track) -> SongInfo {
 fn model(tracks: Vec<Arc<Track>>) -> slint::ModelRc<SongInfo> {
     slint::ModelRc::new(slint::VecModel::from(tracks.iter().map(|t| song(t)).collect::<Vec<_>>()))
 }
+fn apply_cover_palette(ui: &MainWindow, palette: Option<crate::library::metadata::CoverPalette>) {
+    let theme = ui.global::<Theme>();
+    let colors = palette.as_ref().map_or(&[][..], |p| p.as_slice());
+    if colors.is_empty() {
+        theme.set_has_cover_palette(false);
+        theme.set_cover_color_count(0);
+        return;
+    }
+    if let Some(&[r, g, b]) = colors.first() {
+        theme.set_cover_color_0(slint::Color::from_rgb_u8(r, g, b));
+    }
+    if let Some(&[r, g, b]) = colors.get(1) {
+        theme.set_cover_color_1(slint::Color::from_rgb_u8(r, g, b));
+    }
+    if let Some(&[r, g, b]) = colors.get(2) {
+        theme.set_cover_color_2(slint::Color::from_rgb_u8(r, g, b));
+    }
+    theme.set_cover_color_count(colors.len() as i32);
+    theme.set_has_cover_palette(true);
+}
+
 fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
     let display = ui.global::<DisplayGlobal>();
     let playback = ui.global::<PlaybackGlobal>();
@@ -172,19 +188,18 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
             playback.set_paused(s.status != Status::Playing);
             playback.set_duration(s.duration.as_secs_f32());
             let pos = seeked.unwrap_or_else(|| s.position_now()).as_secs_f32();
-            if !playback.get_dragging() {
-                playback.set_progress(pos);
-            }
+            playback.set_progress(pos);
             playback.set_volume(s.volume);
             playback.set_loop_mode(s.loop_mode);
             playback.set_shuffle(s.shuffle);
-            if ui.get_current_page() == 2 {
+            if ui.get_lyrics_visible() {
                 sync_lyrics_view(ui, &sync.timeline, pos, &sync.scroll, seeked.is_some());
             } else {
                 display.set_active_lyric_index(find_active_lyric(&sync.timeline.borrow(), pos));
             }
             sync_progress_timer(ui, &sync.timer, &sync.state, &sync.timeline, &sync.scroll);
         }
+        Event::Upcoming(tracks) => display.set_upcoming(model(tracks)),
         Event::Details(details, position) => {
             let cover = details
                 .cover
@@ -197,6 +212,7 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
                 })
                 .unwrap_or_else(default_cover);
             display.set_album_image(cover);
+            apply_cover_palette(ui, details.palette);
             let mut times = Vec::with_capacity(details.lyrics.len());
             let lyrics: Vec<_> = details
                 .lyrics
@@ -215,7 +231,7 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
             sync.scroll.allow_scroll.set(Instant::now());
             display.set_lyric_viewport_y(0.);
             let pos = position.as_secs_f32();
-            if ui.get_current_page() == 2 {
+            if ui.get_lyrics_visible() {
                 sync_lyrics_view(ui, &sync.timeline, pos, &sync.scroll, true);
             } else {
                 display.set_active_lyric_index(find_active_lyric(&sync.timeline.borrow(), pos));
@@ -612,12 +628,6 @@ fn register_callbacks(
     collections.on_create_collection(move |name| tx.send(Cmd::CreateCollection(name.into())));
     let tx = controls.clone();
     collections.on_toggle_like(move |id| tx.send(Cmd::ToggleLike(TrackId(id.into()))));
-    let weak = ui.as_weak();
-    collections.on_choose_collection(move |id| {
-        if let Some(ui) = weak.upgrade() {
-            ui.invoke_show_collection_picker(id);
-        }
-    });
     let tx = controls.clone();
     collections.on_add_to_collection(move |index, id| {
         tx.send(Cmd::AddToCollection(index as usize, TrackId(id.into())));
@@ -633,17 +643,21 @@ fn register_callbacks(
     let tx = controls.clone();
     ui.on_play(move |t| tx.send(Cmd::PlayTrack(TrackId(t.id.into()))));
     let tx = controls.clone();
-    ui.on_toggle_play(move || tx.send(Cmd::TogglePlayPause));
+    ui.on_play_queued(move |id| tx.send(Cmd::PlayQueuedTrack(TrackId(id.into()))));
     let tx = controls.clone();
-    ui.on_stop(move || tx.send(Cmd::Stop));
+    ui.on_toggle_play(move || tx.send(Cmd::TogglePlayPause));
     let tx = controls.clone();
     ui.on_play_next(move || tx.send(Cmd::Next));
     let tx = controls.clone();
     ui.on_play_prev(move || tx.send(Cmd::Previous));
     let tx = controls.clone();
-    ui.on_change_progress(move |s| {
-        if let Ok(d) = Duration::try_from_secs_f32(s) {
-            tx.send(Cmd::SeekTo(None, d));
+    let weak = ui.as_weak();
+    ui.on_change_progress(move |seconds| {
+        if let (Some(ui), Ok(position)) = (weak.upgrade(), Duration::try_from_secs_f32(seconds)) {
+            let track = ui.global::<DisplayGlobal>().get_current_song().id;
+            if !track.is_empty() {
+                tx.send(Cmd::SeekTo(Some(TrackId(track.into())), position));
+            }
         }
     });
     let tx = controls.clone();
@@ -726,10 +740,6 @@ fn register_callbacks(
             theme.check_now();
         }
     });
-    let weak = ui.as_weak();
-    let state = sync.state.clone();
-    let timeline = Rc::clone(&sync.timeline);
-    let scroll = Rc::clone(&sync.scroll);
     #[cfg(target_os = "linux")]
     let catalog_controls = controls.clone();
     ui.on_page_changed(move |_page| {
@@ -737,6 +747,12 @@ fn register_callbacks(
         if _page != 1 {
             catalog_controls.send(Cmd::AbortCatalogSearch);
         }
+    });
+    let weak = ui.as_weak();
+    let state = sync.state.clone();
+    let timeline = Rc::clone(&sync.timeline);
+    let scroll = Rc::clone(&sync.scroll);
+    ui.on_lyrics_visibility_changed(move || {
         if let Some(ui) = weak.upgrade() {
             sync_visible_progress(&ui, &state, &timeline, &scroll, true);
         }
@@ -750,38 +766,6 @@ fn register_callbacks(
     ui.on_quit(|| {
         let _ = slint::quit_event_loop();
     });
-    // window control callbacks
-    let ui_weak = ui.as_weak();
-    ui.on_window_minimize(move || {
-        if let Some(ui) = ui_weak.upgrade() {
-            ui.window().set_minimized(true);
-        }
-    });
-
-    // Position cache for fallback drag — defined before maximize
-    // so the handler can reset it when window state changes.
-    let init_pos = Rc::new(Cell::new(None::<(i32, i32)>));
-
-    let ui_weak = ui.as_weak();
-    let init_pos_max = init_pos.clone();
-    ui.on_window_maximize(move || {
-        if let Some(ui) = ui_weak.upgrade() {
-            let window = ui.window();
-            window.set_maximized(!window.is_maximized());
-        }
-        // Reset position cache — window position changed, so the
-        // cached fallback origin from a previous gesture is stale.
-        init_pos_max.set(None);
-    });
-    let weak = ui.as_weak();
-    ui.on_window_close(move || {
-        if let Some(ui) = weak.upgrade()
-            && let Err(e) =
-                ui.window().dispatch_event_with_result(slint::platform::WindowEvent::CloseRequested)
-        {
-            log::warn!("Closing window: {e}");
-        }
-    });
     let timer = Rc::clone(&sync.timer);
     let theme = Rc::clone(&sync.theme);
     ui.window().on_close_requested(move || {
@@ -793,33 +777,9 @@ fn register_callbacks(
         slint::CloseRequestResponse::HideWindow
     });
 
-    // Window dragging — use native OS move via winit's drag_window()
-    let ui_weak = ui.as_weak();
-    ui.on_window_drag_delta(move |dx: f32, dy: f32| {
-        if let Some(app) = ui_weak.upgrade() {
-            // Try native OS drag (works on Wayland, X11, Windows when button is pressed)
-            let native_ok =
-                app.window().with_winit_window(|w| w.drag_window().is_ok()).unwrap_or(false);
-
-            if native_ok {
-                // OS window manager/compositor handles all movement
-                init_pos.set(None);
-                return;
-            }
-
-            // Fallback: manually position the window (non-winit backends)
-            let (ix, iy) = init_pos.get().unwrap_or_else(|| {
-                let pos = app.window().position();
-                init_pos.set(Some((pos.x, pos.y)));
-                (pos.x, pos.y)
-            });
-            app.window().set_position(slint::PhysicalPosition::new(ix + dx as i32, iy + dy as i32));
-        }
-    });
-
     // pure callback to format duration string
     ui.on_format_duration(|dura| {
-        format!("{:02}:{:02}", (dura as u32) / 60, (dura as u32) % 60).to_shared_string()
+        format!("{}:{:02}", (dura as u32) / 60, (dura as u32) % 60).to_shared_string()
     });
 
     ui.on_open_url_in_browser(|url| {
@@ -889,6 +849,13 @@ fn register_tray(ui: &MainWindow, tray: &AppTray, controls: &Controls, sync: &Ui
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let cfg = Config::load();
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("SLINT_BACKEND").is_none_or(|backend| backend.is_empty()) {
+        slint::BackendSelector::new()
+            .backend_name("winit".into())
+            .renderer_name("skia-software".into())
+            .select()?;
+    }
     let ui = MainWindow::new()?;
     #[cfg(target_os = "linux")]
     slint::set_xdg_app_id(crate::APP_ID)?;
@@ -900,6 +867,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let _ = slint::select_bundled_translation(&cfg.lang);
     display.set_song_dir(cfg.song_dir.display().to_shared_string());
     display.set_follow_system_theme(cfg.follow_system_theme);
+    ui.global::<Theme>().set_cover_recoloring(cfg.cover_recoloring);
     #[cfg(target_os = "linux")]
     {
         let lx = ui.global::<OnlineGlobal>();
@@ -997,6 +965,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     cfg.lang = display.get_lang().into();
     cfg.light_ui = display.get_light_ui();
     cfg.follow_system_theme = display.get_follow_system_theme();
+    cfg.cover_recoloring = ui.global::<Theme>().get_cover_recoloring();
     cfg.current_page = ui.get_current_page();
     cfg.sidebar_expanded = ui.get_sidebar_expanded();
     cfg.gallery_viewport_y = display.get_gallery_viewport_y();

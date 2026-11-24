@@ -43,6 +43,7 @@ pub struct Config {
     pub lang: String,
     pub light_ui: bool,
     pub follow_system_theme: bool,
+    pub cover_recoloring: bool,
     pub volume: f32,
     pub current_page: i32,
     pub sidebar_expanded: bool,
@@ -71,6 +72,7 @@ impl Default for Config {
             lang: String::new(),
             light_ui: false,
             follow_system_theme: true,
+            cover_recoloring: true,
             volume: 1.,
             current_page: 0,
             sidebar_expanded: false,
@@ -108,6 +110,9 @@ impl Config {
             cfg.progress = 0.;
         }
         cfg.current_page = cfg.current_page.clamp(0, 3);
+        if cfg.current_page == 2 {
+            cfg.current_page = 0;
+        }
         #[cfg(target_os = "linux")]
         if !crate::online::is_quality(&cfg.online_quality) {
             cfg.online_quality = crate::online::DEFAULT_QUALITY.into();
@@ -155,7 +160,9 @@ mod tests {
                 (cfg.loop_mode, cfg.shuffle, cfg.current_page, cfg.volume, cfg.lang.as_str()),
                 (looping, shuffle, 3, 0.42, "")
             );
+            assert!(cfg.cover_recoloring);
         }
+        assert!(!Config::parse("cover_recoloring = false").unwrap().cover_recoloring);
 
         #[cfg(target_os = "linux")]
         {

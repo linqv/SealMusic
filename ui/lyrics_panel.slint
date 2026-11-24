@@ -1,105 +1,413 @@
-import { Theme } from "theme.slint";
-import { ListView } from "std-widgets.slint";
-import { SongInfo, LyricItem } from "types.slint";
+import { IconDisplay, IconSet } from "@lucide";
+import { ListView, Slider } from "std-widgets.slint";
+import { LikeButton } from "collections.slint";
+import { PlaybackButton, SeekBar, TransportButtons } from "control_panel.slint";
+import { CoverBackdrop, Theme } from "theme.slint";
+import { LoopMode, LyricItem, SongInfo } from "types.slint";
 
-export component LyricLine inherits Rectangle {
-    height: 40px;
-    background: area.has-hover ? Theme.song-hover : transparent;
-    border-radius: 5px;
-    in-out property <string> content;
-    in-out property <bool> playing;
-    in property <float> time;
-    in property <bool> can-seek;
-    callback jump-to(float);
+component ViewTab inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
 
-    area := TouchArea {
-        enabled: root.can-seek;
-        clicked => { jump-to(root.time) }
-    }
+    width: 68px;
+    height: 32px;
+    border-radius: self.height / 2;
+    background: root.selected ? Theme.text.with-alpha(0.13)
+        : touch.has-hover || keys.has-focus ? Theme.text.with-alpha(0.07) : transparent;
+    border-width: keys.has-focus ? 1px : 0px;
+    border-color: Theme.accent;
+    animate background { duration: 150ms; }
+    forward-focus: keys;
+    accessible-role: tab;
+    accessible-label: root.label;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
 
     Text {
         width: 100%;
         horizontal-alignment: center;
-        vertical-alignment: center;
-        color: playing ? Theme.accent : Theme.text;
-        text: content;
-        font-size: playing ? 20px : 17px;
-        overflow: TextOverflow.elide;
-        Tooltip {
-            VerticalLayout {
-                padding: 5px;
-                Text {
-                    text: content;
-                }
+        text: root.label;
+        color: root.selected ? Theme.text : Theme.text.with-alpha(0.70);
+        font-weight: 600;
+    }
+
+    keys := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
             }
+            return reject;
         }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
     }
 }
 
-export component LyricsPanel inherits Rectangle {
-    in property <image> album_image;
-    in property <SongInfo> current_song;
-    in property <[LyricItem]> lyrics;
-    in property <int> active_lyric_index: -1;
-    in-out property <length> lyric_viewport_y;
-    in property <bool> can-seek;
-    callback jump-to(float);
-    background: Theme.surface;
+component QueueRow inherits Rectangle {
+    in property <SongInfo> song;
+    in property <int> number;
+    callback play();
+
+    height: 56px;
+    border-radius: 8px;
+    background: touch.has-hover ? Theme.text.with-alpha(0.07) : transparent;
+    accessible-role: button;
+    accessible-label: root.song.singer == "" ? root.song.song_name : "\{root.song.song_name} · \{root.song.singer}";
+    accessible-action-default => { root.play(); }
+
     HorizontalLayout {
-        x: 0px;
-        width: 100%;
-        height: 100%;
-        VerticalLayout {
-            width: lyrics.length != 0 ? 30% : 100%;
-            alignment: center;
-            lyric-image := Rectangle {
-                x: parent.width / 2 - self.width / 2;
-                width: root.height * 0.40;
-                height: self.width;
-                clip: true;
-                border-radius: 8px;
-                background: transparent;
-                drop-shadow-blur: 8px;
-                Image {
-                    width: 100%;
-                    height: 100%;
-                    source: album_image;
-                }
-            }
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 12px;
 
+        Rectangle {
+            width: 28px;
             Text {
-                width: 100%;
-                height: 25px;
-                horizontal-alignment: center;
-                vertical-alignment: bottom;
-                text: @tr("Artist: {}", current_song.singer);
-                overflow: elide;
+                visible: !touch.has-hover;
+                text: "\{root.number}";
+                font-size: 12px;
+                color: Theme.text.with-alpha(0.65);
             }
-
-            Text {
-                width: 100%;
-                height: 25px;
-                horizontal-alignment: center;
-                vertical-alignment: bottom;
-                text: @tr("Title: {}", current_song.song_name);
-                overflow: elide;
+            IconDisplay {
+                visible: touch.has-hover;
+                icon: IconSet.Play;
+                size: 15px;
+                stroke: Theme.text;
+                stroke-fill: Theme.text;
             }
         }
 
         VerticalLayout {
-            width: lyrics.length != 0 ? 70% : 0%;
+            horizontal-stretch: 1;
             alignment: center;
-            ListView {
-                height: 100%;
-                width: 100%;
-                mouse-drag-pan-enabled: false;
-                content-y <=> root.lyric_viewport_y;
-                for item[idx] in root.lyrics: LyricLine {
-                    time: item.time;
-                    can-seek: root.can-seek;
-                    content: item.text;
-                    playing: idx == root.active_lyric_index;
-                    jump-to(t) => { root.jump-to(t) }
+            spacing: 2px;
+            Text {
+                text: root.song.song_name;
+                color: Theme.text;
+                font-weight: 600;
+                overflow: elide;
+            }
+            if root.song.singer != "": Text {
+                text: root.song.singer;
+                color: Theme.text.with-alpha(0.7);
+                font-size: 12px;
+                overflow: elide;
+            }
+        }
+
+        Text {
+            text: root.song.duration;
+            font-size: 12px;
+            color: Theme.text.with-alpha(0.65);
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.play(); }
+    }
+}
+
+export component NowPlaying inherits Rectangle {
+    in property <image> album-image;
+    in property <SongInfo> current-song;
+    in property <[SongInfo]> upcoming;
+    in property <[LyricItem]> lyrics;
+    in property <int> active-lyric-index;
+    out property <length> lyric-line-height: (root.height * 0.098).clamp(50px, 80px);
+    in-out property <length> lyric-scroll-y;
+    in-out property <bool> show-queue;
+    in property <bool> can-seek;
+    in property <float> progress;
+    in property <float> duration;
+    in property <bool> paused;
+    in property <bool> shuffle;
+    in property <LoopMode> loop-mode;
+    in-out property <float> volume;
+    out property <length> lyric-view-height: lyrics-list.visible-height;
+
+    callback dismiss();
+    callback seek(float);
+    callback toggle-play();
+    callback play-next();
+    callback play-prev();
+    callback play-queued(string);
+    callback set-shuffle(bool);
+    callback switch-mode(LoopMode);
+    callback change-volume(float);
+    pure callback format-duration(float) -> string;
+
+    private property <length> gutter: (root.width * 0.057).clamp(36px, 88px);
+    private property <length> column-width: (root.width * 0.22).clamp(228px, 336px);
+    private property <float> vertical-space: ((root.height - 500px) / 170px).clamp(0, 1);
+    private property <length> lyric-font-size: (root.lyric-line-height * 0.43).clamp(21px, 38px);
+    private property <bool> has-track: root.current-song.id != "";
+
+    Rectangle {
+        // Keep the transform's bounds at panel size for partial redraws.
+        private property <float> upscale: Theme.cover-active ? 2 : 1;
+        width: 100%;
+        height: 100%;
+        transform-origin: { x: 0px, y: 0px };
+        transform-scale: self.upscale;
+
+        Rectangle {
+            // The smooth gradients share a half-resolution cache.
+            x: 0px;
+            y: 0px;
+            width: parent.width / parent.upscale;
+            height: parent.height / parent.upscale;
+            cache-rendering-hint: Theme.cover-active;
+
+            CoverBackdrop {
+                base-color: Theme.is-dark ? #18212d : #f0f3f9;
+            }
+
+            Rectangle {
+                background: @linear-gradient(180deg, Theme.surface.with-alpha(0.12) 0%, Theme.surface.with-alpha(0.42) 100%);
+            }
+        }
+    }
+
+    WindowMoveArea {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 48px;
+    }
+
+    PlaybackButton {
+        x: (parent.width - self.width) / 2;
+        y: 8px;
+        width: 46px;
+        height: 32px;
+        icon: IconSet.ChevronDown;
+        icon-size: 22px;
+        label: @tr("Close now playing");
+        clicked => { root.dismiss(); }
+    }
+
+    HorizontalLayout {
+        x: 0;
+        y: 44px;
+        width: 100%;
+        height: root.height - self.y;
+        padding-left: root.gutter;
+        padding-right: root.gutter;
+        padding-bottom: (root.height * 0.075).clamp(24px, 52px);
+        spacing: root.gutter;
+
+        VerticalLayout {
+            width: root.column-width;
+            alignment: start;
+
+            HorizontalLayout {
+                alignment: start;
+                spacing: 8px;
+                ViewTab {
+                    label: @tr("Lyrics");
+                    selected: !root.show-queue;
+                    clicked => { root.show-queue = false; }
+                }
+                ViewTab {
+                    width: 104px;
+                    label: @tr("Play queue");
+                    selected: root.show-queue;
+                    clicked => { root.show-queue = true; }
+                }
+            }
+
+            Rectangle { height: 12px + 20px * root.vertical-space; }
+
+            Rectangle {
+                height: art.width;
+                art := Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    width: min(root.column-width * 0.74, (root.height * 0.31).clamp(146px, 248px));
+                    height: self.width;
+                    border-radius: 14px;
+                    background: Theme.surface;
+                    drop-shadow-color: #0000003d;
+                    drop-shadow-blur: 18px;
+                    drop-shadow-offset-y: 8px;
+
+                    Rectangle {
+                        border-radius: 14px;
+                        clip: true;
+                        Image {
+                            width: 100%;
+                            height: 100%;
+                            source: root.has-track ? root.album-image : @image-url("cover.svg");
+                            image-fit: cover;
+                        }
+                    }
+                }
+            }
+
+            Rectangle { height: 16px + 24px * root.vertical-space; }
+
+            HorizontalLayout {
+                height: 52px + 10px * root.vertical-space;
+                spacing: 8px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    Text {
+                        text: root.has-track ? root.current-song.song_name : @tr("No track selected");
+                        font-size: 20px + 4px * root.vertical-space;
+                        font-weight: 700;
+                        color: Theme.text;
+                        overflow: elide;
+                    }
+                    if root.current-song.singer != "": Text {
+                        text: root.current-song.singer;
+                        font-size: 14px + root.vertical-space * 1px;
+                        color: Theme.text.with-alpha(0.72);
+                        overflow: elide;
+                    }
+                }
+                if root.has-track: LikeButton {
+                    y: (parent.height - self.height) / 2;
+                    track: root.current-song.id;
+                }
+            }
+
+            Rectangle { height: 8px + 8px * root.vertical-space; }
+
+            VerticalLayout {
+                seek-bar := SeekBar {
+                    height: 15px;
+                    enabled: root.can-seek && root.duration > 0;
+                    position: root.progress;
+                    duration: root.duration;
+                    track: root.current-song.id;
+                    seek(value) => { root.seek(value); }
+                }
+                HorizontalLayout {
+                    Text {
+                        text: root.format-duration(seek-bar.displayed-position);
+                        color: Theme.text.with-alpha(0.7);
+                        font-size: 12px;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text {
+                        text: root.duration > 0 ? root.format-duration(root.duration) : "–:––";
+                        color: Theme.text.with-alpha(0.7);
+                        font-size: 12px;
+                    }
+                }
+            }
+
+            Rectangle { height: 8px + 10px * root.vertical-space; }
+
+            TransportButtons {
+                expanded: true;
+                paused: root.paused;
+                shuffle: root.shuffle;
+                loop-mode: root.loop-mode;
+                toggle-play => { root.toggle-play(); }
+                play-next => { root.play-next(); }
+                play-prev => { root.play-prev(); }
+                set-shuffle(value) => { root.set-shuffle(value); }
+                switch-mode(mode) => { root.switch-mode(mode); }
+            }
+
+            Rectangle { height: 8px + 12px * root.vertical-space; }
+
+            HorizontalLayout {
+                height: 26px;
+                padding-left: root.column-width * 0.13;
+                padding-right: root.column-width * 0.13;
+                spacing: 8px;
+                Rectangle {
+                    width: 20px;
+                    IconDisplay {
+                        icon: root.volume > 0 ? IconSet.Volume2 : IconSet.VolumeX;
+                        size: 17px;
+                        stroke: Theme.text.with-alpha(0.75);
+                    }
+                }
+                Slider {
+                    minimum: 0;
+                    maximum: 1;
+                    step: 0.01;
+                    accessible-label: @tr("Volume");
+                    value <=> root.volume;
+                    released(value) => { root.change-volume(value); }
+                }
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            padding-top: 30px + 8px * root.vertical-space;
+
+            Rectangle {
+                vertical-stretch: 1;
+
+                lyrics-list := ListView {
+                    visible: !root.show-queue && root.lyrics.length > 0;
+                    mouse-drag-pan-enabled: false;
+                    content-y <=> root.lyric-scroll-y;
+
+                    for item[index] in root.lyrics: Rectangle {
+                        height: root.lyric-line-height;
+                        border-radius: 8px;
+                        background: lyric-touch.has-hover ? Theme.text.with-alpha(0.07) : transparent;
+                        accessible-role: button;
+                        accessible-label: item.text;
+                        accessible-enabled: root.can-seek;
+                        accessible-action-default => {
+                            if root.can-seek { root.seek(item.time); }
+                        }
+
+                        Text {
+                            x: 12px;
+                            width: parent.width - 24px;
+                            height: 100%;
+                            text: item.text;
+                            font-size: root.lyric-font-size;
+                            font-weight: index == root.active-lyric-index ? 700 : 600;
+                            color: index == root.active-lyric-index ? Theme.text : Theme.text.with-alpha(0.60);
+                            animate color { duration: 150ms; }
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                            overflow: elide;
+                        }
+                        lyric-touch := TouchArea {
+                            enabled: root.can-seek;
+                            mouse-cursor: pointer;
+                            clicked => { root.seek(item.time); }
+                        }
+                    }
+                }
+
+                ListView {
+                    visible: root.show-queue && root.upcoming.length > 0;
+                    mouse-drag-pan-enabled: false;
+
+                    for track[index] in root.upcoming: QueueRow {
+                        song: track;
+                        number: index + 1;
+                        play => { root.play-queued(track.id); }
+                    }
+                }
+
+                if root.show-queue ? root.upcoming.length == 0 : root.lyrics.length == 0: Text {
+                    width: 100%;
+                    height: 100%;
+                    text: root.show-queue ? @tr("The play queue is empty") : @tr("No lyrics available");
+                    color: Theme.text.with-alpha(0.68);
+                    font-size: 16px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
                 }
             }
         }

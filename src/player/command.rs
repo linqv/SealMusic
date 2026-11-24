@@ -15,6 +15,7 @@ pub enum PlayerCommand {
     TogglePlayPause,
     Stop,
     PlayTrack(TrackId),
+    PlayQueuedTrack(TrackId),
     PlayCollectionTrack(usize, TrackId, bool),
     SelectCollection(usize),
     CreateCollection(String),

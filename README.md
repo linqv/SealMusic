@@ -11,7 +11,8 @@ SealMusic is a fork of [Zeedle](https://github.com/Jordan-Haidee/zeedle), licens
 - Open Search to browse your local library or find songs. Click a song's heart to add it to My Likes. You can create named collections on the Collections page and add songs with the list-plus button.
 - Click a column heading to sort by title, artist or duration. Text uses ordinary string order. Sorting preserves the current track and playback history.
 - Repeat cycles through playlist, track and off. Shuffle can be enabled independently.
-- Space toggles playback. Up and Down select the previous and next track. Left and Right seek 15 seconds, or jump between timed lines on the lyrics page. F1–F4 open Collections, Search, Lyrics and Settings.
+- Click the cover in the playback bar to open Lyrics and the Play queue. Click a queued track to play it. Press Esc or click the down chevron to return.
+- Space toggles playback. Up and Down select the previous and next track. Left and Right seek 15 seconds, or jump between timed lines in Lyrics. F1, F2 and F4 open Collections, Search and Settings. F3 toggles the expanded player.
 - Closing the window keeps playback available through the tray or Linux desktop controls when available. Choose Exit from the tray or press Ctrl+Q to quit.
 - Settings includes English and Simplified Chinese, automatic or manual theme selection, the version, license and upstream project.
 

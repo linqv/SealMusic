@@ -35,17 +35,19 @@ Instructions for AI coding agents working in this repository.
 - **GUI thread safety:** Update Slint properties only via `slint::invoke_from_event_loop`. Keep queue/history in Rust.
 - **MPRIS isolation:** Keep Linux-only dependencies (`mpris-server`, `futures-channel`, `futures-lite`, `url`, `tempfile`) under `[target.'cfg(target_os = "linux")'.dependencies]` and isolate code behind `#[cfg(target_os = "linux")]`. Startup must still succeed when no D-Bus session bus is available (MPRIS disables itself and sets `can_run_hidden = false`).
 - **Scope guardrails:** Metadata and library scanning are strictly read-only — no tag editing, no file deletion, no spectrum/FFT, and no pinyin sorting (plain deterministic string order).
-- **Navigation pages:** `0 = Gallery`, `1 = Search`, `2 = Lyrics`, `3 = Settings` (About info is integrated into Settings).
+- **Navigation pages** are Gallery (`0`), Search (`1`), and Settings (`3`). The playback cover opens Lyrics and the Play queue over the current page.
 
 ## Hotkeys (`ui/app.slint` `FocusScope`)
 | Key | Action |
 |---|---|
 | `Space` | Play/pause toggle |
-| `←` | Seek backward 15s; on Lyrics page (`2`), snap to previous timed lyric line |
-| `→` | Seek forward 15s; on Lyrics page (`2`), snap to next timed lyric line |
+| `←` | Seek backward 15s or jump to the previous timed line in Lyrics |
+| `→` | Seek forward 15s or jump to the next timed line in Lyrics |
 | `↑` | Previous song |
 | `↓` | Next song |
-| `F1`–`F4` | Switch pages (`0` Gallery, `1` Search, `2` Lyrics, `3` Settings) |
+| `F1`, `F2`, `F4` | Open Gallery, Search, and Settings |
+| `F3` | Expand or collapse the playback view |
+| `Esc` | Dismiss the expanded playback view |
 | `Ctrl+Q` | Quit and save state |
 
 ## Theme & Localization

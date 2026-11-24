@@ -299,6 +299,9 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         let snapshot = Arc::new(self.state.clone());
         *self.shared.write().unwrap() = (*snapshot).clone();
         (self.publish)(Event::State(snapshot, self.pending_seek.take()));
+        if let Some(upcoming) = self.queue.upcoming_if_changed(current, self.state.loop_mode) {
+            (self.publish)(Event::Upcoming(upcoming));
+        }
     }
     fn rebuild_order(&mut self) {
         if let Some(index) = self.cfg.playing_collection {
@@ -465,6 +468,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         let mut changed = false;
         if incoming.cover.is_some() && (prefer_incoming || merged.cover.is_none()) {
             merged.cover = incoming.cover;
+            merged.palette = incoming.palette;
             merged.raw_cover = incoming.raw_cover;
             changed = true;
         }
@@ -723,6 +727,11 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                 let track =
                     self.find_library_track(&id).ok_or("Track is no longer in the library")?;
                 self.play_from(track, collections::QueueSource::Library, false)?;
+            }
+            Cmd::PlayQueuedTrack(id) => {
+                if let Some(track) = self.queue.get(&id) {
+                    self.load(track, Status::Playing, None, 0, false, false, Duration::ZERO)?;
+                }
             }
             Cmd::PlayCollectionTrack(index, id, via_lx) => {
                 if let Some(track) = self.find_collection_track(index, &id) {
@@ -996,7 +1005,9 @@ mod tests {
 
         h.core.handle(Cmd::PlayCollectionTrack(1, first.clone(), false)).unwrap();
         h.core.handle(Cmd::SelectCollection(0)).unwrap();
-        h.core.handle(Cmd::Next).unwrap();
+        h.core.handle(Cmd::PlayQueuedTrack(middle.clone())).unwrap();
+        assert_eq!(h.core.state.track.as_ref().unwrap().id, first);
+        h.core.handle(Cmd::PlayQueuedTrack(last.clone())).unwrap();
         assert_eq!(h.core.state.track.as_ref().unwrap().id, last);
         h.core.handle(Cmd::RemoveFromCollection(1, last.clone())).unwrap();
         assert_eq!(h.core.state.track.as_ref().unwrap().id, last);
@@ -1772,30 +1783,34 @@ mod tests {
             let details_id = h.core.online.details_id().unwrap();
 
             // Simulate stream embedded cover arriving first, then API lyrics arriving via Completion::Details.
+            let cover_img = image::RgbaImage::from_pixel(4, 4, image::Rgba([200, 60, 40, 255]));
+            let expected_palette = metadata::extract_palette(&cover_img.clone().into());
+            assert!(expected_palette.is_some());
             let embedded_cover = metadata::TrackDetails {
-                cover: Some(image::RgbaImage::new(4, 4)),
-                raw_cover: None,
-                lyrics: vec![],
+                cover: Some(cover_img),
+                palette: expected_palette,
+                ..Default::default()
             };
             assert!(h.core.merge_details(&track_id, embedded_cover, false));
+            assert_eq!(h.core.details.palette, expected_palette);
             assert!(h.core.state.art_url.is_some());
             assert!(h.core.state.synced_lyrics.is_none());
 
             let api_lyrics = metadata::TrackDetails {
-                cover: None,
-                raw_cover: None,
                 lyrics: vec![crate::library::lyrics::LyricLine {
                     time: 1.5,
                     duration: 2.0,
                     text: "Online lyric".into(),
                 }],
+                ..Default::default()
             };
             h.core.complete_online(online::Completion::Details(
                 details_id,
                 track_id.clone(),
                 Some(api_lyrics),
             ));
-            // Both embedded cover and API lyrics must be preserved together in state and MPRIS!
+            // Both embedded cover/palette and API lyrics must be preserved together in state and MPRIS!
+            assert_eq!(h.core.details.palette, expected_palette);
             assert!(h.core.state.art_url.is_some());
             assert!(
                 h.core.state.synced_lyrics.as_deref().is_some_and(|s| s.contains("Online lyric"))
@@ -1804,12 +1819,12 @@ mod tests {
             // A subsequent embedded fallback with different lyrics must NOT overwrite API lyrics.
             let late_embedded = metadata::TrackDetails {
                 cover: Some(image::RgbaImage::new(2, 2)),
-                raw_cover: None,
                 lyrics: vec![crate::library::lyrics::LyricLine {
                     time: 0.0,
                     duration: 1.0,
                     text: "Fallback lyric".into(),
                 }],
+                ..Default::default()
             };
             assert!(!h.core.merge_details(&track_id, late_embedded, false));
             assert!(
