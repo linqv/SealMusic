@@ -10,7 +10,7 @@
 cargo test --locked --manifest-path tools/lx-probe/Cargo.toml
 ```
 
-与 LX Music Desktop 2.12.6 对照时，使用发行包内实际的 `dist/user-api-preload.js` 和 `user-api.html`。测试驱动在 Xvfb 和临时 Electron 配置目录中启动隐藏窗口，通过 LX 的 IPC 事件送入脚本原文和请求。脚本、请求数组、回环端口和断言在两端相同。
+与 LX Music Desktop 2.12.6 对照时，使用发行包内实际的 `dist/user-api-preload.js` 和 `user-api.html`。测试驱动在原生 Wayland（`--ozone-platform=wayland`）和临时 Electron 配置目录中启动隐藏窗口，通过 LX 的 IPC 事件送入脚本原文和请求。脚本、请求数组、回环端口和断言在两端相同。
 
 ```sh
 cargo build --locked --manifest-path tools/lx-probe/Cargo.toml
@@ -26,11 +26,11 @@ python3 tools/lx-probe/tests/protocol.py \
   --molan-script 'test-lxjs/墨澜音乐源v2.3.8.js'
 ```
 
-复现 P2 本地源桌面端集成验收（需 `dbus-run-session`、`xvfb-run`、`busctl`、`xdotool`，可选 `--captures <dir>` 保存截屏；驱动内部会自动屏蔽代理环境变量以确保回环直连）：
+复现 P2 本地源桌面端集成验收（需在 Wayland 会话中运行，并具备 `dbus-run-session` 与 `busctl`，可选 `--captures <dir>` 使用 `grim` 保存截屏；驱动内部会自动清除 `DISPLAY` 与代理环境变量以确保原生 Wayland 与回环直连）：
 
 ```sh
 cargo build --release
-dbus-run-session -- xvfb-run -a python3 tools/lx-probe/tests/local_desktop.py \
+dbus-run-session -- python3 tools/lx-probe/tests/local_desktop.py \
   --binary target/release/sealmusic
 ```
 
@@ -104,4 +104,4 @@ jq '[.[] | select(.source == "wy")]' tools/lx-probe/fixtures/tracks.json |
   - `python3 tools/lx-probe/tests/protocol.py --electron electron42 --lx-archive /usr/lib/lx-music-desktop/app.asar` 全部离线与双端用例通过（7 passed, 1 skipped，覆盖 `test_roundtrip`、`test_local_vectors`、`test_local_result_limits`、`test_lx_failures`、`test_failures_and_restart`、`test_undeclared_quality`、`test_edge_cases`）。
 - **发布构建与桌面端回归**：
   - `cargo build --release` 与 `./target/release/sealmusic --check-runtime` 均成功。
-  - `dbus-run-session -- xvfb-run -a python3 tools/lx-probe/tests/local_desktop.py --binary target/release/sealmusic` 通过：验证旧配置重新启用导入 `local` 能力、A 曲目歌词与封面加载、A→B 切歌同步清理 UI/MPRIS/封面缓存、B 曲目无歌词与 >4 MiB 封面隔离、C 曲目 worker `SIGKILL` 崩溃隔离、右键显式 `local.musicUrl` 解码播放、`updateAlert` 弹窗等待用户点击、以及三首本地 WAV 哈希全程未变更。
+  - `dbus-run-session -- python3 tools/lx-probe/tests/local_desktop.py --binary target/release/sealmusic`（原生 Wayland 会话下通过 MPRIS 驱动 A→B→C 切歌、封面/歌词同步与清理、>4 MiB 封面与 worker `SIGKILL` 崩溃隔离；其余交互路径由 Rust 单元测试覆盖）。

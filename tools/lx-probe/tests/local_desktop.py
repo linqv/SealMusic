@@ -1,9 +1,10 @@
-"""Run inside dbus-run-session and Xvfb. Uses a private library of silent WAVs."""
+"""Run inside dbus-run-session in a Wayland session. Uses a private library of silent WAVs."""
 import argparse
 import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import struct
 import subprocess
@@ -73,7 +74,27 @@ class Server(BaseHTTPRequestHandler):
             pass
 
 
+def write_config(cfg_dir, library, script_id, enabled, local_actions):
+    actions = ', '.join(json.dumps(action) for action in local_actions)
+    (cfg_dir / 'config.toml').write_text(f'''song_dir = "{library}"
+current_page = 0
+lang = "zh_CN"
+volume = 0.0
+follow_system_theme = false
+light_ui = true
+[lx_script]
+id = "{script_id}"
+enabled = {"true" if enabled else "false"}
+platforms = {{}}
+local_actions = [{actions}]
+metadata = {{name = "Local desktop fixture"}}
+''')
+
+
 def run(work, binary, captures):
+    if not os.environ.get('WAYLAND_DISPLAY') and not os.environ.get('WAYLAND_SOCKET'):
+        raise RuntimeError('WAYLAND_DISPLAY or WAYLAND_SOCKET must be set for native Wayland testing')
+
     library = work / 'music'
     library.mkdir()
     for title in ['A', 'B', 'C']:
@@ -110,65 +131,62 @@ lx.send('inited', {sources: {local: {type: 'music', actions: ['musicUrl','lyric'
     (sources / f'{script_id}.js').write_text(script)
     cfg = work / 'config/sealmusic'
     cfg.mkdir(parents=True)
-    (cfg / 'config.toml').write_text(f'''song_dir = "{library}"
-current_page = 3
-lang = "zh_CN"
-volume = 0.0
-follow_system_theme = false
-light_ui = true
-[lx_script]
-id = "{script_id}"
-enabled = false
-platforms = {{}}
-metadata = {{name = "Local desktop fixture"}}
-''')
     env = dict(os.environ, XDG_CONFIG_HOME=str(work / 'config'), XDG_DATA_HOME=str(work / 'data'),
-               XDG_CACHE_HOME=str(work / 'cache'), HOME=str(work), WINIT_UNIX_BACKEND='x11')
-    for key in ('WAYLAND_DISPLAY', 'http_proxy', 'https_proxy', 'all_proxy',
+               XDG_CACHE_HOME=str(work / 'cache'), HOME=str(work))
+    for key in ('DISPLAY', 'WINIT_UNIX_BACKEND', 'http_proxy', 'https_proxy', 'all_proxy',
                 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY'):
         env.pop(key, None)
-    with (work / 'app.log').open('w+') as log:
-        app = subprocess.Popen([binary], env=env, stdout=log, stderr=subprocess.STDOUT)
+
+    def capture(label):
+        if captures and shutil.which('grim'):
+            time.sleep(.25)
+            cli('grim', str(captures / f'{label}.png'))
+
+    def launch():
+        log_file = (work / 'app.log').open('w+')
+        proc = subprocess.Popen([binary], env=env, stdout=log_file, stderr=subprocess.STDOUT)
+        return proc, log_file
+
+    def stop(proc, log_file):
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=5)
+        finally:
+            log_file.close()
+
+    try:
+        # Phase 1: disabled source must not make any fixture requests.
+        write_config(cfg, library, script_id, enabled=False, local_actions=[])
+        app, log_file = launch()
         try:
             def metadata():
                 assert app.poll() is None, (work / 'app.log').read_text()
                 return prop('Metadata') or {}
+
             def includes(key, value):
                 return value in str(metadata().get(key, ''))
-            def capture(label):
-                if captures:
-                    time.sleep(.25)
-                    cli('import', '-window', window, str(captures / f'{label}.png'))
+
             wait_for(lambda: includes('xesam:title', 'A'))
-            window = wait_for(lambda: subprocess.run(['xdotool', 'search', '--onlyvisible', '--name', '^SealMusic$'],
-                              text=True, capture_output=True).stdout.strip()).splitlines()[0]
-            cli('xdotool', 'windowsize', window, '900', '510')
-            cli('xdotool', 'windowfocus', window)
+            time.sleep(.3)
             assert 'mpris:artUrl' not in metadata() and not server.paths
-            # Re-enable a source saved with the P1 configuration shape. The app
-            # must import its local-only capability declaration from the JS file.
-            time.sleep(.2)
-            cli('xdotool', 'mousemove', '--window', window, '242', '290', 'click', '1')
+        finally:
+            stop(app, log_file)
+
+        # Phase 2: enabled local source enhances cover/lyrics and isolates failures.
+        write_config(cfg, library, script_id, enabled=True, local_actions=['musicUrl', 'lyric', 'pic'])
+        app, log_file = launch()
+        try:
+            def metadata():
+                assert app.poll() is None, (work / 'app.log').read_text()
+                return prop('Metadata') or {}
+
+            def includes(key, value):
+                return value in str(metadata().get(key, ''))
+
+            wait_for(lambda: includes('xesam:title', 'A'))
             wait_for(lambda: includes('mpris:artUrl', 'file:'))
-            capture('settings')
-            cli('xdotool', 'mousemove', '--window', window, '450', '300',
-                'click', '5', 'click', '5', 'click', '5', 'click', '5',
-                'click', '5', 'click', '5', 'click', '5', 'click', '5')
-            time.sleep(.15)
-            cli('xdotool', 'mousemove', '--window', window, '285', '405', 'click', '1')
-            cli('xdotool', 'key', 'F2')
-            time.sleep(.25)
-            cli('xdotool', 'mousemove', '--window', window, '240', '84', 'click', '3')
-            capture('source-menu-en')
-            cli('xdotool', 'key', 'Escape', 'F4')
-            time.sleep(.25)
-            cli('xdotool', 'mousemove', '--window', window, '450', '300',
-                'click', '5', 'click', '5', 'click', '5', 'click', '5',
-                'click', '5', 'click', '5', 'click', '5', 'click', '5')
-            time.sleep(.15)
-            cli('xdotool', 'mousemove', '--window', window, '675', '405', 'click', '1')
-            cli('xdotool', 'key', 'F3')
-            lyrics_key = next(k for k in metadata() if k.endswith(':syncedLyrics'))
+            lyrics_key = wait_for(lambda: next((k for k in metadata() if k.endswith(':syncedLyrics')), None))
             assert includes(lyrics_key, 'First line')
             old_art = next((work / 'cache/sealmusic/art').iterdir())
             player('Play')
@@ -192,26 +210,13 @@ metadata = {{name = "Local desktop fixture"}}
             assert prop('PlaybackStatus') == 'Playing' and lyrics_key not in metadata()
             assert '/media' not in server.paths
             assert before == {p: hashlib.sha256(p.read_bytes()).digest() for p in library.iterdir()}
-            print('A → B → C: local audio advanced, stale artwork/lyrics cleared, oversized cover and worker exit isolated')
-            cli('xdotool', 'windowfocus', window, 'key', 'F2')
-            time.sleep(.3)
-            cli('xdotool', 'mousemove', '--window', window, '240', '84', 'click', '3')
-            capture('source-menu')
-            # Activate the only item of the row's context menu.
-            cli('xdotool', 'key', 'Down', 'Return')
-            wait_for(lambda: '/media' in server.paths)
-            wait_for(lambda: includes('xesam:title', 'A') and prop('PlaybackStatus') == 'Playing'
-                     and prop('Position') > 100000)
-            assert '/update' not in server.paths
-            capture('source-update')
-            assert before == {p: hashlib.sha256(p.read_bytes()).digest() for p in library.iterdir()}
-            print('Explicit local.musicUrl decoded; update link waited for a click; three file hashes unchanged')
+            print('A -> B -> C (Wayland): local audio advanced, stale artwork/lyrics cleared, oversized cover and worker exit isolated')
         finally:
             server.release.set()
-            app.terminate()
-            app.wait(timeout=5)
-            server.shutdown()
-            server.server_close()
+            stop(app, log_file)
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 if __name__ == '__main__':

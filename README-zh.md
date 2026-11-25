@@ -30,7 +30,7 @@ playerctl -p sealmusic position 10+
 
 ## 构建与打包
 
-开发运行使用 `cargo run`，发布构建使用 `cargo build --locked --release`。打包脚本使用 cargo-packager，产物位于 `target/release`。
+开发运行使用 `cargo run`。Linux 上使用 `cargo release --locked` 针对构建机器的 CPU 生成 `target/release/sealmusic`。需要把二进制分发到不同机器时，使用 `cargo build --locked --release` 采用默认的 CPU 目标。打包脚本使用 cargo-packager，产物位于 `target/release`。
 
 | 平台 | 命令 |
 | --- | --- |

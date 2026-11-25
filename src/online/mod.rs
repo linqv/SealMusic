@@ -134,6 +134,10 @@ pub struct OnlineTrack {
 }
 
 impl OnlineTrack {
+    pub(crate) fn metadata_bytes(&self) -> usize {
+        self.music_info.capacity() + self.quality.capacity()
+    }
+
     pub fn parse(link: &str) -> Result<Self> {
         let invalid = || field_error("LX", "music/play?data");
         if link.len() > 256 * 1024 {

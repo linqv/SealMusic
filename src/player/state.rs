@@ -100,7 +100,11 @@ pub type SharedState = Arc<RwLock<PlaybackState>>;
 pub enum PlaybackEvent {
     State(Arc<PlaybackState>, Option<Duration>),
     Upcoming(Vec<Arc<Track>>),
-    Details(TrackDetails, Duration),
+    Details {
+        details: TrackDetails,
+        position: Duration,
+        cover_changed: bool,
+    },
     Library(PathBuf, SortKey, bool, Vec<Arc<Track>>),
     Collections(usize, Vec<String>, Vec<Arc<Track>>, Vec<TrackId>),
     CollectionSaveFailed,
@@ -143,6 +147,9 @@ impl Queue {
                 self.order.swap(0, index);
             }
         }
+        self.reindex();
+    }
+    fn reindex(&mut self) {
         self.index_by_id.clear();
         self.index_by_id.reserve(self.order.len());
         for (idx, track) in self.order.iter().enumerate() {
@@ -150,6 +157,15 @@ impl Queue {
         }
         self.back.retain(|id| self.index_by_id.contains_key(id));
         self.forward.retain(|id| self.index_by_id.contains_key(id));
+    }
+    #[cfg(target_os = "linux")]
+    pub fn remove_tracks(&mut self, ids: &[TrackId]) {
+        if ids.is_empty() {
+            return;
+        }
+        self.order.retain(|track| !ids.contains(&track.id));
+        self.invalidate_upcoming();
+        self.reindex();
     }
     #[cfg(target_os = "linux")]
     pub fn upsert(&mut self, track: Arc<Track>) {
@@ -163,6 +179,10 @@ impl Queue {
     }
     pub fn get(&self, id: &TrackId) -> Option<Arc<Track>> {
         self.index_by_id.get(id).map(|&idx| Arc::clone(&self.order[idx]))
+    }
+
+    pub fn invalidate_upcoming(&mut self) {
+        self.projected_upcoming = None;
     }
 
     pub fn upcoming_if_changed(

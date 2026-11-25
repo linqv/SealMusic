@@ -32,7 +32,7 @@ The fork stores its configuration in `$XDG_CONFIG_HOME/sealmusic/config.toml`, d
 
 ## Build and package
 
-Run `cargo run` for development, or `cargo build --locked --release` for a release binary. The packaging scripts use cargo-packager and write their output to `target/release`.
+Run `cargo run` for development. On Linux, `cargo release --locked` builds `target/release/sealmusic` for the build machine's CPU. Use `cargo build --locked --release` for the default target CPU when distributing the binary across machines. The packaging scripts use cargo-packager and write their output to `target/release`.
 
 | Platform | Commands |
 | --- | --- |

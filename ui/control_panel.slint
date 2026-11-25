@@ -11,15 +11,24 @@ export component PlaybackButton inherits Rectangle {
     in property <bool> filled;
     in property <bool> active;
     in property <bool> prominent;
+    in property <bool> subtle;
+    in property <bool> round;
+    in property <bool> animate-transitions: true;
+    out property <bool> hovered: touch.has-hover;
     callback clicked();
 
     width: 36px;
     height: 36px;
-    border-radius: 8px;
-    background: touch.pressed || touch.has-hover
-        ? (root.prominent ? Theme.text.with-alpha(0.19) : Theme.hover)
-        : (root.prominent ? Theme.text.with-alpha(0.11) : transparent);
-    animate background { duration: 120ms; }
+    border-radius: root.round ? self.height / 2 : 8px;
+    background: touch.pressed
+        ? (root.subtle || root.prominent ? Theme.text.with-alpha(0.18) : Theme.press)
+        : touch.has-hover
+            ? (root.subtle || root.prominent ? Theme.text.with-alpha(0.12) : Theme.hover)
+            : (root.prominent ? Theme.text.with-alpha(0.11) : transparent);
+    animate background {
+        duration: 120ms;
+        enabled: root.animate-transitions;
+    }
     accessible-role: button;
     accessible-label: root.label;
     accessible-action-default => { root.clicked(); }
@@ -27,7 +36,7 @@ export component PlaybackButton inherits Rectangle {
     IconDisplay {
         icon: root.icon;
         size: root.icon-size;
-        stroke: root.active ? Theme.accent : root.filled || touch.has-hover ? Theme.text : Theme.text.with-alpha(0.6);
+        stroke: root.active ? Theme.accent : root.filled || touch.has-hover ? Theme.text : Theme.text.with-alpha(root.subtle ? 0.52 : 0.6);
         stroke-fill: root.filled ? Theme.text : transparent;
         stroke-width: root.filled ? 1.2 : 1.8;
     }
@@ -127,12 +136,16 @@ export component SeekBar inherits Rectangle {
     in property <float> position;
     in property <float> duration;
     in property <string> track;
+    in property <bool> atmospheric;
     out property <float> displayed-position: touch.pressed && root.drag-track == root.track
         ? root.preview-position : root.position;
     callback seek(float);
     private property <string> drag-track;
     private property <float> preview-position;
     private property <float> pointer-position: (touch.mouse-x / max(1px, touch.width)).clamp(0, 1) * root.duration;
+    private property <length> track-height: root.atmospheric
+        ? (root.enabled && (touch.has-hover || touch.pressed) ? 7px : 5px)
+        : 4px;
 
     forward-focus: seek-keys;
     accessible-role: slider;
@@ -156,18 +169,22 @@ export component SeekBar inherits Rectangle {
     }
 
     Rectangle {
+        y: (parent.height - self.height) / 2;
         width: 100%;
-        height: 4px;
-        border-radius: 2px;
-        background: Theme.text.with-alpha(0.1);
+        height: root.track-height;
+        border-radius: self.height / 2;
+        background: Theme.text.with-alpha(root.atmospheric ? 0.18 : 0.1);
+        animate height { duration: 140ms; easing: ease-out; }
 
         Rectangle {
             x: 0px;
             width: parent.width * (root.displayed-position / max(0.001, root.duration)).clamp(0, 1);
             visible: root.duration > 0 && root.displayed-position > 0;
             height: 100%;
-            border-radius: 2px;
-            background: root.enabled && touch.has-hover ? Theme.text : Theme.text.with-alpha(0.75);
+            border-radius: parent.border-radius;
+            background: root.enabled && (touch.has-hover || touch.pressed)
+                ? Theme.text
+                : Theme.text.with-alpha(root.atmospheric ? 0.78 : 0.75);
         }
     }
 
@@ -209,53 +226,76 @@ export component TransportButtons inherits HorizontalLayout {
     in property <bool> shuffle;
     in property <LoopMode> loop-mode;
     in property <bool> expanded;
+    in property <bool> animate-transitions: true;
     callback toggle-play();
     callback play-next();
     callback play-prev();
     callback set-shuffle(bool);
     callback switch-mode(LoopMode);
 
-    height: root.expanded ? 44px : 40px;
+    height: root.expanded ? 48px : 40px;
     alignment: center;
-    spacing: root.expanded ? max(4px, (root.width - 220px) / 4) : 6px;
+    spacing: root.expanded ? max(4px, (root.width - 208px) / 4) : 6px;
 
     PlaybackButton {
+        y: (parent.height - self.height) / 2;
         icon: IconSet.Shuffle;
-        icon-size: root.expanded ? 18px : 16px;
+        icon-size: root.expanded ? 16px : 16px;
         active: root.shuffle;
+        subtle: root.expanded;
+        round: root.expanded;
+        animate-transitions: root.animate-transitions;
         label: @tr("Shuffle");
         accessible-checkable: true;
         accessible-checked: root.shuffle;
         clicked => { root.set-shuffle(!root.shuffle); }
     }
     PlaybackButton {
+        y: (parent.height - self.height) / 2;
+        width: root.expanded ? 40px : 36px;
+        height: root.expanded ? 40px : 36px;
         icon: IconSet.Rewind;
-        icon-size: root.expanded ? 20px : 16px;
+        icon-size: root.expanded ? 22px : 16px;
         filled: true;
+        subtle: root.expanded;
+        round: root.expanded;
+        animate-transitions: root.animate-transitions;
         label: @tr("Previous track");
         clicked => { root.play-prev(); }
     }
     PlaybackButton {
         width: root.expanded ? 52px : 44px;
-        height: root.height;
-        icon-size: root.expanded ? 27px : 23px;
-        prominent: root.expanded;
+        height: root.expanded ? 48px : root.height;
+        icon-size: root.expanded ? 30px : 23px;
+        subtle: root.expanded;
+        round: root.expanded;
         icon: root.paused ? IconSet.Play : IconSet.Pause;
         filled: true;
+        animate-transitions: root.animate-transitions;
         label: root.paused ? @tr("Play") : @tr("Pause");
         clicked => { root.toggle-play(); }
     }
     PlaybackButton {
+        y: (parent.height - self.height) / 2;
+        width: root.expanded ? 40px : 36px;
+        height: root.expanded ? 40px : 36px;
         icon: IconSet.FastForward;
-        icon-size: root.expanded ? 20px : 16px;
+        icon-size: root.expanded ? 22px : 16px;
         filled: true;
+        subtle: root.expanded;
+        round: root.expanded;
+        animate-transitions: root.animate-transitions;
         label: @tr("Next track");
         clicked => { root.play-next(); }
     }
     PlaybackButton {
+        y: (parent.height - self.height) / 2;
         icon: root.loop-mode == LoopMode.Track ? IconSet.Repeat1 : IconSet.Repeat;
-        icon-size: root.expanded ? 18px : 16px;
+        icon-size: root.expanded ? 16px : 16px;
         active: root.loop-mode != LoopMode.None;
+        subtle: root.expanded;
+        round: root.expanded;
+        animate-transitions: root.animate-transitions;
         label: root.loop-mode == LoopMode.Track ? @tr("Repeat track") : @tr("Repeat playlist");
         accessible-checkable: true;
         accessible-checked: root.loop-mode != LoopMode.None;

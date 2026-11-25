@@ -44,6 +44,7 @@ export global Theme {
 
 export component CoverBackdrop inherits Rectangle {
     in property <color> base-color: Theme.surface;
+    in property <bool> animate-colors: true;
     background: Theme.cover-active ? Theme.cover-surface : root.base-color;
     clip: true;
 
@@ -55,6 +56,7 @@ export component CoverBackdrop inherits Rectangle {
     animate background, c0, c1, c2, tint-alpha {
         duration: 250ms;
         easing: ease;
+        enabled: root.animate-colors;
     }
 
     // CSS paints the first gradient on top. Slint paints later siblings on top.

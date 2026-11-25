@@ -33,6 +33,7 @@ struct PlayerCore<F> {
     tracks: Vec<Arc<Track>>,
     collections: Collections,
     queue: Queue,
+    queue_visible: bool,
     #[cfg(target_os = "linux")]
     online: online::Online,
     query: String,
@@ -143,6 +144,7 @@ fn run_worker(
         tracks: Vec::new(),
         collections,
         queue: Queue::default(),
+        queue_visible: false,
         #[cfg(target_os = "linux")]
         online: online::Online::new(inbox.sender),
         query: String::new(),
@@ -299,7 +301,13 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         let snapshot = Arc::new(self.state.clone());
         *self.shared.write().unwrap() = (*snapshot).clone();
         (self.publish)(Event::State(snapshot, self.pending_seek.take()));
-        if let Some(upcoming) = self.queue.upcoming_if_changed(current, self.state.loop_mode) {
+        self.publish_upcoming();
+    }
+    fn publish_upcoming(&mut self) {
+        let current = self.state.track.as_ref().map(|track| &track.id);
+        if self.queue_visible
+            && let Some(upcoming) = self.queue.upcoming_if_changed(current, self.state.loop_mode)
+        {
             (self.publish)(Event::Upcoming(upcoming));
         }
     }
@@ -376,7 +384,11 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             self.state.art_url = None;
             self.state.synced_lyrics = None;
         }
-        (self.publish)(Event::Details(Default::default(), Duration::ZERO));
+        (self.publish)(Event::Details {
+            details: Default::default(),
+            position: Duration::ZERO,
+            cover_changed: true,
+        });
     }
     fn reset_and_restore_local(&mut self, startup: bool) -> Result<(), String> {
         self.stop();
@@ -451,7 +463,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         };
         #[cfg(target_os = "linux")]
         self.enhance_details(t, &details);
-        self.project_details(&t.id, details);
+        self.project_details(&t.id, details, true);
     }
 
     #[cfg(target_os = "linux")]
@@ -464,53 +476,44 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         if !self.state.track.as_ref().is_some_and(|t| &t.id == track_id) {
             return false;
         }
-        let mut merged = self.details.clone();
-        let mut changed = false;
-        if incoming.cover.is_some() && (prefer_incoming || merged.cover.is_none()) {
+        let cover_changed = incoming.cover.as_ref().is_some_and(|next| {
+            self.details.cover.as_ref().is_none_or(|current| {
+                prefer_incoming && !std::ptr::eq(current.pixels.as_slice(), next.pixels.as_slice())
+            })
+        });
+        let lyrics_changed = !incoming.lyrics.is_empty()
+            && (prefer_incoming || self.details.lyrics.is_empty())
+            && incoming.lyrics != self.details.lyrics;
+        if !cover_changed && !lyrics_changed {
+            return false;
+        }
+        let mut merged = std::mem::take(&mut self.details);
+        if cover_changed {
             merged.cover = incoming.cover;
+            merged.ambient = incoming.ambient;
             merged.palette = incoming.palette;
             merged.raw_cover = incoming.raw_cover;
-            changed = true;
         }
-        if !incoming.lyrics.is_empty() && (prefer_incoming || merged.lyrics.is_empty()) {
+        if lyrics_changed {
             merged.lyrics = incoming.lyrics;
-            changed = true;
         }
-        if changed {
-            self.project_details(track_id, merged);
-        }
-        changed
+        self.project_details(track_id, merged, cover_changed);
+        true
     }
 
-    fn project_details(&mut self, _id: &crate::library::TrackId, details: metadata::TrackDetails) {
+    fn project_details(
+        &mut self,
+        _id: &crate::library::TrackId,
+        details: metadata::TrackDetails,
+        cover_changed: bool,
+    ) {
         #[cfg(target_os = "linux")]
         {
             self.details = details.clone();
             if self.mpris_available.load(Ordering::Acquire) {
-                self.artwork = if let Some(raw) = &details.raw_cover {
-                    match crate::integrations::mpris::cache_cover_raw(&raw.bytes, raw.extension) {
-                        Ok(f) => Some(f),
-                        Err(e) => {
-                            log::warn!("Cover cache: {e}");
-                            None
-                        }
-                    }
-                } else {
-                    details.cover.as_ref().and_then(|img| {
-                        match crate::integrations::mpris::cache_cover(img) {
-                            Ok(f) => Some(f),
-                            Err(e) => {
-                                log::warn!("Cover cache: {e}");
-                                None
-                            }
-                        }
-                    })
-                };
-                self.state.art_url = self
-                    .artwork
-                    .as_ref()
-                    .and_then(|f| url::Url::from_file_path(f.path()).ok())
-                    .map(|u| Arc::<str>::from(u.as_str()));
+                if cover_changed || (self.artwork.is_none() && details.cover.is_some()) {
+                    self.update_artwork(&details);
+                }
                 self.state.synced_lyrics =
                     crate::integrations::mpris::encode_synced_lyrics(_id, &details.lyrics);
             } else {
@@ -520,8 +523,39 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             }
         }
         self.sample_position();
-        let pos = self.pending_seek.unwrap_or(self.state.position);
-        (self.publish)(Event::Details(details, pos));
+        (self.publish)(Event::Details {
+            details,
+            position: self.pending_seek.unwrap_or(self.state.position),
+            cover_changed,
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    fn update_artwork(&mut self, details: &metadata::TrackDetails) {
+        self.artwork = if let Some(raw) = &details.raw_cover {
+            match crate::integrations::mpris::cache_cover_raw(&raw.bytes, raw.extension) {
+                Ok(f) => Some(f),
+                Err(e) => {
+                    log::warn!("Cover cache: {e}");
+                    None
+                }
+            }
+        } else {
+            details.cover.as_ref().and_then(|img| {
+                match crate::integrations::mpris::cache_cover(img) {
+                    Ok(f) => Some(f),
+                    Err(e) => {
+                        log::warn!("Cover cache: {e}");
+                        None
+                    }
+                }
+            })
+        };
+        self.state.art_url = self
+            .artwork
+            .as_ref()
+            .and_then(|f| url::Url::from_file_path(f.path()).ok())
+            .map(|u| Arc::<str>::from(u.as_str()));
     }
     #[allow(clippy::too_many_arguments)]
     fn load(
@@ -737,6 +771,14 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                 if let Some(track) = self.find_collection_track(index, &id) {
                     self.play_from(track, collections::QueueSource::Collection(index), via_lx)?;
                 }
+            }
+            Cmd::SetQueueVisible(visible) => {
+                if self.queue_visible != visible {
+                    self.queue_visible = visible;
+                    self.queue.invalidate_upcoming();
+                    self.publish_upcoming();
+                }
+                return Ok(());
             }
             Cmd::SelectCollection(index) => {
                 if index != self.cfg.selected_collection && self.collections.get(index).is_some() {
@@ -961,6 +1003,7 @@ mod tests {
                 tracks: tracks.clone(),
                 collections: Collections::default(),
                 queue: Queue::default(),
+                queue_visible: false,
                 #[cfg(target_os = "linux")]
                 online: online::Online::new(Default::default()),
                 query: String::new(),
@@ -987,6 +1030,30 @@ mod tests {
                 audio: Some(audio),
             }
         }
+    }
+
+    #[test]
+    fn upcoming_is_published_only_when_requested_and_reopens_at_the_current_track() {
+        let mut h = TestHarness::new(3);
+        h.core.handle(Cmd::PlayTrack(h.tracks[0].id.clone())).unwrap();
+        assert!(!h.events.lock().unwrap().iter().any(|event| matches!(event, Event::Upcoming(_))));
+
+        h.core.handle(Cmd::SetQueueVisible(true)).unwrap();
+        assert!(matches!(
+            h.events.lock().unwrap().last(),
+            Some(Event::Upcoming(tracks)) if tracks.first() == Some(&h.tracks[1])
+        ));
+
+        h.core.handle(Cmd::SetQueueVisible(false)).unwrap();
+        h.events.lock().unwrap().clear();
+        h.core.handle(Cmd::Next).unwrap();
+        assert!(!h.events.lock().unwrap().iter().any(|event| matches!(event, Event::Upcoming(_))));
+
+        h.core.handle(Cmd::SetQueueVisible(true)).unwrap();
+        assert!(matches!(
+            h.events.lock().unwrap().last(),
+            Some(Event::Upcoming(tracks)) if tracks.first() == Some(&h.tracks[2])
+        ));
     }
 
     #[test]
@@ -1284,7 +1351,7 @@ mod tests {
             assert!(h.core.restore_online());
             assert!(h.core.state.deferred);
             assert!(h.events.lock().unwrap().iter().any(
-                |ev| matches!(ev, Event::Details(_, pos) if *pos == Duration::from_secs_f32(12.5))
+                |ev| matches!(ev, Event::Details { position, .. } if *position == Duration::from_secs_f32(12.5))
             ));
 
             h.events.lock().unwrap().clear();
@@ -1660,6 +1727,41 @@ mod tests {
         }
 
         #[test]
+        fn online_eviction_prunes_the_temporary_queue_but_keeps_liked_tracks_playable() {
+            let mut h = TestHarness::new(1);
+            h.core.cfg.lx_script = Some(fake_script(true));
+            let mut liked_id = None;
+            let mut previous_id = None;
+            let limit = online::MAX_SESSION_TRACKS as u64;
+
+            for songmid in 0..=limit {
+                h.core.handle(Cmd::PlayLink(wy_link(songmid, "Transient"))).unwrap();
+                let id = h.core.online.pending_id().unwrap();
+                h.core.complete_online(online::Completion::Prepared(id, Ok(fixture_audio())));
+                let current = h.core.state.track.clone().unwrap();
+                if songmid == 0 {
+                    liked_id = Some(current.id.clone());
+                    h.core.collections.likes.tracks.push(current);
+                } else if songmid == limit - 1 {
+                    previous_id = Some(current.id.clone());
+                }
+                h.events.lock().unwrap().clear();
+            }
+
+            let liked_id = liked_id.unwrap();
+            assert_eq!(h.core.online.tracks.len(), online::MAX_SESSION_TRACKS);
+            assert!(h.core.queue.get(&liked_id).is_none());
+            h.core.handle(Cmd::Previous).unwrap();
+            assert_eq!(h.core.online.pending_track().map(|track| &track.id), previous_id.as_ref());
+
+            h.core.handle(Cmd::PlayCollectionTrack(0, liked_id.clone(), true)).unwrap();
+            let id = h.core.online.pending_id().unwrap();
+            h.core.complete_online(online::Completion::Prepared(id, Ok(fixture_audio())));
+            assert_eq!(h.core.state.track.as_ref().map(|track| &track.id), Some(&liked_id));
+            assert!(h.core.queue.get(&liked_id).is_some());
+        }
+
+        #[test]
         fn refresh_clearing_current_track_still_truncates_history_on_pending_previous() {
             let mut h = TestHarness::new(2);
             h.core.cfg.lx_script = Some(fake_script(true));
@@ -1787,7 +1889,7 @@ mod tests {
             let expected_palette = metadata::extract_palette(&cover_img.clone().into());
             assert!(expected_palette.is_some());
             let embedded_cover = metadata::TrackDetails {
-                cover: Some(cover_img),
+                cover: Some(cover_img.into()),
                 palette: expected_palette,
                 ..Default::default()
             };
@@ -1795,12 +1897,14 @@ mod tests {
             assert_eq!(h.core.details.palette, expected_palette);
             assert!(h.core.state.art_url.is_some());
             assert!(h.core.state.synced_lyrics.is_none());
+            let cover_url = h.core.state.art_url.clone();
 
             let api_lyrics = metadata::TrackDetails {
                 lyrics: vec![crate::library::lyrics::LyricLine {
                     time: 1.5,
                     duration: 2.0,
                     text: "Online lyric".into(),
+                    words: Vec::new(),
                 }],
                 ..Default::default()
             };
@@ -1811,18 +1915,34 @@ mod tests {
             ));
             // Both embedded cover/palette and API lyrics must be preserved together in state and MPRIS!
             assert_eq!(h.core.details.palette, expected_palette);
-            assert!(h.core.state.art_url.is_some());
+            assert_eq!(h.core.state.art_url, cover_url);
+            assert!(
+                h.events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .rev()
+                    .find_map(|event| match event {
+                        Event::Details {
+                            cover_changed,
+                            ..
+                        } => Some(!cover_changed),
+                        _ => None,
+                    })
+                    .unwrap_or(false)
+            );
             assert!(
                 h.core.state.synced_lyrics.as_deref().is_some_and(|s| s.contains("Online lyric"))
             );
 
             // A subsequent embedded fallback with different lyrics must NOT overwrite API lyrics.
             let late_embedded = metadata::TrackDetails {
-                cover: Some(image::RgbaImage::new(2, 2)),
+                cover: Some(image::RgbaImage::new(2, 2).into()),
                 lyrics: vec![crate::library::lyrics::LyricLine {
                     time: 0.0,
                     duration: 1.0,
                     text: "Fallback lyric".into(),
+                    words: Vec::new(),
                 }],
                 ..Default::default()
             };
@@ -1844,7 +1964,7 @@ mod tests {
                     .lock()
                     .unwrap()
                     .iter()
-                    .any(|ev| matches!(ev, Event::Details(_, pos) if pos.is_zero()))
+                    .any(|ev| matches!(ev, Event::Details { position, .. } if position.is_zero()))
             );
         }
 

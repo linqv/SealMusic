@@ -16,6 +16,7 @@ pub enum PlayerCommand {
     Stop,
     PlayTrack(TrackId),
     PlayQueuedTrack(TrackId),
+    SetQueueVisible(bool),
     PlayCollectionTrack(usize, TrackId, bool),
     SelectCollection(usize),
     CreateCollection(String),

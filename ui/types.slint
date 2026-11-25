@@ -2,6 +2,7 @@ export struct SongInfo {
     id: string,
     song_name: string,
     singer: string,
+    album: string,
     duration: string,
     is-local: bool,
 }
@@ -20,9 +21,19 @@ export enum LoopMode {
     Playlist,
 }
 
+export struct LyricWord {
+    time: float,
+    duration: float,
+    text: string,
+    space-after: bool,
+}
+
 export struct LyricItem {
     time: float,
+    end-time: float,
     text: string,
+    translation: string,
+    words: [LyricWord],
 }
 
 export enum OnlineIssue {

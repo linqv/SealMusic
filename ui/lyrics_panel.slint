@@ -1,23 +1,29 @@
 import { IconDisplay, IconSet } from "@lucide";
-import { ListView, Slider } from "std-widgets.slint";
-import { LikeButton } from "collections.slint";
+import { ListView } from "std-widgets.slint";
+import { CollectionsGlobal, LikeButton } from "collections.slint";
 import { PlaybackButton, SeekBar, TransportButtons } from "control_panel.slint";
 import { CoverBackdrop, Theme } from "theme.slint";
-import { LoopMode, LyricItem, SongInfo } from "types.slint";
+import { LoopMode, LyricItem, LyricWord, SongInfo } from "types.slint";
 
 component ViewTab inherits Rectangle {
     in property <string> label;
     in property <bool> selected;
+    in property <bool> animate-transitions: true;
+    out property <bool> hovered: touch.has-hover;
+    out property <bool> focused: keys.has-focus;
     callback clicked();
 
-    width: 68px;
-    height: 32px;
+    width: max(56px, tab-label.preferred-width + 26px);
+    height: 30px;
     border-radius: self.height / 2;
-    background: root.selected ? Theme.text.with-alpha(0.13)
-        : touch.has-hover || keys.has-focus ? Theme.text.with-alpha(0.07) : transparent;
+    background: root.selected ? Theme.text.with-alpha(0.16)
+        : touch.has-hover || keys.has-focus ? Theme.text.with-alpha(0.08) : transparent;
     border-width: keys.has-focus ? 1px : 0px;
     border-color: Theme.accent;
-    animate background { duration: 150ms; }
+    animate background {
+        duration: 150ms;
+        enabled: root.animate-transitions;
+    }
     forward-focus: keys;
     accessible-role: tab;
     accessible-label: root.label;
@@ -25,11 +31,12 @@ component ViewTab inherits Rectangle {
     accessible-item-selected: root.selected;
     accessible-action-default => { root.clicked(); }
 
-    Text {
+    tab-label := Text {
         width: 100%;
         horizontal-alignment: center;
         text: root.label;
-        color: root.selected ? Theme.text : Theme.text.with-alpha(0.70);
+        font-size: 13px;
+        color: root.selected ? Theme.text : Theme.text.with-alpha(0.66);
         font-weight: 600;
     }
 
@@ -56,7 +63,7 @@ component QueueRow inherits Rectangle {
 
     height: 56px;
     border-radius: 8px;
-    background: touch.has-hover ? Theme.text.with-alpha(0.07) : transparent;
+    background: touch.has-hover ? Theme.text.with-alpha(0.08) : transparent;
     accessible-role: button;
     accessible-label: root.song.singer == "" ? root.song.song_name : "\{root.song.song_name} · \{root.song.singer}";
     accessible-action-default => { root.play(); }
@@ -72,7 +79,7 @@ component QueueRow inherits Rectangle {
                 visible: !touch.has-hover;
                 text: "\{root.number}";
                 font-size: 12px;
-                color: Theme.text.with-alpha(0.65);
+                color: Theme.text.with-alpha(0.62);
             }
             IconDisplay {
                 visible: touch.has-hover;
@@ -95,7 +102,7 @@ component QueueRow inherits Rectangle {
             }
             if root.song.singer != "": Text {
                 text: root.song.singer;
-                color: Theme.text.with-alpha(0.7);
+                color: Theme.text.with-alpha(0.68);
                 font-size: 12px;
                 overflow: elide;
             }
@@ -104,7 +111,7 @@ component QueueRow inherits Rectangle {
         Text {
             text: root.song.duration;
             font-size: 12px;
-            color: Theme.text.with-alpha(0.65);
+            color: Theme.text.with-alpha(0.62);
             vertical-alignment: center;
         }
     }
@@ -115,14 +122,466 @@ component QueueRow inherits Rectangle {
     }
 }
 
+component AtmosphericVolumeBar inherits HorizontalLayout {
+    in-out property <float> volume;
+    callback change-volume(float);
+
+    private property <float> saved-volume: 0.7;
+    private property <float> pointer-volume: (track-touch.mouse-x / max(1px, track-touch.width)).clamp(0, 1);
+    private property <bool> active: track-touch.has-hover || track-touch.pressed || slider-keys.has-focus;
+    private property <length> bar-height: root.active ? 6px : 4px;
+    private property <length> thumb-size: root.active ? 12px : 10px;
+
+    height: 24px;
+    spacing: 10px;
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        width: 20px;
+        height: 20px;
+        border-radius: 10px;
+        background: mute-touch.has-hover ? Theme.text.with-alpha(0.1) : transparent;
+        accessible-role: button;
+        accessible-label: root.volume > 0 ? @tr("Mute") : @tr("Unmute");
+        accessible-action-default => { mute-touch.clicked(); }
+
+        IconDisplay {
+            icon: root.volume <= 0.001 ? IconSet.VolumeX : IconSet.Volume1;
+            size: 15px;
+            stroke: Theme.text.with-alpha(mute-touch.has-hover ? 0.95 : 0.65);
+        }
+
+        mute-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                if root.volume > 0.001 {
+                    root.saved-volume = root.volume;
+                    root.volume = 0;
+                } else {
+                    root.volume = root.saved-volume > 0.05 ? root.saved-volume : 0.7;
+                }
+                root.change-volume(root.volume);
+            }
+        }
+    }
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        horizontal-stretch: 1;
+        height: 20px;
+        forward-focus: slider-keys;
+        accessible-role: slider;
+        accessible-label: @tr("Volume");
+        accessible-orientation: horizontal;
+        accessible-value: root.volume;
+        accessible-value-minimum: 0;
+        accessible-value-maximum: 1;
+        accessible-value-step: 0.05;
+        accessible-action-set-value(value) => {
+            if value.is-float() {
+                root.volume = value.to-float().clamp(0, 1);
+                root.change-volume(root.volume);
+            }
+        }
+        accessible-action-increment => {
+            root.volume = min(1, root.volume + 0.05);
+            root.change-volume(root.volume);
+        }
+        accessible-action-decrement => {
+            root.volume = max(0, root.volume - 0.05);
+            root.change-volume(root.volume);
+        }
+
+        Rectangle {
+            y: (parent.height - self.height) / 2;
+            width: 100%;
+            height: root.bar-height;
+            border-radius: self.height / 2;
+            background: Theme.text.with-alpha(0.18);
+            animate height { duration: 140ms; easing: ease-out; }
+
+            Rectangle {
+                x: 0px;
+                width: parent.width * root.volume.clamp(0, 1);
+                visible: root.volume > 0.001;
+                height: 100%;
+                border-radius: parent.border-radius;
+                background: root.active
+                    ? Theme.text
+                    : Theme.text.with-alpha(0.76);
+            }
+        }
+
+        Rectangle {
+            x: (parent.width - self.width) * root.volume.clamp(0, 1);
+            y: (parent.height - self.height) / 2;
+            width: root.thumb-size;
+            height: root.thumb-size;
+            border-radius: self.width / 2;
+            background: Theme.text;
+            drop-shadow-color: #00000038;
+            drop-shadow-blur: 4px;
+            drop-shadow-offset-y: 1px;
+            animate width, height { duration: 140ms; easing: ease-out; }
+        }
+
+        track-touch := TouchArea {
+            mouse-cursor: pointer;
+            moved => {
+                if self.pressed {
+                    root.volume = root.pointer-volume;
+                    root.change-volume(root.volume);
+                }
+            }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left {
+                    if event.kind == PointerEventKind.down || event.kind == PointerEventKind.up {
+                        root.volume = root.pointer-volume;
+                        root.change-volume(root.volume);
+                    }
+                }
+            }
+        }
+
+        slider-keys := FocusScope {
+            focus-on-click: false;
+            key-pressed(event) => {
+                if event.text == Key.Home {
+                    root.volume = 0;
+                    root.change-volume(0);
+                    return accept;
+                }
+                if event.text == Key.End {
+                    root.volume = 1;
+                    root.change-volume(1);
+                    return accept;
+                }
+                return reject;
+            }
+        }
+    }
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        width: 20px;
+        height: 20px;
+        border-radius: 10px;
+        background: max-touch.has-hover ? Theme.text.with-alpha(0.1) : transparent;
+        accessible-role: button;
+        accessible-label: @tr("Max volume");
+        accessible-action-default => { max-touch.clicked(); }
+
+        IconDisplay {
+            icon: IconSet.Volume2;
+            size: 15px;
+            stroke: Theme.text.with-alpha(max-touch.has-hover ? 0.95 : 0.65);
+        }
+
+        max-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.volume = 1;
+                root.change-volume(1);
+            }
+        }
+    }
+}
+
+component KaraokeWord inherits HorizontalLayout {
+    in property <LyricWord> word;
+    in property <bool> active;
+    in property <float> lyric-time;
+    in property <length> font-size;
+    in property <color> sung-color;
+    in property <color> unsung-color;
+    in property <length> max-line-width;
+
+    private property <float> progress: !root.active ? 1 : root.word.duration > 0.001
+        ? ((root.lyric-time - root.word.time) / root.word.duration).clamp(0, 1)
+        : (root.lyric-time >= root.word.time ? 1 : 0);
+    private property <float> feather: 0.16;
+    private property <float> stop-hi: (root.progress * (1 + root.feather) - root.feather).clamp(0, 1);
+    private property <float> stop-lo: (root.progress * (1 + root.feather)).clamp(0, 1);
+    private property <brush> sung-brush: root.sung-color;
+    private property <brush> unsung-brush: root.unsung-color;
+
+    padding-right: root.word.space-after ? root.font-size * 0.27 : 0px;
+
+    Text {
+        max-width: root.max-line-width;
+        text: root.word.text;
+        font-size: root.font-size;
+        font-weight: 700;
+        wrap: word-wrap;
+        color: root.progress <= 0.001 ? root.unsung-brush
+            : root.progress >= 0.999 ? root.sung-brush
+            : @linear-gradient(90deg,
+                root.sung-color 0%,
+                root.sung-color root.stop-hi,
+                root.unsung-color root.stop-lo,
+                root.unsung-color 100%);
+    }
+}
+
+component LyricsView inherits Flickable {
+    in property <[LyricItem]> lyrics;
+    in property <int> active-index: -1;
+    in property <float> lyric-time;
+    in property <bool> can-seek;
+    in property <bool> animate-follow;
+    in property <length> font-size;
+    callback seek(float);
+
+    private property <length> line-gap: (root.height * 0.036).clamp(18px, 32px);
+    private property <length> inset-left: (root.width * 0.025).clamp(10px, 24px);
+    private property <length> inset-right: (root.width * 0.04).clamp(14px, 44px);
+    private property <length> anchor: root.height * 0.30;
+    private property <length> fade-zone: max(56px, root.height * 0.17);
+    private property <int> measured-index: -1;
+    private property <length> active-top;
+    // A new model can report the same offset and still needs to realign the viewport.
+    private property <int> layout-revision;
+    private property <length> max-offset: root.content-height - root.height;
+    private property <{ offset: length, revision: int }> follow-target: {
+        offset: root.active-index >= 0 && root.measured-index == root.active-index
+            ? (root.active-top - root.anchor).clamp(0px, root.max-offset) : -1px,
+        revision: root.layout-revision,
+    };
+    private property <bool> snap-on-layout;
+
+    private property <bool> gliding;
+    private property <length> glide-target;
+    private property <length> glide-a;
+    private property <length> glide-b;
+    private property <float> glide-omega: 10;
+    private property <duration> glide-duration: 2s;
+    private property <float> glide-start;
+    private property <float> glide-deadline;
+    // A linear property animation provides a frame clock and honors reduced motion.
+    private property <float> glide-clock: root.glide-deadline;
+    animate glide-clock {
+        duration: root.glide-duration;
+        easing: linear;
+        enabled: root.gliding;
+    }
+    private property <float> glide-elapsed: max(0, root.glide-clock - root.glide-start);
+    private property <float> glide-decay: Math.pow(2.718281828, -root.glide-omega * root.glide-elapsed);
+    private property <length> glide-residual: (root.glide-a + root.glide-b * root.glide-elapsed) * root.glide-decay;
+    private property <length> glide-velocity: root.glide-b * root.glide-decay - root.glide-omega * root.glide-residual;
+
+    content-width: self.width;
+    content-height: max(self.height, lines.height);
+    mouse-drag-pan-enabled: false;
+
+    function place-scroll(offset: length) {
+        root.scroll-to({ x: 0px, y: offset }, ScrollBehavior.instant);
+    }
+
+    function stop-glide() {
+        root.gliding = false;
+        root.glide-deadline = 0;
+    }
+
+    function scroll-to-active() {
+        let target = root.follow-target.offset;
+        if target < 0px { return; }
+        if root.snap-on-layout || !root.animate-follow {
+            root.snap-on-layout = false;
+            root.stop-glide();
+            root.place-scroll(target);
+            return;
+        }
+        if root.gliding && target == root.glide-target { return; }
+
+        // Retarget from the visible viewport and carry the current velocity forward.
+        let residual = -root.content-y - target;
+        let velocity = root.gliding ? root.glide-velocity : 0px;
+        if abs(residual) < 0.5px && abs(velocity) < 20px {
+            root.stop-glide();
+            root.place-scroll(target);
+            return;
+        }
+        let clock = root.glide-clock;
+        root.glide-target = target;
+        root.glide-a = residual;
+        root.glide-b = velocity + root.glide-omega * residual;
+        root.glide-start = clock;
+        root.gliding = true;
+        root.glide-deadline = clock + root.glide-duration / 1s;
+    }
+
+    changed glide-clock => {
+        if root.gliding {
+            if root.glide-clock >= root.glide-deadline
+                || (abs(root.glide-residual) < 0.5px && abs(root.glide-velocity) < 20px) {
+                root.stop-glide();
+                root.place-scroll(root.glide-target);
+            } else {
+                root.place-scroll(root.glide-target + root.glide-residual);
+            }
+        }
+    }
+
+    public function follow-lyrics() {
+        manual-scroll.stop();
+        root.scroll-to-active();
+    }
+
+    changed follow-target => {
+        if !manual-scroll.running {
+            root.scroll-to-active();
+        }
+    }
+    changed lyrics => {
+        manual-scroll.stop();
+        root.stop-glide();
+        root.snap-on-layout = true;
+        root.measured-index = -1;
+        root.place-scroll(0px);
+    }
+    changed animate-follow => {
+        if !root.animate-follow {
+            root.stop-glide();
+        }
+    }
+
+    flicked => {
+        root.stop-glide();
+        manual-scroll.start();
+        manual-scroll.restart();
+    }
+
+    manual-scroll := Timer {
+        interval: 5s;
+        running: false;
+        triggered => { root.follow-lyrics(); }
+    }
+
+    lines := VerticalLayout {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: self.preferred-height;
+        padding-top: min(root.anchor * 0.48, 120px);
+        padding-bottom: root.height - root.anchor;
+
+        for item[index] in root.lyrics: row := Rectangle {
+            property <bool> active: index == root.active-index;
+            property <length> active-line-top: self.active ? self.y : -1px;
+            property <length> line-width: max(0px, root.width - root.inset-left - root.inset-right);
+            property <length> line-mid: self.y + self.height / 2 + root.content-y;
+            property <float> top-fade: (self.line-mid / root.fade-zone).clamp(0, 1);
+            property <float> bottom-fade: ((root.height - self.line-mid) / root.fade-zone).clamp(0, 1);
+            property <float> raw-edge: min(self.top-fade, self.bottom-fade);
+            property <float> edge-alpha: lyric-touch.has-hover ? max(0.88, self.raw-edge) : self.raw-edge;
+            property <float> emphasis: self.active ? 1.0 : 0.0;
+            property <float> base-alpha: 0.36 + 0.64 * self.emphasis;
+            property <float> line-scale: self.active ? 1.0 : 0.94;
+            animate emphasis {
+                duration: 280ms;
+                easing: ease-out;
+                enabled: root.animate-follow;
+            }
+            animate line-scale {
+                duration: 600ms;
+                easing: ease-out;
+                enabled: root.animate-follow;
+            }
+
+            function report-active-top() {
+                if self.active && self.active-line-top >= lines.padding-top {
+                    root.active-top = self.active-line-top;
+                    root.measured-index = index;
+                    root.layout-revision += 1;
+                }
+            }
+            changed active-line-top => { self.report-active-top(); }
+            init => { self.report-active-top(); }
+
+            height: content.preferred-height + root.line-gap;
+            border-radius: 10px;
+            background: lyric-touch.has-hover ? Theme.text.with-alpha(0.07) : transparent;
+            animate background {
+                duration: 150ms;
+                enabled: root.animate-follow;
+            }
+            accessible-role: button;
+            accessible-label: item.translation == "" ? item.text : "\{item.text}\n\{item.translation}";
+            accessible-enabled: root.can-seek;
+            accessible-action-default => {
+                if root.can-seek { root.seek(item.time); }
+            }
+
+            content := VerticalLayout {
+                x: root.inset-left;
+                y: root.line-gap / 2;
+                width: row.line-width;
+                height: self.preferred-height;
+                spacing: 6px;
+                transform-scale: row.line-scale;
+                transform-origin: { x: 0px, y: self.height / 2 };
+
+                if item.words.length == 0: Text {
+                    width: 100%;
+                    text: item.text;
+                    font-size: root.font-size;
+                    font-weight: 700;
+                    color: Theme.text.with-alpha(row.base-alpha * row.edge-alpha);
+                    horizontal-alignment: left;
+                    wrap: word-wrap;
+                }
+
+                // Keep the wrapped geometry stable when the current line changes.
+                if item.words.length > 0: FlexboxLayout {
+                    width: 100%;
+                    alignment: start;
+                    cross-axis-alignment: start;
+                    spacing-horizontal: 0px;
+                    spacing-vertical: 2px;
+
+                    for word in item.words: KaraokeWord {
+                        word: word;
+                        active: row.active;
+                        lyric-time: root.lyric-time;
+                        font-size: root.font-size;
+                        sung-color: Theme.text.with-alpha(row.base-alpha * row.edge-alpha);
+                        unsung-color: Theme.text.with-alpha(0.36 * row.edge-alpha);
+                        max-line-width: row.line-width;
+                    }
+                }
+
+                if item.translation != "": Text {
+                    width: 100%;
+                    text: item.translation;
+                    font-size: max(13px, root.font-size * 0.58);
+                    font-weight: 500;
+                    color: Theme.text.with-alpha((0.30 + 0.48 * row.emphasis) * row.edge-alpha);
+                    horizontal-alignment: left;
+                    wrap: word-wrap;
+                }
+            }
+
+            lyric-touch := TouchArea {
+                enabled: root.can-seek;
+                mouse-cursor: pointer;
+                clicked => {
+                    manual-scroll.stop();
+                    root.seek(item.time);
+                }
+            }
+        }
+    }
+}
+
 export component NowPlaying inherits Rectangle {
     in property <image> album-image;
+    in property <image> ambient-image;
+    in property <bool> has-ambient-image;
     in property <SongInfo> current-song;
     in property <[SongInfo]> upcoming;
     in property <[LyricItem]> lyrics;
     in property <int> active-lyric-index;
-    out property <length> lyric-line-height: (root.height * 0.098).clamp(50px, 80px);
-    in-out property <length> lyric-scroll-y;
+    in property <float> lyric-time;
     in-out property <bool> show-queue;
     in property <bool> can-seek;
     in property <float> progress;
@@ -131,7 +590,8 @@ export component NowPlaying inherits Rectangle {
     in property <bool> shuffle;
     in property <LoopMode> loop-mode;
     in-out property <float> volume;
-    out property <length> lyric-view-height: lyrics-list.visible-height;
+    in property <bool> sliding;
+    in property <bool> resting-open;
 
     callback dismiss();
     callback seek(float);
@@ -144,102 +604,236 @@ export component NowPlaying inherits Rectangle {
     callback change-volume(float);
     pure callback format-duration(float) -> string;
 
-    private property <length> gutter: (root.width * 0.057).clamp(36px, 88px);
-    private property <length> column-width: (root.width * 0.22).clamp(228px, 336px);
-    private property <float> vertical-space: ((root.height - 500px) / 170px).clamp(0, 1);
-    private property <length> lyric-font-size: (root.lyric-line-height * 0.43).clamp(21px, 38px);
-    private property <bool> has-track: root.current-song.id != "";
+    public function follow-lyrics() { lyrics-list.follow-lyrics(); }
 
+    private property <length> gutter: (root.width * 0.055).clamp(36px, 84px);
+    private property <length> column-width: min(
+        (root.width * 0.27).clamp(216px, 324px),
+        (root.height * 0.40).clamp(180px, 300px)
+    );
+    private property <float> vertical-space: ((root.height - 500px) / 200px).clamp(0, 1);
+    private property <length> lyric-font-size: (root.height * 0.044).clamp(22px, 34px);
+    private property <bool> has-track: root.current-song.id != "";
+    private property <string> subtitle: root.current-song.singer != "" && root.current-song.album != ""
+        ? "\{root.current-song.singer} — \{root.current-song.album}"
+        : root.current-song.singer != "" ? root.current-song.singer : root.current-song.album;
+    private property <bool> show-remaining: true;
+    private property <bool> pointer-active: true;
+    private property <bool> tabs-visible: root.show-queue || root.pointer-active
+        || tabs-hover.has-hover || lyrics-tab.hovered || queue-tab.hovered
+        || lyrics-tab.focused || queue-tab.focused;
+    private property <float> cover-scale: root.paused ? 0.86 : 1.0;
+    animate cover-scale {
+        duration: 420ms;
+        easing: cubic-bezier(0.22, 1.0, 0.36, 1.0);
+        enabled: !root.sliding;
+    }
+
+    function wake-chrome() {
+        root.pointer-active = true;
+        if root.resting-open && !root.paused && !root.show-queue {
+            chrome-idle.start();
+            chrome-idle.restart();
+        }
+    }
+
+    changed resting-open => {
+        if root.resting-open {
+            root.wake-chrome();
+        } else {
+            chrome-idle.stop();
+        }
+    }
+    changed paused => {
+        if !root.paused && root.resting-open && !root.show-queue {
+            chrome-idle.start();
+            chrome-idle.restart();
+        } else if root.paused {
+            chrome-idle.stop();
+            root.pointer-active = true;
+        }
+    }
+    changed show-queue => {
+        if root.show-queue {
+            chrome-idle.stop();
+            root.pointer-active = true;
+        } else {
+            root.wake-chrome();
+        }
+    }
+
+    chrome-idle := Timer {
+        interval: 2.5s;
+        running: false;
+        triggered => {
+            self.stop();
+            root.pointer-active = false;
+        }
+    }
+
+    // Keep the backdrop cached at 1:1 panel resolution (both with and without
+    // blurred ambient artwork) so software rendering hits integer-aligned 1:1 blits
+    // on every karaoke frame instead of re-rasterizing gradients or blur.
     Rectangle {
-        // Keep the transform's bounds at panel size for partial redraws.
-        private property <float> upscale: Theme.cover-active ? 2 : 1;
         width: 100%;
         height: 100%;
-        transform-origin: { x: 0px, y: 0px };
-        transform-scale: self.upscale;
+        clip: true;
+        cache-rendering-hint: true;
 
-        Rectangle {
-            // The smooth gradients share a half-resolution cache.
-            x: 0px;
-            y: 0px;
-            width: parent.width / parent.upscale;
-            height: parent.height / parent.upscale;
-            cache-rendering-hint: Theme.cover-active;
+        if Theme.cover-recoloring && root.has-ambient-image: Rectangle {
+            width: 100%;
+            height: 100%;
+            background: Theme.is-dark ? #181c22 : #eef1f7;
 
-            CoverBackdrop {
-                base-color: Theme.is-dark ? #18212d : #f0f3f9;
+            Image {
+                width: 100%;
+                height: 100%;
+                source: root.ambient-image;
+                image-fit: cover;
             }
 
             Rectangle {
-                background: @linear-gradient(180deg, Theme.surface.with-alpha(0.12) 0%, Theme.surface.with-alpha(0.42) 100%);
+                width: 100%;
+                height: 100%;
+                background: Theme.is-dark
+                    ? @linear-gradient(155deg, #161a2094 0%, #101319b0 55%, #0c0e13c4 100%)
+                    : @linear-gradient(155deg, #f4f6fab8 0%, #eef1f7cc 55%, #e8ecf4d8 100%);
             }
         }
+
+        if !(Theme.cover-recoloring && root.has-ambient-image): Rectangle {
+            private property <float> upscale: 4;
+            width: 100%;
+            height: 100%;
+            transform-origin: { x: 0px, y: 0px };
+            transform-scale: self.upscale;
+
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: ceil(parent.width / 1px / parent.upscale) * 1px;
+                height: ceil(parent.height / 1px / parent.upscale) * 1px;
+                cache-rendering-hint: true;
+
+                CoverBackdrop {
+                    base-color: Theme.is-dark ? #18212d : #f0f3f9;
+                    animate-colors: root.resting-open;
+                }
+
+                Rectangle {
+                    background: @linear-gradient(180deg, Theme.surface.with-alpha(0.12) 0%, Theme.surface.with-alpha(0.42) 100%);
+                }
+            }
+        }
+    }
+
+    // Passive backdrop move detector to gently reveal auto-hidden chrome.
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        moved => { root.wake-chrome(); }
     }
 
     WindowMoveArea {
         x: 0;
         y: 0;
         width: 100%;
-        height: 48px;
+        height: 44px;
     }
 
-    PlaybackButton {
+    dismiss-btn := PlaybackButton {
         x: (parent.width - self.width) / 2;
         y: 8px;
         width: 46px;
-        height: 32px;
+        height: 30px;
+        round: true;
+        subtle: true;
         icon: IconSet.ChevronDown;
-        icon-size: 22px;
+        icon-size: 20px;
+        opacity: root.tabs-visible || self.hovered ? 0.8 : 0.34;
+        animate opacity {
+            duration: 300ms;
+            enabled: !root.sliding;
+        }
+        animate-transitions: !root.sliding;
         label: @tr("Close now playing");
         clicked => { root.dismiss(); }
     }
 
     HorizontalLayout {
         x: 0;
-        y: 44px;
+        y: 40px;
         width: 100%;
         height: root.height - self.y;
         padding-left: root.gutter;
-        padding-right: root.gutter;
-        padding-bottom: (root.height * 0.075).clamp(24px, 52px);
-        spacing: root.gutter;
+        padding-right: (root.gutter * 0.7).clamp(24px, 64px);
+        padding-bottom: (root.height * 0.055).clamp(20px, 48px);
+        spacing: (root.gutter * 0.9).clamp(32px, 76px);
 
         VerticalLayout {
             width: root.column-width;
             alignment: start;
 
-            HorizontalLayout {
-                alignment: start;
-                spacing: 8px;
-                ViewTab {
-                    label: @tr("Lyrics");
-                    selected: !root.show-queue;
-                    clicked => { root.show-queue = false; }
+            Rectangle {
+                height: 30px;
+
+                tabs-hover := TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    moved => { root.wake-chrome(); }
                 }
-                ViewTab {
-                    width: 104px;
-                    label: @tr("Play queue");
-                    selected: root.show-queue;
-                    clicked => { root.show-queue = true; }
+
+                HorizontalLayout {
+                    width: 100%;
+                    height: 100%;
+                    alignment: start;
+                    spacing: 6px;
+                    opacity: root.tabs-visible ? 1.0 : 0.0;
+                    animate opacity {
+                        duration: 320ms;
+                        easing: ease-out;
+                        enabled: !root.sliding;
+                    }
+
+                    lyrics-tab := ViewTab {
+                        label: @tr("Lyrics");
+                        selected: !root.show-queue;
+                        animate-transitions: !root.sliding;
+                        clicked => { root.show-queue = false; }
+                    }
+                    queue-tab := ViewTab {
+                        label: @tr("Play queue");
+                        selected: root.show-queue;
+                        animate-transitions: !root.sliding;
+                        clicked => { root.show-queue = true; }
+                    }
                 }
             }
 
-            Rectangle { height: 12px + 20px * root.vertical-space; }
+            Rectangle { height: 10px + 18px * root.vertical-space; }
 
             Rectangle {
-                height: art.width;
+                width: root.column-width;
+                height: root.column-width;
+
                 art := Rectangle {
-                    x: (parent.width - self.width) / 2;
-                    width: min(root.column-width * 0.74, (root.height * 0.31).clamp(146px, 248px));
+                    width: parent.width * root.cover-scale;
                     height: self.width;
-                    border-radius: 14px;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 12px;
                     background: Theme.surface;
-                    drop-shadow-color: #0000003d;
-                    drop-shadow-blur: 18px;
-                    drop-shadow-offset-y: 8px;
+                    drop-shadow-color: Theme.is-dark ? #00000066 : #0000002e;
+                    drop-shadow-blur: root.paused ? 12px : 26px;
+                    drop-shadow-offset-y: root.paused ? 6px : 12px;
+                    animate drop-shadow-blur, drop-shadow-offset-y {
+                        duration: 420ms;
+                        easing: cubic-bezier(0.22, 1.0, 0.36, 1.0);
+                        enabled: !root.sliding;
+                    }
 
                     Rectangle {
-                        border-radius: 14px;
+                        border-radius: 12px;
                         clip: true;
                         Image {
                             width: 100%;
@@ -251,25 +845,26 @@ export component NowPlaying inherits Rectangle {
                 }
             }
 
-            Rectangle { height: 16px + 24px * root.vertical-space; }
+            Rectangle { height: 14px + 18px * root.vertical-space; }
 
             HorizontalLayout {
-                height: 52px + 10px * root.vertical-space;
-                spacing: 8px;
+                height: 48px + 8px * root.vertical-space;
+                spacing: 4px;
                 VerticalLayout {
                     horizontal-stretch: 1;
                     alignment: center;
+                    spacing: 2px;
                     Text {
                         text: root.has-track ? root.current-song.song_name : @tr("No track selected");
-                        font-size: 20px + 4px * root.vertical-space;
+                        font-size: 18px + 4px * root.vertical-space;
                         font-weight: 700;
                         color: Theme.text;
                         overflow: elide;
                     }
-                    if root.current-song.singer != "": Text {
-                        text: root.current-song.singer;
-                        font-size: 14px + root.vertical-space * 1px;
-                        color: Theme.text.with-alpha(0.72);
+                    if root.subtitle != "": Text {
+                        text: root.subtitle;
+                        font-size: 13px + root.vertical-space * 1px;
+                        color: Theme.text.with-alpha(0.65);
                         overflow: elide;
                     }
                 }
@@ -277,13 +872,46 @@ export component NowPlaying inherits Rectangle {
                     y: (parent.height - self.height) / 2;
                     track: root.current-song.id;
                 }
+                if root.has-track: more-button := Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: 30px;
+                    height: 28px;
+                    border-radius: 14px;
+                    background: more-touch.pressed ? Theme.text.with-alpha(0.16)
+                        : more-touch.has-hover ? Theme.text.with-alpha(0.10) : transparent;
+                    accessible-role: button;
+                    accessible-label: @tr("Add to collection");
+                    accessible-action-default => { more-touch.clicked(); }
+
+                    IconDisplay {
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        icon: IconSet.Ellipsis;
+                        size: 16px;
+                        stroke: Theme.text.with-alpha(more-touch.has-hover ? 0.95 : 0.65);
+                    }
+
+                    more-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            CollectionsGlobal.picker-anchor = {
+                                track: root.current-song.id,
+                                right: more-button.absolute-position.x + more-button.width,
+                                top: more-button.absolute-position.y,
+                                bottom: more-button.absolute-position.y + more-button.height,
+                            };
+                        }
+                    }
+                }
             }
 
-            Rectangle { height: 8px + 8px * root.vertical-space; }
+            Rectangle { height: 8px + 6px * root.vertical-space; }
 
             VerticalLayout {
+                spacing: 2px;
                 seek-bar := SeekBar {
-                    height: 15px;
+                    height: 14px;
+                    atmospheric: true;
                     enabled: root.can-seek && root.duration > 0;
                     position: root.progress;
                     duration: root.duration;
@@ -293,14 +921,33 @@ export component NowPlaying inherits Rectangle {
                 HorizontalLayout {
                     Text {
                         text: root.format-duration(seek-bar.displayed-position);
-                        color: Theme.text.with-alpha(0.7);
-                        font-size: 12px;
+                        color: Theme.text.with-alpha(0.62);
+                        font-size: 11px;
+                        font-weight: 500;
                     }
                     Rectangle { horizontal-stretch: 1; }
-                    Text {
-                        text: root.duration > 0 ? root.format-duration(root.duration) : "–:––";
-                        color: Theme.text.with-alpha(0.7);
-                        font-size: 12px;
+                    Rectangle {
+                        width: right-time.preferred-width;
+                        height: right-time.preferred-height;
+                        accessible-role: button;
+                        accessible-label: root.show-remaining ? @tr("Show total duration") : @tr("Show remaining time");
+                        accessible-action-default => { root.show-remaining = !root.show-remaining; }
+
+                        right-time := Text {
+                            text: root.duration > 0
+                                ? (root.show-remaining
+                                    ? "-\{root.format-duration(max(0, root.duration - seek-bar.displayed-position))}"
+                                    : root.format-duration(root.duration))
+                                : "–:––";
+                            color: time-touch.has-hover ? Theme.text.with-alpha(0.9) : Theme.text.with-alpha(0.62);
+                            font-size: 11px;
+                            font-weight: 500;
+                        }
+                        time-touch := TouchArea {
+                            enabled: root.duration > 0;
+                            mouse-cursor: pointer;
+                            clicked => { root.show-remaining = !root.show-remaining; }
+                        }
                     }
                 }
             }
@@ -312,6 +959,7 @@ export component NowPlaying inherits Rectangle {
                 paused: root.paused;
                 shuffle: root.shuffle;
                 loop-mode: root.loop-mode;
+                animate-transitions: !root.sliding;
                 toggle-play => { root.toggle-play(); }
                 play-next => { root.play-next(); }
                 play-prev => { root.play-prev(); }
@@ -319,96 +967,55 @@ export component NowPlaying inherits Rectangle {
                 switch-mode(mode) => { root.switch-mode(mode); }
             }
 
-            Rectangle { height: 8px + 12px * root.vertical-space; }
+            Rectangle { height: 8px + 10px * root.vertical-space; }
 
-            HorizontalLayout {
-                height: 26px;
-                padding-left: root.column-width * 0.13;
-                padding-right: root.column-width * 0.13;
-                spacing: 8px;
-                Rectangle {
-                    width: 20px;
-                    IconDisplay {
-                        icon: root.volume > 0 ? IconSet.Volume2 : IconSet.VolumeX;
-                        size: 17px;
-                        stroke: Theme.text.with-alpha(0.75);
-                    }
-                }
-                Slider {
-                    minimum: 0;
-                    maximum: 1;
-                    step: 0.01;
-                    accessible-label: @tr("Volume");
-                    value <=> root.volume;
-                    released(value) => { root.change-volume(value); }
-                }
+            AtmosphericVolumeBar {
+                volume <=> root.volume;
+                change-volume(value) => { root.change-volume(value); }
             }
         }
 
-        VerticalLayout {
+        Rectangle {
             horizontal-stretch: 1;
-            padding-top: 30px + 8px * root.vertical-space;
 
-            Rectangle {
-                vertical-stretch: 1;
+            lyrics-list := LyricsView {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+                visible: !root.show-queue && root.lyrics.length > 0;
+                lyrics: root.lyrics;
+                active-index: root.active-lyric-index;
+                lyric-time: root.lyric-time;
+                can-seek: root.can-seek;
+                animate-follow: root.resting-open && !root.show-queue;
+                font-size: root.lyric-font-size;
+                seek(pos) => { root.seek(pos); }
+            }
 
-                lyrics-list := ListView {
-                    visible: !root.show-queue && root.lyrics.length > 0;
-                    mouse-drag-pan-enabled: false;
-                    content-y <=> root.lyric-scroll-y;
+            ListView {
+                x: 0px;
+                y: 12px;
+                width: parent.width;
+                height: max(0px, parent.height - 12px);
+                visible: root.show-queue && root.upcoming.length > 0;
+                mouse-drag-pan-enabled: false;
 
-                    for item[index] in root.lyrics: Rectangle {
-                        height: root.lyric-line-height;
-                        border-radius: 8px;
-                        background: lyric-touch.has-hover ? Theme.text.with-alpha(0.07) : transparent;
-                        accessible-role: button;
-                        accessible-label: item.text;
-                        accessible-enabled: root.can-seek;
-                        accessible-action-default => {
-                            if root.can-seek { root.seek(item.time); }
-                        }
-
-                        Text {
-                            x: 12px;
-                            width: parent.width - 24px;
-                            height: 100%;
-                            text: item.text;
-                            font-size: root.lyric-font-size;
-                            font-weight: index == root.active-lyric-index ? 700 : 600;
-                            color: index == root.active-lyric-index ? Theme.text : Theme.text.with-alpha(0.60);
-                            animate color { duration: 150ms; }
-                            vertical-alignment: center;
-                            wrap: word-wrap;
-                            overflow: elide;
-                        }
-                        lyric-touch := TouchArea {
-                            enabled: root.can-seek;
-                            mouse-cursor: pointer;
-                            clicked => { root.seek(item.time); }
-                        }
-                    }
+                for track[index] in root.upcoming: QueueRow {
+                    song: track;
+                    number: index + 1;
+                    play => { root.play-queued(track.id); }
                 }
+            }
 
-                ListView {
-                    visible: root.show-queue && root.upcoming.length > 0;
-                    mouse-drag-pan-enabled: false;
-
-                    for track[index] in root.upcoming: QueueRow {
-                        song: track;
-                        number: index + 1;
-                        play => { root.play-queued(track.id); }
-                    }
-                }
-
-                if root.show-queue ? root.upcoming.length == 0 : root.lyrics.length == 0: Text {
-                    width: 100%;
-                    height: 100%;
-                    text: root.show-queue ? @tr("The play queue is empty") : @tr("No lyrics available");
-                    color: Theme.text.with-alpha(0.68);
-                    font-size: 16px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
+            if root.show-queue ? root.upcoming.length == 0 : root.lyrics.length == 0: Text {
+                width: 100%;
+                height: 100%;
+                text: root.show-queue ? @tr("The play queue is empty") : @tr("No lyrics available");
+                color: Theme.text.with-alpha(0.62);
+                font-size: 16px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
             }
         }
     }

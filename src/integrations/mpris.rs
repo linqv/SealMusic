@@ -171,7 +171,7 @@ pub fn cache_cover_raw(
 }
 
 pub fn cache_cover(
-    image: &image::RgbaImage,
+    image: &crate::library::metadata::CoverImage,
 ) -> std::result::Result<tempfile::NamedTempFile, Box<dyn std::error::Error>> {
     let dir = cover_cache_dir();
     fs::create_dir_all(&dir)?;
@@ -180,12 +180,8 @@ pub fn cache_cover(
         let mut writer = BufWriter::new(f.as_file_mut());
         let encoder =
             PngEncoder::new_with_quality(&mut writer, CompressionType::Fast, FilterType::Sub);
-        encoder.write_image(
-            image.as_raw(),
-            image.width(),
-            image.height(),
-            ExtendedColorType::Rgba8,
-        )?;
+        let (width, height) = image.dimensions();
+        encoder.write_image(image.pixels.as_bytes(), width, height, ExtendedColorType::Rgba8)?;
         writer.flush()?;
     }
     Ok(f)
@@ -582,41 +578,49 @@ mod tests {
                 time: -1.0,
                 duration: 1.0,
                 text: "Negative ignored".into(),
+                words: Vec::new(),
             },
             LyricLine {
                 time: f32::NAN,
                 duration: 1.0,
                 text: "NaN ignored".into(),
+                words: Vec::new(),
             },
             LyricLine {
                 time: 2.5,
                 duration: 1.0,
                 text: "  ".into(),
+                words: Vec::new(),
             },
             LyricLine {
                 time: 2.5,
                 duration: 1.0,
                 text: "Quote \"a\"\\b\t\n\u{0007}".into(),
+                words: Vec::new(),
             },
             LyricLine {
                 time: 1.0,
                 duration: 1.0,
                 text: "きらきらひかる".into(),
+                words: Vec::new(),
             },
             LyricLine {
                 time: 1.0004,
                 duration: 1.0,
                 text: "闪闪发光".into(),
+                words: Vec::new(),
             },
             LyricLine {
                 time: 1.0,
                 duration: 1.0,
                 text: "闪闪发光".into(),
+                words: Vec::new(),
             },
             LyricLine {
                 time: 1.0,
                 duration: 1.0,
                 text: "Extra note".into(),
+                words: Vec::new(),
             },
         ];
 
@@ -640,6 +644,7 @@ mod tests {
                 time: i as f32,
                 duration: 1.0,
                 text: long_text.clone(),
+                words: Vec::new(),
             })
             .collect();
 
@@ -664,6 +669,7 @@ mod tests {
                 time: 1.25,
                 duration: 2.0,
                 text: "First line".into(),
+                words: Vec::new(),
             }],
         );
         let state = PlaybackState {
@@ -795,7 +801,7 @@ mod tests {
     fn cache_cover_writes_png_and_cleans_up_on_drop() {
         let mut img = image::RgbaImage::new(2, 3);
         img.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
-        let temp = cache_cover(&img).unwrap();
+        let temp = cache_cover(&img.into()).unwrap();
         let path = temp.path().to_path_buf();
         assert!(path.exists());
         let decoded = image::open(&path).unwrap();

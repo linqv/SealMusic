@@ -18,6 +18,9 @@ use crate::{
     slint_types::OnlineIssue,
 };
 
+pub(super) const MAX_SESSION_TRACKS: usize = 512;
+const MAX_SESSION_METADATA_BYTES: usize = 8 * 1024 * 1024;
+
 pub enum Completion {
     Search(u64, Result<online::SearchPage, ()>),
     Details(u64, TrackId, Option<TrackDetails>),
@@ -82,7 +85,7 @@ pub(super) struct Online {
     details: Option<Job>,
     pending: Option<Pending>,
     pub active_stream: Option<(u64, online::Stream)>,
-    pub tracks: Vec<Arc<Track>>,
+    pub tracks: VecDeque<Arc<Track>>,
     // Keep last so every Job and Stream drops (setting cancelled and waking
     // Condvars) before Runtime::drop waits on blocking tasks.
     runtime: Runtime,
@@ -107,7 +110,7 @@ impl Online {
             details: None,
             pending: None,
             active_stream: None,
-            tracks: vec![],
+            tracks: VecDeque::new(),
         }
     }
 
@@ -181,12 +184,45 @@ impl Online {
         let resume_current = std::mem::take(&mut p.ctx.paused_current);
         Some((p.label.clone(), resume_current))
     }
-    fn upsert(&mut self, t: Arc<Track>) {
-        if let Some(slot) = self.tracks.iter_mut().find(|old| old.id == t.id) {
-            *slot = t;
-        } else {
-            self.tracks.push(t);
+    fn track_metadata_bytes(track: &Track) -> usize {
+        let TrackOrigin::Online(reference) = &track.origin else {
+            return 0;
+        };
+        reference.metadata_bytes()
+            + track.id.0.capacity()
+            + track.title.capacity()
+            + track.artist.capacity()
+            + track.album.capacity()
+            + track.title_lower.capacity()
+            + track.artist_lower.capacity()
+    }
+
+    fn upsert(&mut self, track: Arc<Track>) -> Vec<TrackId> {
+        let id = track.id.clone();
+        let existing = self.tracks.iter().position(|old| old.id == id);
+        if Self::track_metadata_bytes(&track) > MAX_SESSION_METADATA_BYTES {
+            if let Some(index) = existing {
+                self.tracks.remove(index);
+            }
+            return vec![id];
         }
+        if let Some(index) = existing {
+            self.tracks[index] = track;
+        } else {
+            self.tracks.push_back(track);
+        }
+
+        let mut bytes =
+            self.tracks.iter().map(|track| Self::track_metadata_bytes(track)).sum::<usize>();
+        let mut evicted = Vec::new();
+        while self.tracks.len() > MAX_SESSION_TRACKS || bytes > MAX_SESSION_METADATA_BYTES {
+            // Keep the just-committed track and preserve the playback order of survivors.
+            let oldest = usize::from(self.tracks[0].id == id);
+            let removed = self.tracks.remove(oldest).unwrap();
+            bytes -= Self::track_metadata_bytes(&removed);
+            evicted.push(removed.id.clone());
+        }
+        evicted
     }
 }
 
@@ -660,14 +696,20 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                         self.commit(p.track.clone(), p.ctx.status, prepared.source, p.ctx.position);
                         self.online.active_stream = prepared.stream.map(|stream| (id, stream));
                         self.sync_stream();
-                        if p.track.local_path().is_none() {
-                            self.online.upsert(p.track.clone());
-                        }
+                        let evicted = if p.track.local_path().is_none() {
+                            self.online.upsert(p.track.clone())
+                        } else {
+                            Vec::new()
+                        };
                         let changed_queue =
                             p.ctx.queue_source.is_some_and(|source| self.switch_queue(source));
+                        let temporary_queue = self.cfg.playing_collection.is_none();
                         if p.track.local_path().is_none()
-                            && (self.cfg.playing_collection.is_none()
-                                || self.queue.get(&p.track.id).is_some())
+                            && if temporary_queue {
+                                !evicted.contains(&p.track.id)
+                            } else {
+                                self.queue.get(&p.track.id).is_some()
+                            }
                         {
                             self.queue.upsert(p.track.clone());
                         }
@@ -678,6 +720,9 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                             p.ctx.history_skip,
                             p.ctx.from_history,
                         );
+                        if temporary_queue {
+                            self.queue.remove_tracks(&evicted);
+                        }
                     }
                     Err(err) => {
                         if matches!(
@@ -743,5 +788,35 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         self.rebuild_order();
         self.details(&track);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_budget_evicts_metadata_before_reaching_the_track_limit() {
+        let mut url = url::Url::parse("lxmusic://music/play").unwrap();
+        url.query_pairs_mut().append_pair(
+            "data",
+            r#"{"source":"wy","songmid":1,"name":"Title","singer":"Artist","types":[]}"#,
+        );
+        let reference = OnlineTrack::parse(url.as_str()).unwrap();
+        let mut online = Online::new(Weak::new());
+
+        for index in 0..3 {
+            let mut track = reference.track().unwrap();
+            let data = Arc::get_mut(&mut track).unwrap();
+            data.id.0 = index.to_string();
+            data.album = "x".repeat(MAX_SESSION_METADATA_BYTES / 3);
+            let evicted = online.upsert(track);
+            if index == 2 {
+                assert_eq!(evicted, vec![TrackId("0".into())]);
+            } else {
+                assert!(evicted.is_empty());
+            }
+        }
+        assert_eq!(online.tracks.len(), 2);
     }
 }

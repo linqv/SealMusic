@@ -10,7 +10,7 @@ Instructions for AI coding agents working in this repository.
 
 ## Quick Start
 - Dev run: `cargo run`
-- Release build: `cargo build --release`
+- Native release build: `cargo release --locked`
 - Runtime smoke check: `./target/release/sealmusic --check-runtime`
 - Unit tests: `cargo test`
 - MPRIS live D-Bus test: `dbus-run-session -- cargo test mpris_dbus_roundtrip -- --ignored`
@@ -33,6 +33,7 @@ Instructions for AI coding agents working in this repository.
 - **Distinct playback commands:** `Play`, `Pause`, `TogglePlayPause`, and `Stop` have separate semantics (never alias `Pause` to toggle). `LoopMode` (`None`, `Track`, `Playlist`) and `shuffle` (`bool`) are independent.
 - **Stable track identity:** Use `TrackId` (`/dev/sealmusic/track/local_<hex>`) for track selection and `SeekTo` / MPRIS `SetPosition` validation — never list indices.
 - **GUI thread safety:** Update Slint properties only via `slint::invoke_from_event_loop`. Keep queue/history in Rust.
+- **Linux Wayland-only backend:** Linux builds enable `slint`'s `backend-winit-wayland` (no `backend-winit-x11`, no `unstable-winit-030`, no X11 window positioning or unminimize calls). File dialogs attach via `raw-window-handle-06` (`xdg-foreign` on Wayland), and `set_xdg_app_id(APP_ID)` provides native Wayland app identification.
 - **MPRIS isolation:** Keep Linux-only dependencies (`mpris-server`, `futures-channel`, `futures-lite`, `url`, `tempfile`) under `[target.'cfg(target_os = "linux")'.dependencies]` and isolate code behind `#[cfg(target_os = "linux")]`. Startup must still succeed when no D-Bus session bus is available (MPRIS disables itself and sets `can_run_hidden = false`).
 - **Scope guardrails:** Metadata and library scanning are strictly read-only — no tag editing, no file deletion, no spectrum/FFT, and no pinyin sorting (plain deterministic string order).
 - **Navigation pages** are Gallery (`0`), Search (`1`), and Settings (`3`). The playback cover opens Lyrics and the Play queue over the current page.
@@ -52,7 +53,7 @@ Instructions for AI coding agents working in this repository.
 
 ## Theme & Localization
 - Custom `Theme` global in [ui/theme.slint](ui/theme.slint); light/dark controlled by `Theme.is-dark` via `set_light_theme()` alongside Slint `Palette.color-scheme`.
-- `dark-light` polls the system theme every 1s when `follow_system_theme` is enabled.
+- On Linux, `theme_watcher` subscribes to `org.freedesktop.portal.Settings` (`org.freedesktop.appearance` / `color-scheme`) over D-Bus; non-Linux targets fall back to polling via `dark-light`.
 - Only English (`""`) and Simplified Chinese (`"zh_CN"`) are bundled (`lang/sealmusic.pot`, `lang/zh_CN/LC_MESSAGES/sealmusic.po`); unsupported codes in config fall back to `""`.
 
 ## Conventions
@@ -67,7 +68,7 @@ Instructions for AI coding agents working in this repository.
 - `build.rs` uses `slint_build::CompilerConfiguration` with style `fluent` and `with_bundled_translations("lang")`. Run `i18n-update` whenever Slint `@tr(...)` text changes.
 - `single-instance` (`APP_ID = "sealmusic"`) prevents duplicate instances — do not remove.
 - Rust edition is `2024` with `.rustfmt.toml` nightly rules (`use_small_heuristics = "Off"`, `imports_granularity = "Crate"`, `group_imports = "StdExternalCrate"`) — always run `cargo +nightly fmt`.
-- Release profile uses `lto = true`, `codegen-units = 1`, `strip = true`, `panic = "abort"`.
+- Release profile uses `opt-level = 3`, `lto = "fat"`, `codegen-units = 1`, `incremental = false`, `strip = true`, and `panic = "abort"`. The `cargo release` alias adds `-C target-cpu=native` on Linux. Use `cargo build --release` for the default target CPU.
 - Slint bindings are generated in `src/slint_types.rs` via `slint::include_modules!()`.
 
 ## Change Playbooks

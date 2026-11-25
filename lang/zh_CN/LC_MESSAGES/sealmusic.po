@@ -497,37 +497,67 @@ msgctxt "ControlPanel"
 msgid "Open lyrics and play queue"
 msgstr "打开歌词和待播清单"
 
+#: ui/lyrics_panel.slint:145
+msgctxt "AtmosphericVolumeBar"
+msgid "Mute"
+msgstr "静音"
+
+#: ui/lyrics_panel.slint:145
+msgctxt "AtmosphericVolumeBar"
+msgid "Unmute"
+msgstr "取消静音"
+
 #: ui/lyrics_panel.slint:174
+msgctxt "AtmosphericVolumeBar"
+msgid "Volume"
+msgstr "音量"
+
+#: ui/lyrics_panel.slint:271
+msgctxt "AtmosphericVolumeBar"
+msgid "Max volume"
+msgstr "最大音量"
+
+#: ui/lyrics_panel.slint:669
 msgctxt "NowPlaying"
 msgid "Close now playing"
 msgstr "收起正在播放"
 
-#: ui/lyrics_panel.slint:225
+#: ui/lyrics_panel.slint:768
 msgctxt "NowPlaying"
 msgid "No track selected"
 msgstr "未选择歌曲"
 
-#: ui/lyrics_panel.slint:296
+#: ui/lyrics_panel.slint:793
 msgctxt "NowPlaying"
-msgid "Volume"
-msgstr "音量"
+msgid "Add to collection"
+msgstr "加入收藏列表"
 
-#: ui/lyrics_panel.slint:311
+#: ui/lyrics_panel.slint:843
+msgctxt "NowPlaying"
+msgid "Show total duration"
+msgstr "显示总时长"
+
+#: ui/lyrics_panel.slint:843
+msgctxt "NowPlaying"
+msgid "Show remaining time"
+msgstr "显示剩余时间"
+
+#: ui/lyrics_panel.slint:709
 msgctxt "NowPlaying"
 msgid "Lyrics"
 msgstr "歌词"
 
-#: ui/lyrics_panel.slint:317
+#: ui/lyrics_panel.slint:715
 msgctxt "NowPlaying"
 msgid "Play queue"
 msgstr "待播清单"
 
-#: ui/lyrics_panel.slint:377
+#: ui/lyrics_panel.slint:924
 msgctxt "NowPlaying"
 msgid "The play queue is empty"
 msgstr "待播清单为空"
 
-#: ui/lyrics_panel.slint:377
+#: ui/lyrics_panel.slint:924
 msgctxt "NowPlaying"
 msgid "No lyrics available"
 msgstr "暂无歌词"

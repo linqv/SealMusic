@@ -16,7 +16,7 @@ use super::{
     search::{DESKTOP_UA, normalize_mg_img, number, wy_eapi},
 };
 use crate::library::{
-    lyrics::{LyricLine, parse_lyrics},
+    lyrics::{LyricLine, LyricWord, parse_lyrics},
     metadata::{self, TrackDetails},
 };
 
@@ -119,14 +119,14 @@ pub(super) async fn fetch_cover(
     client: &Client,
     url: &str,
     referer: Option<&str>,
-) -> Option<(image::RgbaImage, Option<metadata::CoverPalette>)> {
+) -> Option<metadata::DecodedCover> {
     let url = as_http_url(url)?;
     let mut req = client.get(url).header("User-Agent", DESKTOP_UA);
     if let Some(referer) = referer {
         req = req.header("Referer", referer);
     }
     let bytes = fetch_bytes(req, COVER_LIMIT).await?;
-    tokio::task::spawn_blocking(move || metadata::decode_cover(&bytes)).await.ok()?
+    tokio::task::spawn_blocking(move || metadata::decode_cover_full(&bytes)).await.ok()?
 }
 
 pub fn inline_details(reference: &OnlineTrack) -> TrackDetails {
@@ -178,9 +178,10 @@ async fn fetch_details_with(
     );
 
     let mut changed = false;
-    if let Some((img, palette)) = cover {
-        details.cover = Some(img);
-        details.palette = palette;
+    if let Some(decoded) = cover {
+        details.cover = Some(decoded.cover);
+        details.ambient = Some(decoded.ambient);
+        details.palette = decoded.palette;
         details.raw_cover = None;
         changed = true;
     }
@@ -292,7 +293,7 @@ async fn resolve_and_fetch_cover(
     endpoints: &Endpoints,
     source: &str,
     info: &Value,
-) -> Option<(image::RgbaImage, Option<metadata::CoverPalette>)> {
+) -> Option<metadata::DecodedCover> {
     let referer = cover_referer(source);
     let mut tried = Vec::new();
 
@@ -899,29 +900,68 @@ fn duration_ms_from_info(info: &Value) -> u64 {
     0
 }
 
-fn strip_krc_word_tags(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
+fn parse_krc_words(body: &str, line_start_ms: u64) -> (String, Vec<LyricWord>) {
+    let mut plain = String::with_capacity(body.len());
+    let mut words = Vec::new();
+    let mut cur_timing: Option<(u64, u64)> = None;
+    let mut cur_text = String::new();
+    let mut rest = body;
+
     while let Some(start) = rest.find('<') {
-        out.push_str(&rest[..start]);
+        let before = &rest[..start];
         let after = &rest[start + 1..];
         if let Some(end) = after.find('>') {
             let tag = &after[..end];
             let mut parts = tag.split(',');
-            let valid = parts.next().is_some_and(|p| p.parse::<u64>().is_ok())
-                && parts.next().is_some_and(|p| p.parse::<u64>().is_ok())
-                && parts.next().is_some_and(|p| p.parse::<u64>().is_ok())
-                && parts.next().is_none();
-            if valid {
+            if let (Some(off), Some(dur), Some(third), None) =
+                (parts.next(), parts.next(), parts.next(), parts.next())
+                && let (Ok(off_ms), Ok(dur_ms), Ok(_)) =
+                    (off.parse::<u64>(), dur.parse::<u64>(), third.parse::<u64>())
+            {
+                if !before.is_empty() {
+                    plain.push_str(before);
+                    cur_text.push_str(before);
+                }
+                if let Some((w_off, w_dur)) = cur_timing.take() {
+                    let decoded = decode_html(&std::mem::take(&mut cur_text));
+                    if !decoded.is_empty() {
+                        words.push(LyricWord {
+                            time: (line_start_ms.saturating_add(w_off)) as f32 / 1000.0,
+                            duration: w_dur as f32 / 1000.0,
+                            text: decoded,
+                        });
+                    }
+                } else {
+                    cur_text.clear();
+                }
+                cur_timing = Some((off_ms, dur_ms));
                 rest = &after[end + 1..];
                 continue;
             }
         }
-        out.push('<');
+        plain.push_str(before);
+        plain.push('<');
+        cur_text.push_str(before);
+        cur_text.push('<');
         rest = after;
     }
-    out.push_str(rest);
-    out
+
+    if !rest.is_empty() {
+        plain.push_str(rest);
+        cur_text.push_str(rest);
+    }
+    if let Some((w_off, w_dur)) = cur_timing {
+        let decoded = decode_html(&cur_text);
+        if !decoded.is_empty() {
+            words.push(LyricWord {
+                time: (line_start_ms.saturating_add(w_off)) as f32 / 1000.0,
+                duration: w_dur as f32 / 1000.0,
+                text: decoded,
+            });
+        }
+    }
+    let cleaned = decode_html(plain.trim());
+    (cleaned.trim().to_owned(), words)
 }
 
 fn decode_kg_krc_content(content_b64: &str) -> Vec<LyricLine> {
@@ -970,8 +1010,8 @@ fn parse_kg_krc_text(raw: &str) -> Vec<LyricLine> {
         }
     }
 
-    let mut primary_lines = Vec::new();
-    let mut trans_lines = Vec::new();
+    let mut primary_lines: Vec<LyricLine> = Vec::new();
+    let mut trans_lines: Vec<LyricLine> = Vec::new();
     let mut line_index = 0usize;
 
     for line in text.lines() {
@@ -982,25 +1022,59 @@ fn parse_kg_krc_text(raw: &str) -> Vec<LyricLine> {
         let Some((start_str, dur_str)) = head.split_once(',') else {
             continue;
         };
-        let (Ok(start_ms), Ok(_)) = (start_str.parse::<u64>(), dur_str.parse::<u64>()) else {
+        let (Ok(start_ms), Ok(dur_ms)) = (start_str.parse::<u64>(), dur_str.parse::<u64>()) else {
             continue;
         };
-        let time_tag = format_ms(start_ms, true);
-        let cleaned = decode_html(strip_krc_word_tags(body).trim());
-        primary_lines.push(format!("{time_tag}{}", cleaned.trim()));
+        let start_secs = start_ms as f32 / 1000.0;
+        let dur_secs = if dur_ms > 0 {
+            dur_ms as f32 / 1000.0
+        } else {
+            100.0
+        };
+        let (cleaned, words) = parse_krc_words(body, start_ms);
+        if !cleaned.is_empty() {
+            primary_lines.push(LyricLine {
+                time: start_secs,
+                duration: dur_secs,
+                text: cleaned,
+                words,
+            });
+        }
         if let Some(rows) = &trans_rows
             && let Some(parts) = rows.get(line_index)
         {
             let joined = decode_html(&parts.concat());
             let trimmed = joined.trim();
             if !trimmed.is_empty() {
-                trans_lines.push(format!("{time_tag}{trimmed}"));
+                trans_lines.push(LyricLine {
+                    time: start_secs,
+                    duration: dur_secs,
+                    text: trimmed.to_owned(),
+                    words: Vec::new(),
+                });
             }
         }
         line_index += 1;
     }
 
-    combine_lyrics(&primary_lines.join("\n"), &trans_lines.join("\n"))
+    if primary_lines.is_empty() {
+        return Vec::new();
+    }
+    merge_timed_and_translations(primary_lines, trans_lines)
+}
+
+fn merge_timed_and_translations(
+    mut primary: Vec<LyricLine>,
+    translations: Vec<LyricLine>,
+) -> Vec<LyricLine> {
+    primary.extend(translations);
+    primary.sort_by(|a, b| a.time.total_cmp(&b.time));
+    for i in 1..primary.len() {
+        if primary[i - 1].words.is_empty() {
+            primary[i - 1].duration = primary[i].time - primary[i - 1].time;
+        }
+    }
+    primary
 }
 
 async fn download_kg_lyric(
@@ -1275,50 +1349,102 @@ fn parse_wy_header_info(raw: &str) -> Vec<String> {
         .collect()
 }
 
-fn strip_yrc_word_tags(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
+fn parse_yrc_words(body: &str) -> (String, Vec<LyricWord>) {
+    let mut plain = String::with_capacity(body.len());
+    let mut words = Vec::new();
+    let mut cur_timing: Option<(u64, u64)> = None;
+    let mut cur_text = String::new();
+    let mut rest = body;
+
     while let Some(start) = rest.find('(') {
-        out.push_str(&rest[..start]);
+        let before = &rest[..start];
         let after = &rest[start + 1..];
         if let Some(end) = after.find(')') {
             let tag = &after[..end];
             let mut parts = tag.split(',');
-            let valid = parts.next().is_some_and(|p| p.parse::<u64>().is_ok())
-                && parts.next().is_some_and(|p| p.parse::<u64>().is_ok())
-                && parts.next().is_some_and(|p| p.parse::<u64>().is_ok())
-                && parts.next().is_none();
-            if valid {
+            if let (Some(st), Some(dur), Some(third), None) =
+                (parts.next(), parts.next(), parts.next(), parts.next())
+                && let (Ok(st_ms), Ok(dur_ms), Ok(_)) =
+                    (st.parse::<u64>(), dur.parse::<u64>(), third.parse::<u64>())
+            {
+                if !before.is_empty() {
+                    plain.push_str(before);
+                    cur_text.push_str(before);
+                }
+                if let Some((w_start, w_dur)) = cur_timing.take() {
+                    let seg = std::mem::take(&mut cur_text);
+                    if !seg.is_empty() {
+                        words.push(LyricWord {
+                            time: w_start as f32 / 1000.0,
+                            duration: w_dur as f32 / 1000.0,
+                            text: seg,
+                        });
+                    }
+                } else {
+                    cur_text.clear();
+                }
+                cur_timing = Some((st_ms, dur_ms));
                 rest = &after[end + 1..];
                 continue;
             }
         }
-        out.push('(');
+        plain.push_str(before);
+        plain.push('(');
+        cur_text.push_str(before);
+        cur_text.push('(');
         rest = after;
     }
-    out.push_str(rest);
-    out
+
+    if !rest.is_empty() {
+        plain.push_str(rest);
+        cur_text.push_str(rest);
+    }
+    if let Some((w_start, w_dur)) = cur_timing
+        && !cur_text.is_empty()
+    {
+        words.push(LyricWord {
+            time: w_start as f32 / 1000.0,
+            duration: w_dur as f32 / 1000.0,
+            text: cur_text,
+        });
+    }
+    (plain.trim().to_owned(), words)
 }
 
-fn parse_yrc_lines(lines: &[String]) -> String {
+fn parse_yrc_lines(lines: &[String]) -> Vec<(u64, LyricLine)> {
     lines
         .iter()
         .filter_map(|raw_line| {
             let line = raw_line.trim();
             let (head, body) = line.strip_prefix('[').and_then(|s| s.split_once(']'))?;
             let (start_str, dur_str) = head.split_once(',')?;
-            let (Ok(start_ms), Ok(_)) = (start_str.parse::<u64>(), dur_str.parse::<u64>()) else {
+            let (Ok(start_ms), Ok(dur_ms)) = (start_str.parse::<u64>(), dur_str.parse::<u64>())
+            else {
                 return None;
             };
-            let text = strip_yrc_word_tags(body);
-            Some(format!("{}{}", format_ms(start_ms, true), text.trim()))
+            let (text, words) = parse_yrc_words(body);
+            if text.is_empty() {
+                return None;
+            }
+            Some((
+                start_ms,
+                LyricLine {
+                    time: start_ms as f32 / 1000.0,
+                    duration: if dur_ms > 0 {
+                        dur_ms as f32 / 1000.0
+                    } else {
+                        100.0
+                    },
+                    text,
+                    words,
+                },
+            ))
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect()
 }
 
-fn align_translation_time_tags(primary_lrc: &str, trans_lrc: &str) -> String {
-    let mut primary_lines: std::collections::VecDeque<&str> = primary_lrc.lines().collect();
+fn align_translation_to_yrc(primary_ms: &[u64], trans_lrc: &str) -> Vec<LyricLine> {
+    let mut primary_queue: std::collections::VecDeque<u64> = primary_ms.iter().copied().collect();
     let mut aligned = Vec::new();
     let mut skipped = Vec::new();
 
@@ -1333,24 +1459,23 @@ fn align_translation_time_tags(primary_lrc: &str, trans_lrc: &str) -> String {
         let Some(t1) = parse_time_ms(trans_stamp) else {
             continue;
         };
-        while let Some(candidate) = primary_lines.pop_front() {
-            let Some((primary_stamp, _)) = split_bracket_timestamp(candidate.trim()) else {
-                continue;
-            };
-            let Some(t2) = parse_time_ms(primary_stamp) else {
-                continue;
-            };
+        while let Some(t2) = primary_queue.pop_front() {
             if t1.abs_diff(t2) < 100 {
-                aligned.push(format!("[{primary_stamp}]{words}"));
+                aligned.push(LyricLine {
+                    time: t2 as f32 / 1000.0,
+                    duration: 100.0,
+                    text: words.to_owned(),
+                    words: Vec::new(),
+                });
                 break;
             }
-            skipped.push(candidate);
+            skipped.push(t2);
         }
         while let Some(item) = skipped.pop() {
-            primary_lines.push_front(item);
+            primary_queue.push_front(item);
         }
     }
-    aligned.join("\n")
+    aligned
 }
 
 fn parse_wy_lyric_response(body: &Value) -> Vec<LyricLine> {
@@ -1362,36 +1487,35 @@ fn parse_wy_lyric_response(body: &Value) -> Vec<LyricLine> {
     if !raw_yrc.is_empty() {
         let lines = parse_wy_header_info(raw_yrc);
         if !lines.is_empty() {
-            let yrc_body = parse_yrc_lines(&lines);
-            let headers = lines
-                .iter()
-                .filter(|line| split_bracket_timestamp(line.trim()).is_some())
-                .cloned()
-                .collect::<Vec<_>>()
-                .join("\n");
-            let combined = [headers.as_str(), yrc_body.as_str()]
-                .into_iter()
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-            if !yrc_body.is_empty() && !parse_lyrics(&combined).is_empty() {
+            let yrc_parsed = parse_yrc_lines(&lines);
+            if !yrc_parsed.is_empty() {
+                let headers = lines
+                    .iter()
+                    .filter(|line| split_bracket_timestamp(line.trim()).is_some())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let mut primary = parse_lyrics(&headers);
+                let primary_ms: Vec<u64> = yrc_parsed.iter().map(|(ms, _)| *ms).collect();
+                primary.extend(yrc_parsed.into_iter().map(|(_, line)| line));
+
                 let trans_source = if !raw_ytlrc.is_empty() {
                     raw_ytlrc
                 } else {
                     raw_tlrc.as_str()
                 };
-                let trans = if !trans_source.is_empty() {
-                    let trans_lines = parse_wy_header_info(trans_source).join("\n");
-                    let aligned = align_translation_time_tags(&yrc_body, &trans_lines);
+                let trans_lines = if !trans_source.is_empty() {
+                    let trans_lrc = parse_wy_header_info(trans_source).join("\n");
+                    let aligned = align_translation_to_yrc(&primary_ms, &trans_lrc);
                     if aligned.is_empty() {
-                        trans_lines
+                        parse_lyrics(&trans_lrc)
                     } else {
                         aligned
                     }
                 } else {
-                    String::new()
+                    Vec::new()
                 };
-                return combine_lyrics(&combined, &trans);
+                return merge_timed_and_translations(primary, trans_lines);
             }
         }
     }
@@ -1865,6 +1989,16 @@ mod tests {
                 (2.88, "那该有多好"),
             ]
         );
+        assert_eq!(details.lyrics[0].words.len(), 2);
+        assert_eq!(
+            (details.lyrics[0].words[0].text.as_str(), details.lyrics[0].words[0].time),
+            ("夢", 1.54)
+        );
+        assert!((details.lyrics[0].words[0].duration - 0.5).abs() < 1e-4);
+        assert_eq!(
+            (details.lyrics[0].words[1].text.as_str(), details.lyrics[0].words[1].time),
+            ("ならば", 2.04)
+        );
     }
 
     #[test]
@@ -1988,6 +2122,13 @@ mod tests {
             wy_lines,
             vec![(0.0, "作曲: 米津玄師"), (1.54, "夢ならば"), (1.54, "如果只是一场梦")]
         );
+        assert_eq!(wy_details.lyrics[1].words.len(), 2);
+        assert_eq!(
+            (wy_details.lyrics[1].words[0].text.as_str(), wy_details.lyrics[1].words[0].time),
+            ("夢", 1.54)
+        );
+        assert!((wy_details.lyrics[1].words[1].time - 2.04).abs() < 1e-4);
+        assert!((wy_details.lyrics[1].words[1].duration - 0.84).abs() < 1e-4);
 
         // 3. Migu (mg): resourceinfo fallback resolves both albumImgs cover and lrcUrl/trcUrl.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

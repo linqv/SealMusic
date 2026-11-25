@@ -1,4 +1,6 @@
 use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::sync::Arc;
 
 use image::{DynamicImage, GenericImageView, RgbaImage};
 use lofty::{
@@ -16,6 +18,8 @@ use super::{
 };
 
 const MAX_COVER_DIMENSION: u32 = 512;
+const AMBIENT_COVER_DIMENSION: u32 = 64;
+const AMBIENT_BLUR_SIGMA: f32 = 7.0;
 const PALETTE_COVER_DIMENSION: u32 = 384;
 const PALETTE_QUALITY: u8 = 5;
 #[cfg(target_os = "linux")]
@@ -56,17 +60,48 @@ impl CoverPalette {
 #[cfg(target_os = "linux")]
 #[derive(Clone)]
 pub struct RawCover {
-    pub bytes: Vec<u8>,
+    pub bytes: Arc<[u8]>,
     pub extension: &'static str,
+}
+
+#[derive(Clone)]
+pub struct CoverImage {
+    pub pixels: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
+}
+
+impl From<RgbaImage> for CoverImage {
+    fn from(image: RgbaImage) -> Self {
+        Self {
+            pixels: slint::SharedPixelBuffer::clone_from_slice(
+                image.as_raw(),
+                image.width(),
+                image.height(),
+            ),
+        }
+    }
+}
+
+impl CoverImage {
+    #[cfg(any(target_os = "linux", test))]
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.pixels.width(), self.pixels.height())
+    }
 }
 
 #[derive(Clone, Default)]
 pub struct TrackDetails {
-    pub cover: Option<RgbaImage>,
+    pub cover: Option<CoverImage>,
+    pub ambient: Option<CoverImage>,
     pub palette: Option<CoverPalette>,
     #[cfg(target_os = "linux")]
     pub raw_cover: Option<RawCover>,
     pub lyrics: Vec<LyricLine>,
+}
+
+pub(crate) struct DecodedCover {
+    pub cover: CoverImage,
+    pub ambient: CoverImage,
+    pub palette: Option<CoverPalette>,
 }
 
 // GdkPixbuf's nearest-neighbor scaler starts at half a step and uses 16.16 coordinates.
@@ -143,7 +178,7 @@ pub(crate) fn extract_palette(img: &DynamicImage) -> Option<CoverPalette> {
     })
 }
 
-pub(crate) fn decode_cover(bytes: &[u8]) -> Option<(RgbaImage, Option<CoverPalette>)> {
+pub(crate) fn decode_cover_full(bytes: &[u8]) -> Option<DecodedCover> {
     let mut reader =
         image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
     let mut limits = image::Limits::default();
@@ -153,11 +188,37 @@ pub(crate) fn decode_cover(bytes: &[u8]) -> Option<(RgbaImage, Option<CoverPalet
     reader.limits(limits);
     let img = reader.decode().ok()?;
     let palette = extract_palette(&img);
-    Some((resize_cover(img), palette))
+    let ambient = make_ambient_cover(&img);
+    Some(DecodedCover {
+        cover: resize_cover(img).into(),
+        ambient,
+        palette,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn decode_cover(bytes: &[u8]) -> Option<(CoverImage, Option<CoverPalette>)> {
+    decode_cover_full(bytes).map(|decoded| (decoded.cover, decoded.palette))
+}
+
+fn make_ambient_cover(img: &DynamicImage) -> CoverImage {
+    let tiny = img
+        .resize_exact(
+            AMBIENT_COVER_DIMENSION,
+            AMBIENT_COVER_DIMENSION,
+            image::imageops::FilterType::Triangle,
+        )
+        .into_rgba8();
+    image::imageops::blur(&tiny, AMBIENT_BLUR_SIGMA).into()
 }
 
 fn resize_cover(img: DynamicImage) -> RgbaImage {
-    let resized = if img.width() > MAX_COVER_DIMENSION || img.height() > MAX_COVER_DIMENSION {
+    let longest = img.width().max(img.height());
+    let resized = if longest >= 2 * MAX_COVER_DIMENSION {
+        // Large reductions can average directly into the destination, without a
+        // full-width floating-point intermediate. Keep Triangle for small reductions.
+        img.thumbnail(MAX_COVER_DIMENSION, MAX_COVER_DIMENSION)
+    } else if longest > MAX_COVER_DIMENSION {
         img.resize(MAX_COVER_DIMENSION, MAX_COVER_DIMENSION, image::imageops::FilterType::Triangle)
     } else {
         img
@@ -182,9 +243,11 @@ fn extract_details(tagged: Option<&lofty::file::TaggedFile>, path: Option<&Path>
     let picture = tag.and_then(|tag| {
         tag.get_picture_type(PictureType::CoverFront).or_else(|| tag.pictures().first())
     });
-    let (cover, palette) = picture
-        .and_then(|pic| decode_cover(pic.data()))
-        .map_or((None, None), |(cover, palette)| (Some(cover), palette));
+    let (cover, ambient, palette) = picture
+        .and_then(|pic| decode_cover_full(pic.data()))
+        .map_or((None, None, None), |decoded| {
+            (Some(decoded.cover), Some(decoded.ambient), decoded.palette)
+        });
     #[cfg(target_os = "linux")]
     let raw_cover = picture.and_then(|pic| {
         if cover.is_none() || pic.data().len() > MAX_RAW_COVER_BYTES {
@@ -192,7 +255,7 @@ fn extract_details(tagged: Option<&lofty::file::TaggedFile>, path: Option<&Path>
         }
         let extension = raw_cover_extension(pic.mime_type())?;
         Some(RawCover {
-            bytes: pic.data().to_vec(),
+            bytes: Arc::from(pic.data()),
             extension,
         })
     });
@@ -205,6 +268,7 @@ fn extract_details(tagged: Option<&lofty::file::TaggedFile>, path: Option<&Path>
     };
     TrackDetails {
         cover,
+        ambient,
         palette,
         #[cfg(target_os = "linux")]
         raw_cover,

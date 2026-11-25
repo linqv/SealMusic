@@ -496,37 +496,67 @@ msgctxt "ControlPanel"
 msgid "Open lyrics and play queue"
 msgstr ""
 
+#: ui/lyrics_panel.slint:145
+msgctxt "AtmosphericVolumeBar"
+msgid "Mute"
+msgstr ""
+
+#: ui/lyrics_panel.slint:145
+msgctxt "AtmosphericVolumeBar"
+msgid "Unmute"
+msgstr ""
+
 #: ui/lyrics_panel.slint:174
+msgctxt "AtmosphericVolumeBar"
+msgid "Volume"
+msgstr ""
+
+#: ui/lyrics_panel.slint:271
+msgctxt "AtmosphericVolumeBar"
+msgid "Max volume"
+msgstr ""
+
+#: ui/lyrics_panel.slint:669
 msgctxt "NowPlaying"
 msgid "Close now playing"
 msgstr ""
 
-#: ui/lyrics_panel.slint:225
+#: ui/lyrics_panel.slint:768
 msgctxt "NowPlaying"
 msgid "No track selected"
 msgstr ""
 
-#: ui/lyrics_panel.slint:296
+#: ui/lyrics_panel.slint:793
 msgctxt "NowPlaying"
-msgid "Volume"
+msgid "Add to collection"
 msgstr ""
 
-#: ui/lyrics_panel.slint:311
+#: ui/lyrics_panel.slint:843
+msgctxt "NowPlaying"
+msgid "Show total duration"
+msgstr ""
+
+#: ui/lyrics_panel.slint:843
+msgctxt "NowPlaying"
+msgid "Show remaining time"
+msgstr ""
+
+#: ui/lyrics_panel.slint:709
 msgctxt "NowPlaying"
 msgid "Lyrics"
 msgstr ""
 
-#: ui/lyrics_panel.slint:317
+#: ui/lyrics_panel.slint:715
 msgctxt "NowPlaying"
 msgid "Play queue"
 msgstr ""
 
-#: ui/lyrics_panel.slint:377
+#: ui/lyrics_panel.slint:924
 msgctxt "NowPlaying"
 msgid "The play queue is empty"
 msgstr ""
 
-#: ui/lyrics_panel.slint:377
+#: ui/lyrics_panel.slint:924
 msgctxt "NowPlaying"
 msgid "No lyrics available"
 msgstr ""

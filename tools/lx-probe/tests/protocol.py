@@ -109,7 +109,7 @@ class Protocol(unittest.TestCase):
         request_file = Path(self.tmp.name) / 'requests.json'
         request_file.write_text(json.dumps(requests))
         if reference:
-            cmd = ['xvfb-run', '-a', CONFIG.electron, '--ozone-platform=x11',
+            cmd = [CONFIG.electron, '--ozone-platform=wayland',
                    '--user-data-dir=' + self.tmp.name, str(ROOT / 'tests/lx-reference.cjs'),
                    '--full-url', CONFIG.lx_archive]
         else:
