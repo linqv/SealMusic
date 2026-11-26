@@ -253,29 +253,11 @@ export component MainWindow inherits Window {
         background: Theme.panel;
         clip: true;
 
-        loading-strip := Rectangle {
+        content-pane := FocusScope {
             x: 0px;
             y: 0px;
             width: 100%;
-            height: OnlineGlobal.loading == "" ? 0px : 28px;
-            clip: true;
-            background: Theme.panel;
-            Text {
-                x: 12px;
-                width: parent.width - 60px;
-                text: OnlineGlobal.loading-paused
-                    ? @tr("Loading {} (paused)", OnlineGlobal.loading)
-                    : @tr("Loading {}", OnlineGlobal.loading);
-                color: Theme.text-secondary;
-                overflow: elide;
-            }
-        }
-
-        content-pane := FocusScope {
-            x: 0px;
-            y: loading-strip.height;
-            width: 100%;
-            height: root.height - self.y;
+            height: 100%;
 
             Rectangle {
                 x: 0px;
@@ -383,6 +365,8 @@ export component MainWindow inherits Window {
                         }
 
                         ControlPanel {
+                            buffering-status: OnlineGlobal.buffering-status;
+                            buffering-track: OnlineGlobal.loading;
                             can-seek: PlaybackGlobal.can-seek;
                             progress: PlaybackGlobal.progress;
                             progress-secs: PlaybackGlobal.progress_secs;
@@ -429,6 +413,8 @@ export component MainWindow inherits Window {
                     active-word-index: DisplayGlobal.active_word_index;
                     active-word-progress: DisplayGlobal.active_word_progress;
                     show-queue <=> root.show-queue;
+                    buffering-status: OnlineGlobal.buffering-status;
+                    buffering-track: OnlineGlobal.loading;
                     can-seek: PlaybackGlobal.can-seek;
                     progress: PlaybackGlobal.progress;
                     progress-secs: PlaybackGlobal.progress_secs;

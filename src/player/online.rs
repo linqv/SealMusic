@@ -586,8 +586,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             }
             Err(err) => {
                 self.online.active_stream.take();
-                self.player.clear();
-                self.state.status = Status::Stopped;
+                self.clear_sink();
                 self.state.input_seekable = false;
                 self.online_failure(err);
                 false
@@ -704,7 +703,17 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                     Ok(prepared) => {
                         (self.publish)(Event::Loading(String::new(), false));
                         let old = self.state.track.clone();
-                        self.commit(p.track.clone(), p.ctx.status, prepared.source, p.ctx.position);
+                        if !p.ctx.finished {
+                            self.queue.reset_empty_tracks();
+                        }
+                        if let Err(error) = self.commit(
+                            p.track.clone(),
+                            p.ctx.status,
+                            prepared.source,
+                            p.ctx.position,
+                        ) {
+                            self.error(error);
+                        }
                         self.online.active_stream = prepared.stream.map(|stream| (id, stream));
                         self.sync_stream();
                         let evicted = if p.track.local_path().is_none() {

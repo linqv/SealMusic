@@ -594,6 +594,8 @@ export component NowPlaying inherits Rectangle {
     in property <float> active-word-progress: 0;
     in-out property <bool> show-queue;
     in property <bool> can-seek;
+    in property <string> buffering-status;
+    in property <string> buffering-track;
     in property <float> progress;
     in property <int> progress-secs;
     in property <float> duration;
@@ -617,11 +619,19 @@ export component NowPlaying inherits Rectangle {
     pure callback format-duration(float) -> string;
 
     private property <length> gutter: (root.width * 0.055).clamp(36px, 84px);
+    private property <length> bottom-padding: (root.height * 0.055).clamp(20px, 48px);
     private property <length> column-width: min(
         (root.width * 0.27).clamp(216px, 324px),
         (root.height * 0.40).clamp(180px, 300px)
     );
     private property <float> vertical-space: ((root.height - 500px) / 200px).clamp(0, 1);
+    private property <bool> buffering-with-track: root.has-track && root.buffering-status != "";
+    private property <length> title-height: 48px + 8px * root.vertical-space
+        + (root.buffering-with-track ? (root.height >= 600px ? 24px : 20px) : 0px);
+    private property <length> art-size: min(
+        root.column-width,
+        max(160px, root.height - 40px - root.bottom-padding - 182px - 62px * root.vertical-space - root.title-height)
+    );
     private property <length> lyric-font-size: root.height >= 720px ? 32px
         : root.height >= 580px ? 26px : 22px;
     private property <bool> has-track: root.current-song.id != "";
@@ -763,7 +773,7 @@ export component NowPlaying inherits Rectangle {
         height: root.height - self.y;
         padding-left: root.gutter;
         padding-right: (root.gutter * 0.7).clamp(24px, 64px);
-        padding-bottom: (root.height * 0.055).clamp(20px, 48px);
+        padding-bottom: root.bottom-padding;
         spacing: (root.gutter * 0.9).clamp(32px, 76px);
 
         VerticalLayout {
@@ -810,13 +820,13 @@ export component NowPlaying inherits Rectangle {
 
             Rectangle {
                 width: root.column-width;
-                height: root.column-width;
+                height: root.art-size;
 
                 art := Rectangle {
-                    x: 0px;
+                    x: (parent.width - self.width) / 2;
                     y: 0px;
-                    width: parent.width;
-                    height: parent.height;
+                    width: root.art-size;
+                    height: root.art-size;
                     border-radius: 12px;
                     background: Theme.surface;
                     border-width: 1px;
@@ -840,23 +850,29 @@ export component NowPlaying inherits Rectangle {
             Rectangle { height: 14px + 18px * root.vertical-space; }
 
             HorizontalLayout {
-                height: 48px + 8px * root.vertical-space;
+                height: root.title-height;
                 spacing: 4px;
                 VerticalLayout {
                     horizontal-stretch: 1;
                     alignment: center;
                     spacing: 2px;
-                    Text {
+                    if root.has-track || root.buffering-status == "": Text {
                         text: root.has-track ? root.current-song.song_name : @tr("No track selected");
                         font-size: root.height >= 600px ? 22px : 18px;
                         font-weight: 700;
                         color: Theme.text;
                         overflow: elide;
                     }
-                    if root.subtitle != "": Text {
-                        text: root.subtitle;
+                    if root.buffering-status != "" || root.subtitle != "": Text {
+                        text: root.buffering-status != "" ? root.buffering-status : root.subtitle;
                         font-size: 14px;
                         color: Theme.text.with-alpha(0.65);
+                        overflow: elide;
+                    }
+                    if root.buffering-status != "": Text {
+                        text: root.buffering-track;
+                        font-size: 14px;
+                        color: Theme.text;
                         overflow: elide;
                     }
                 }

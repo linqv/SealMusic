@@ -40,6 +40,8 @@ SLINT_BACKEND=winit-software ./target/release/sealmusic
 
 ## Build and package
 
+Linux builds require the ALSA and PipeWire development libraries, `pkg-config`, and `libclang`. Audio follows the system's default output through PipeWire, PulseAudio, or ALSA, in that order. Build with `--no-default-features` to use PulseAudio and ALSA on systems without the PipeWire client library.
+
 Run `cargo run` for development. On Linux, `cargo release --locked` builds `target/release/sealmusic` for the build machine's CPU. Use `cargo build --locked --release` for the default target CPU when distributing the binary across machines. The packaging scripts use cargo-packager and write their output to `target/release`.
 
 | Platform | Commands |

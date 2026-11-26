@@ -142,8 +142,13 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         }
         #[cfg(not(target_os = "linux"))]
         let _ = via_lx;
-        self.load(track, Status::Playing, None, 0, false, false, Duration::ZERO)?;
-        self.switch_queue(source);
-        Ok(())
+        let generation = self.playback_gen;
+        let result = self.load(track, Status::Playing, None, 0, false, false, Duration::ZERO);
+        // A track prepared while the output is unavailable still belongs to its selected queue.
+        if result.is_ok() || self.playback_gen != generation && self.state.status == Status::Paused
+        {
+            self.switch_queue(source);
+        }
+        result
     }
 }

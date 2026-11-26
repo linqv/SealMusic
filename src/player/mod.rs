@@ -1,22 +1,28 @@
+mod audio;
+mod clock;
 mod collections;
 pub mod command;
 mod jobs;
 mod local;
 #[cfg(target_os = "linux")]
 mod online;
+mod output;
 pub mod state;
 
 #[cfg(all(test, target_os = "linux"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     path::PathBuf,
-    sync::{Arc, mpsc},
+    sync::{Arc, Weak, mpsc},
     thread,
     time::{Duration, Instant},
 };
 
-use command::{Inbox, PlayerCommand as Cmd};
+use audio::Playback;
+use clock::AudioClock;
+use command::{Inbox, PlayerCommand as Cmd, Request};
 use jobs::{Completion as MediaDone, MediaJobs};
+use output::Output;
 use rodio::Source;
 use state::{LoopMode, PlaybackEvent as Event, PlaybackState, Queue, SharedState, Status};
 
@@ -24,8 +30,6 @@ use crate::{
     config::Config,
     library::{Track, collections::Collections, metadata, scan},
 };
-
-const POSITION_SYNC_TICKS: u8 = 5;
 
 struct PlayerCore<F> {
     cfg: Config,
@@ -39,9 +43,10 @@ struct PlayerCore<F> {
     online: online::Online,
     query: String,
     pending_seek: Option<Duration>,
-    tick_count: u8,
-    mixer: rodio::mixer::Mixer,
-    player: rodio::Player,
+    tx: Weak<mpsc::Sender<Request>>,
+    playback_gen: u64,
+    output: Output,
+    player: Playback,
     publish: F,
     jobs: MediaJobs,
     scan_id: u64,
@@ -54,19 +59,10 @@ pub fn start(
     cfg: Config,
     shared: SharedState,
     inbox: Inbox,
-    mut publish: impl FnMut(Event) + Send + 'static,
+    publish: impl FnMut(Event) + Send + 'static,
 ) -> thread::JoinHandle<Config> {
     thread::spawn(move || {
-        let mut device = match rodio::DeviceSinkBuilder::open_default_sink() {
-            Ok(d) => d,
-            Err(e) => {
-                publish(Event::Error(format!("Audio output: {e}")));
-                return cfg;
-            }
-        };
-        device.log_on_drop(false);
-        let mixer = device.mixer().clone();
-        run_worker(cfg, Collections::load(), shared, inbox, mixer, publish)
+        run_worker(cfg, Collections::load(), shared, inbox, Output::default(), publish)
     })
 }
 
@@ -90,7 +86,14 @@ pub(crate) fn spawn_test_worker(
                 thread::sleep(Duration::from_millis(10));
             }
         });
-        let cfg = run_worker(cfg, Collections::default(), shared, inbox, mixer, publish);
+        let cfg = run_worker(
+            cfg,
+            Collections::default(),
+            shared,
+            inbox,
+            Output::simulated(mixer),
+            publish,
+        );
         running.store(false, Ordering::Relaxed);
         let _ = audio.join();
         cfg
@@ -102,7 +105,7 @@ fn run_worker(
     collections: Collections,
     shared: SharedState,
     inbox: Inbox,
-    mixer: rodio::mixer::Mixer,
+    output: Output,
     publish: impl FnMut(Event) + Send + 'static,
 ) -> Config {
     if collections.get(cfg.selected_collection).is_none() {
@@ -110,8 +113,6 @@ fn run_worker(
     }
     cfg.playing_collection =
         cfg.playing_collection.filter(|&index| collections.get(index).is_some());
-    let player = rodio::Player::connect_new(&mixer);
-    player.set_volume(cfg.volume);
     let state = PlaybackState {
         volume: cfg.volume,
         loop_mode: cfg.loop_mode,
@@ -130,9 +131,10 @@ fn run_worker(
         online: online::Online::new(inbox.sender.clone()),
         query: String::new(),
         pending_seek: None,
-        tick_count: 0,
-        mixer,
-        player,
+        tx: inbox.sender.clone(),
+        playback_gen: 0,
+        output,
+        player: Playback::default(),
         publish,
         jobs: MediaJobs::new(inbox.sender),
         scan_id: 0,
@@ -146,37 +148,22 @@ fn run_worker(
     core.script_event();
     core.broadcast();
     let rx = inbox.rx;
-    loop {
-        let request = if core.state.status == Status::Playing {
-            match rx.recv_timeout(Duration::from_millis(200)) {
-                Ok(r) => r,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    core.tick();
-                    continue;
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        } else {
-            match rx.recv() {
-                Ok(r) => r,
-                Err(_) => break,
-            }
-        };
+    while let Ok(request) = rx.recv() {
         if matches!(request.command, Cmd::Shutdown) {
             break;
         }
         let result = core.handle(request.command);
         if let Err(e) = &result {
+            core.broadcast();
             core.error(e.clone());
         }
         #[cfg(target_os = "linux")]
         if let Some(reply) = request.reply {
             let _ = reply.send(result);
         }
-        if core.state.status == Status::Playing && core.player.empty() {
-            core.tick();
-        }
     }
+    core.player.pause();
+    core.output.close();
     core.sample_position();
     #[cfg(target_os = "linux")]
     {
@@ -213,42 +200,60 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         log::warn!("{msg}");
         (self.publish)(Event::Error(msg));
     }
-    fn tick(&mut self) {
-        if self.player.empty() {
-            #[cfg(target_os = "linux")]
-            if !self.sync_stream() {
-                self.broadcast();
-                return;
-            }
-            #[cfg(target_os = "linux")]
-            if self.online.loading() {
-                if !self.state.sink_empty {
-                    self.broadcast();
-                }
-                return;
-            }
-            let result = if self.state.loop_mode == LoopMode::Track {
-                match self.state.track.clone() {
-                    Some(t) => self.load(t, Status::Playing, None, 0, false, true, Duration::ZERO),
-                    None => Ok(()),
-                }
-            } else {
-                self.navigate(true, true)
-            };
-            if let Err(e) = result {
-                self.stop();
-                self.error(e);
-            }
-            self.broadcast();
-        } else {
-            self.tick_count = (self.tick_count + 1) % POSITION_SYNC_TICKS;
-            if self.tick_count == 0 || !self.state.input_seekable {
-                self.sample_position();
-                let mut shared = self.shared.write().unwrap();
-                shared.position = self.state.position;
-                shared.sampled_at = self.state.sampled_at;
-            }
+    fn on_track_ended(&mut self, generation: u64, had_samples: bool) {
+        if generation != self.playback_gen {
+            return;
         }
+        if self.state.status != Status::Playing {
+            if self.state.status == Status::Paused && !self.state.sink_empty && self.player.empty()
+            {
+                self.broadcast();
+            }
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        if !self.sync_stream() {
+            self.broadcast();
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        if self.online.loading() {
+            self.output.close();
+            if !self.state.sink_empty {
+                self.broadcast();
+            }
+            return;
+        }
+        if had_samples {
+            self.queue.reset_empty_tracks();
+        } else if let Some(track) = &self.state.track
+            && (self.state.loop_mode == LoopMode::Track || self.queue.record_empty_track(&track.id))
+        {
+            let title = track.title.clone();
+            self.stop();
+            self.error(format!("Audio stream produced no samples: {title}"));
+            self.broadcast();
+            return;
+        }
+        let result = if self.state.loop_mode == LoopMode::Track {
+            match self.state.track.clone() {
+                Some(t) => self.load(t, Status::Playing, None, 0, false, true, Duration::ZERO),
+                None => Ok(()),
+            }
+        } else {
+            self.navigate(true, true)
+        };
+        if let Err(e) = result {
+            self.error(e);
+        }
+        #[cfg(target_os = "linux")]
+        if self.online.loading() && self.player.empty() {
+            self.output.close();
+        }
+        self.broadcast();
+    }
+    fn measured_position(&self) -> Duration {
+        self.state.clock.as_ref().map_or(self.state.position, |clock| clock.position())
     }
     fn sample_position(&mut self) {
         if self.state.deferred {
@@ -258,15 +263,17 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             Duration::ZERO
         } else if self.player.empty() && !self.state.duration.is_zero() {
             self.state.duration
-        } else if self.state.duration.is_zero() {
-            self.player.get_pos().max(self.state.position)
         } else {
-            self.player.get_pos().min(self.state.duration)
+            let pos = self.measured_position();
+            if self.state.duration.is_zero() {
+                pos.max(self.state.position)
+            } else {
+                pos.min(self.state.duration)
+            }
         };
         self.state.sampled_at = Instant::now();
     }
     fn broadcast(&mut self) {
-        self.tick_count = 0;
         self.state.sink_empty = self.player.empty();
         self.sample_position();
         let current = self.state.track.as_ref().map(|t| &t.id);
@@ -348,8 +355,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         #[cfg(target_os = "linux")]
         self.online.active_stream.take();
         self.state.deferred = false;
-        self.player.clear();
-        self.state.status = Status::Stopped;
+        self.clear_sink();
         self.state.track = None;
         self.state.duration = Duration::ZERO;
         self.pending_seek = None;
@@ -678,9 +684,12 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             }
         };
         let old = self.state.track.clone();
-        self.commit(t.clone(), status, source, position);
+        if !finished {
+            self.queue.reset_empty_tracks();
+        }
+        let result = self.commit(t.clone(), status, source, position);
         self.queue.record_navigation(old, &t.id, direction, history_skip, from_history);
-        Ok(())
+        result
     }
 
     fn commit(
@@ -689,24 +698,22 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         status: Status,
         source: impl Source + Send + 'static,
         position: Duration,
-    ) {
+    ) -> Result<(), String> {
         let duration = source.total_duration().unwrap_or(t.duration);
         let changed = self.state.track.as_ref().is_none_or(|old| old.id != t.id);
         let was_deferred = self.state.deferred;
-        // A new sink starts at position zero, including while paused or stopped.
-        let next = rodio::Player::connect_new(&self.mixer);
-        next.pause();
-        next.set_volume(self.state.volume);
+        self.playback_gen = self.playback_gen.wrapping_add(1);
+        let clock = Arc::new(AudioClock::new(Duration::ZERO));
         #[cfg(target_os = "linux")]
         self.online.active_stream.take();
-        next.append(source);
+        self.player.prepare(source, clock.clone(), self.state.volume);
         if !position.is_zero() {
             let position = if duration.is_zero() {
                 position
             } else {
                 position.min(duration)
             };
-            if let Err(e) = next.try_seek(position) {
+            if let Err(e) = self.player.try_seek(position) {
                 log::warn!("Restoring position for '{}': {e}", t.title);
                 if !changed && self.state.status != Status::Stopped {
                     self.pending_seek = Some(Duration::ZERO);
@@ -717,20 +724,99 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         } else if !changed && self.state.status != Status::Stopped {
             self.pending_seek = Some(Duration::ZERO);
         }
-        self.player = next;
-        self.state.position = Duration::ZERO;
+        self.state.position = clock.position();
         self.state.sampled_at = Instant::now();
+        self.state.clock = Some(clock);
         self.state.input_seekable = true;
         self.state.deferred = false;
         self.state.duration = duration;
         self.state.track = Some(t.clone());
-        self.state.status = status;
-        if status == Status::Playing {
-            self.player.play();
-        }
+        self.state.status = if status == Status::Stopped {
+            Status::Stopped
+        } else {
+            Status::Paused
+        };
+        let result = if status == Status::Playing {
+            self.resume_output()
+        } else {
+            self.output.close();
+            Ok(())
+        };
         if changed || was_deferred {
             self.details(&t, changed);
         }
+        result
+    }
+    fn attach_output(&mut self) -> Result<(), String> {
+        let format = self.player.format().ok_or("Audio output: no prepared track")?;
+        let (mixer, drain) = self.output.mixer(format, &self.tx)?;
+        mixer.add(self.player.attach(self.playback_gen, self.tx.clone(), drain));
+        Ok(())
+    }
+    fn resume_output(&mut self) -> Result<(), String> {
+        self.output.reset_retries();
+        if let Err(err) = self.attach_output() {
+            self.pause_output();
+            return Err(err);
+        }
+        self.state.status = Status::Playing;
+        Ok(())
+    }
+    fn pause_output(&mut self) {
+        self.player.pause();
+        self.output.close();
+        self.state.status = Status::Paused;
+    }
+    fn output_error(&mut self, generation: u64, error: rodio::CpalError) {
+        if generation != self.output.generation() || !self.output.is_open() {
+            return;
+        }
+        if !output::needs_recovery(&error) {
+            log::debug!("Audio output: {error}");
+            return;
+        }
+        log::warn!("Audio output lost: {error}");
+        self.player.pause();
+        self.output.stream_failed(error.kind());
+        self.schedule_output_retry(format!("Audio output: {error}"));
+    }
+    fn schedule_output_retry(&mut self, error: String) {
+        let Some(delay) = self.output.next_retry() else {
+            self.pause_output();
+            self.error(error);
+            self.broadcast();
+            return;
+        };
+        let generation = self.output.generation();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            thread::sleep(delay);
+            if let Some(tx) = tx.upgrade() {
+                let _ = tx.send(Request {
+                    command: Cmd::RetryOutput {
+                        generation,
+                    },
+                    #[cfg(target_os = "linux")]
+                    reply: None,
+                });
+            }
+        });
+    }
+    fn retry_output(&mut self, generation: u64) {
+        if generation != self.output.generation() || self.state.status != Status::Playing {
+            return;
+        }
+        if let Err(error) = self.attach_output() {
+            self.schedule_output_retry(error);
+        }
+    }
+    pub(super) fn clear_sink(&mut self) {
+        self.playback_gen = self.playback_gen.wrapping_add(1);
+        self.queue.reset_empty_tracks();
+        self.state.clock = None;
+        self.player.clear();
+        self.output.close();
+        self.state.status = Status::Stopped;
     }
     fn stop(&mut self) {
         #[cfg(target_os = "linux")]
@@ -739,8 +825,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             self.online.active_stream.take();
         }
         self.state.deferred = false;
-        self.player.clear();
-        self.state.status = Status::Stopped;
+        self.clear_sink();
     }
     pub(super) fn stop_if_drained(&mut self) {
         #[cfg(target_os = "linux")]
@@ -755,13 +840,12 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         #[cfg(target_os = "linux")]
         if let Some((label, resume_current)) = self.online.resume_pending() {
             (self.publish)(Event::Loading(label, false));
-            if resume_current && !self.player.empty() {
-                self.player.play();
-                self.state.status = Status::Playing;
+            if resume_current && !self.player.empty() && !self.output.is_open() {
+                self.resume_output()?;
             }
             return Ok(());
         }
-        if self.state.status == Status::Playing {
+        if self.state.status == Status::Playing && self.output.is_open() {
             return Ok(());
         }
         if self.player.empty() {
@@ -777,8 +861,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                 self.load(t, Status::Playing, None, 0, false, false, Duration::ZERO)?;
             }
         } else {
-            self.player.play();
-            self.state.status = Status::Playing;
+            self.resume_output()?;
         }
         Ok(())
     }
@@ -804,6 +887,10 @@ impl<F: FnMut(Event)> PlayerCore<F> {
     }
     fn seek(&mut self, pos: Duration) -> Result<(), String> {
         self.player.try_seek(pos).map_err(|e| format!("Seeking: {e}"))?;
+        self.playback_gen = self.playback_gen.wrapping_add(1);
+        if self.state.status == Status::Playing && self.output.is_open() {
+            self.attach_output()?;
+        }
         self.pending_seek = Some(pos);
         Ok(())
     }
@@ -844,8 +931,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                     (self.publish)(Event::Loading(label, true));
                 }
                 if self.state.status == Status::Playing {
-                    self.player.pause();
-                    self.state.status = Status::Paused;
+                    self.pause_output();
                 }
             }
             Cmd::Stop => self.stop(),
@@ -901,7 +987,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                 self.state.sink_empty = self.player.empty();
                 if self.state.can_seek() {
                     let delta = Duration::from_micros(offset.unsigned_abs());
-                    let now = self.player.get_pos();
+                    let now = self.measured_position();
                     let pos = if offset < 0 {
                         now.saturating_sub(delta)
                     } else {
@@ -933,6 +1019,26 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             }
             Cmd::MediaDone(done) => {
                 self.complete_media(done);
+                return Ok(());
+            }
+            Cmd::TrackEnded {
+                generation,
+                had_samples,
+            } => {
+                self.on_track_ended(generation, had_samples);
+                return Ok(());
+            }
+            Cmd::OutputError {
+                generation,
+                error,
+            } => {
+                self.output_error(generation, error);
+                return Ok(());
+            }
+            Cmd::RetryOutput {
+                generation,
+            } => {
+                self.retry_output(generation);
                 return Ok(());
             }
             Cmd::Sort(key, asc) => {
@@ -1082,7 +1188,6 @@ mod tests {
 
             let (mixer, mut output) =
                 rodio::mixer::mixer(1.try_into().unwrap(), 8000.try_into().unwrap());
-            let player = rodio::Player::connect_new(&mixer);
             let running = Arc::new(AtomicBool::new(true));
             let active = running.clone();
             let audio = thread::spawn(move || {
@@ -1110,9 +1215,10 @@ mod tests {
                 online: online::Online::new(Default::default()),
                 query: String::new(),
                 pending_seek: None,
-                tick_count: 0,
-                mixer,
-                player,
+                tx: inbox.sender.clone(),
+                playback_gen: 0,
+                output: Output::simulated(mixer),
+                player: Playback::default(),
                 publish,
                 jobs: MediaJobs::new(inbox.sender),
                 scan_id: 0,
@@ -1133,6 +1239,12 @@ mod tests {
                 audio: Some(audio),
             }
         }
+        fn finish_track(&mut self) {
+            let generation = self.core.playback_gen;
+            self.core.player.clear();
+            self.core.on_track_ended(generation, true);
+        }
+
         fn finish_media(&mut self) -> bool {
             let request = self.media_rx.recv_timeout(Duration::from_secs(5)).unwrap();
             let scan = matches!(&request.command, Cmd::MediaDone(MediaDone::Scan(request, _)) if request.id == self.core.scan_id);
@@ -1286,26 +1398,93 @@ mod tests {
     }
 
     #[test]
+    fn playback_opens_output_on_demand_and_can_retry_after_open_failure() {
+        let mut h = TestHarness::new(2);
+        let track = h.tracks[0].clone();
+        h.core.reset_and_restore_local(false).unwrap();
+        assert!(!h.core.output.is_open());
+        assert_eq!(h.core.state.track.as_ref(), Some(&track));
+
+        h.core.output.fail_open = true;
+        assert!(h.core.handle(Cmd::Play).is_err());
+        assert_eq!(h.core.state.status, Status::Paused);
+        assert_eq!(h.core.state.track.as_ref(), Some(&track));
+        assert!(!h.core.output.is_open());
+
+        let position = Duration::from_millis(500);
+        h.core.handle(Cmd::SeekTo(Some(track.id.clone()), position)).unwrap();
+        assert_eq!(h.core.state.position, position);
+        assert!(!h.core.output.is_open());
+
+        h.core.output.fail_open = false;
+        h.core.handle(Cmd::Play).unwrap();
+        assert!(h.core.output.is_open());
+        assert!(h.core.state.position >= position);
+        h.core.handle(Cmd::Pause).unwrap();
+        assert!(!h.core.output.is_open());
+        h.core.handle(Cmd::Play).unwrap();
+        assert!(h.core.output.is_open());
+        h.core.handle(Cmd::Stop).unwrap();
+        assert!(!h.core.output.is_open());
+        assert_eq!(h.core.state.position, Duration::ZERO);
+    }
+
+    #[test]
+    fn output_recovery_preserves_track_and_obeys_pause_and_retry_limit() {
+        use rodio::{CpalError, CpalErrorKind};
+
+        let mut h = TestHarness::new(2);
+        h.core.handle(Cmd::Play).unwrap();
+        let track = h.core.state.track.clone();
+        let track_generation = h.core.playback_gen;
+        let output_generation = h.core.output.generation();
+        let unavailable = || CpalError::with_message(CpalErrorKind::DeviceNotAvailable, "test");
+
+        h.core.output_error(
+            output_generation,
+            CpalError::with_message(CpalErrorKind::DeviceChanged, "test"),
+        );
+        assert!(h.core.output.is_open());
+        h.core.output_error(output_generation, unavailable());
+        assert!(!h.core.output.is_open());
+        let recovery_generation = h.core.output.generation();
+        h.core.handle(Cmd::Pause).unwrap();
+        h.core.retry_output(recovery_generation);
+        assert!(!h.core.output.is_open());
+
+        h.core.handle(Cmd::Play).unwrap();
+        for _ in 0..3 {
+            h.core.output_error(h.core.output.generation(), unavailable());
+            assert!(!h.core.output.is_open());
+            h.core.retry_output(h.core.output.generation());
+            assert!(h.core.output.is_open());
+            assert_eq!(h.core.state.track, track);
+            assert_eq!(h.core.playback_gen, track_generation);
+        }
+        h.core.output_error(h.core.output.generation(), unavailable());
+        assert!(!h.core.output.is_open());
+        assert_eq!(h.core.state.status, Status::Paused);
+        assert_eq!(h.core.state.track, track);
+    }
+
+    #[test]
     fn loop_mode_end_of_track_transitions_cover_none_track_and_playlist() {
         let mut h = TestHarness::new(2);
         let (first, second) = (h.tracks[0].clone(), h.tracks[1].clone());
 
         h.core.handle(Cmd::SetLoopMode(LoopMode::None)).unwrap();
         h.core.handle(Cmd::PlayTrack(first.id.clone())).unwrap();
-        h.core.player.clear();
-        h.core.tick();
+        h.finish_track();
         assert_eq!(h.core.state.status, Status::Playing);
         assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&second.id));
 
-        h.core.player.clear();
-        h.core.tick();
+        h.finish_track();
         assert_eq!(h.core.state.status, Status::Stopped);
 
         h.core.handle(Cmd::SetLoopMode(LoopMode::Track)).unwrap();
         h.core.handle(Cmd::PlayTrack(first.id.clone())).unwrap();
         h.events.lock().unwrap().clear();
-        h.core.player.clear();
-        h.core.tick();
+        h.finish_track();
         assert_eq!(h.core.state.status, Status::Playing);
         assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&first.id));
         let has_zero_seek = h
@@ -1318,8 +1497,7 @@ mod tests {
 
         h.core.handle(Cmd::SetLoopMode(LoopMode::Playlist)).unwrap();
         h.core.handle(Cmd::PlayTrack(second.id.clone())).unwrap();
-        h.core.player.clear();
-        h.core.tick();
+        h.finish_track();
         assert_eq!(h.core.state.status, Status::Playing);
         assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&first.id));
     }
@@ -1340,6 +1518,230 @@ mod tests {
 
         h.core.handle(Cmd::SeekRelative(10_000_000)).unwrap();
         assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&second.id));
+    }
+
+    #[test]
+    fn natural_eof_emits_track_ended_after_sink_drains_and_auto_advances() {
+        let mut h = TestHarness::new(2);
+        let (first, second) = (h.tracks[0].clone(), h.tracks[1].clone());
+        let short = rodio::buffer::SamplesBuffer::new(
+            1.try_into().unwrap(),
+            8000.try_into().unwrap(),
+            vec![0.1_f32; 320],
+        );
+        h.core.commit(first, Status::Playing, short, Duration::ZERO).unwrap();
+        let expected_gen = h.core.playback_gen;
+        h.core.broadcast();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let ended = loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "TrackEnded was not delivered on natural EOF");
+            let request = h.media_rx.recv_timeout(remaining).unwrap();
+            if let Cmd::TrackEnded {
+                generation,
+                had_samples,
+            } = request.command
+            {
+                break (generation, had_samples);
+            }
+            h.core.handle(request.command).unwrap();
+        };
+        assert_eq!(ended, (expected_gen, true));
+        assert!(h.core.player.empty());
+
+        h.core
+            .handle(Cmd::TrackEnded {
+                generation: ended.0,
+                had_samples: ended.1,
+            })
+            .unwrap();
+        assert_eq!(h.core.state.status, Status::Playing);
+        assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&second.id));
+    }
+
+    #[test]
+    fn stale_and_paused_track_ended_events_respect_generation_and_pause_state() {
+        let mut h = TestHarness::new(2);
+        let (first, second) = (h.tracks[0].clone(), h.tracks[1].clone());
+
+        h.core.handle(Cmd::PlayTrack(first.id.clone())).unwrap();
+        let old_gen = h.core.playback_gen;
+        h.core.handle(Cmd::PlayTrack(second.id.clone())).unwrap();
+        assert_ne!(h.core.playback_gen, old_gen);
+
+        // Stale TrackEnded from the previous track is ignored without changing state or publishing.
+        h.events.lock().unwrap().clear();
+        h.core
+            .handle(Cmd::TrackEnded {
+                generation: old_gen,
+                had_samples: true,
+            })
+            .unwrap();
+        assert!(h.events.lock().unwrap().is_empty());
+        assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&second.id));
+
+        // TrackEnded arriving while paused updates sink_empty/can_seek without auto-advancing.
+        h.core.handle(Cmd::Pause).unwrap();
+        let paused_gen = h.core.playback_gen;
+        h.core.player.clear();
+        h.core
+            .handle(Cmd::TrackEnded {
+                generation: paused_gen,
+                had_samples: true,
+            })
+            .unwrap();
+        assert_eq!(h.core.state.status, Status::Paused);
+        assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&second.id));
+        assert!(h.core.state.sink_empty);
+        assert!(!h.core.state.can_seek());
+
+        // Pressing Play reloads the drained track cleanly.
+        h.core.handle(Cmd::Play).unwrap();
+        assert_eq!(h.core.state.status, Status::Playing);
+        assert!(!h.core.state.sink_empty);
+    }
+
+    #[test]
+    fn zero_sample_tracks_stop_instead_of_looping_forever() {
+        let mut h = TestHarness::new(2);
+        let (first, second) = (h.tracks[0].clone(), h.tracks[1].clone());
+
+        // LoopMode::Track stops immediately on a 0-sample source.
+        h.core.handle(Cmd::SetLoopMode(LoopMode::Track)).unwrap();
+        let empty = rodio::buffer::SamplesBuffer::new(
+            1.try_into().unwrap(),
+            8000.try_into().unwrap(),
+            Vec::<f32>::new(),
+        );
+        h.core.commit(first.clone(), Status::Playing, empty, Duration::ZERO).unwrap();
+        let gen_track = h.core.playback_gen;
+        h.core.broadcast();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let ended = loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "0-sample TrackEnded was not delivered");
+            let request = h.media_rx.recv_timeout(remaining).unwrap();
+            if let Cmd::TrackEnded {
+                generation,
+                had_samples,
+            } = request.command
+            {
+                break (generation, had_samples);
+            }
+            h.core.handle(request.command).unwrap();
+        };
+        assert_eq!(ended, (gen_track, false));
+        h.events.lock().unwrap().clear();
+        h.core
+            .handle(Cmd::TrackEnded {
+                generation: ended.0,
+                had_samples: ended.1,
+            })
+            .unwrap();
+        assert_eq!(h.core.state.status, Status::Stopped);
+        assert!(h.events.lock().unwrap().iter().any(|ev| matches!(ev, Event::Error(_))));
+
+        // LoopMode::Playlist skips one 0-sample track, then stops if the whole queue yields 0 samples.
+        h.core.handle(Cmd::SetLoopMode(LoopMode::Playlist)).unwrap();
+        h.core.handle(Cmd::PlayTrack(first.id.clone())).unwrap();
+        let gen_first = h.core.playback_gen;
+        h.core.player.clear();
+        h.core.on_track_ended(gen_first, false);
+        assert_eq!(h.core.state.status, Status::Playing);
+        assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&second.id));
+
+        h.events.lock().unwrap().clear();
+        let gen_second = h.core.playback_gen;
+        h.core.player.clear();
+        h.core.on_track_ended(gen_second, false);
+        assert_eq!(h.core.state.status, Status::Stopped);
+        assert!(h.events.lock().unwrap().iter().any(|ev| matches!(ev, Event::Error(_))));
+    }
+
+    #[test]
+    fn empty_tracks_repeated_in_history_do_not_end_the_playlist_early() {
+        let mut h = TestHarness::new(3);
+        let (a, b, c) = (h.tracks[0].clone(), h.tracks[1].clone(), h.tracks[2].clone());
+        h.core.handle(Cmd::SetLoopMode(LoopMode::Playlist)).unwrap();
+        for track in [&a, &b, &a] {
+            h.core.handle(Cmd::PlayTrack(track.id.clone())).unwrap();
+        }
+        h.core.handle(Cmd::Previous).unwrap();
+        h.core.handle(Cmd::Previous).unwrap();
+        assert_eq!(h.core.state.track.as_ref().unwrap().id, a.id);
+
+        for next in [&b, &a, &b, &c] {
+            let generation = h.core.playback_gen;
+            h.core.player.clear();
+            h.core
+                .handle(Cmd::TrackEnded {
+                    generation,
+                    had_samples: false,
+                })
+                .unwrap();
+            assert_eq!(h.core.state.status, Status::Playing);
+            assert_eq!(h.core.state.track.as_ref().unwrap().id, next.id);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn event_driven_worker_advances_on_natural_eof_and_tracks_live_position() {
+        let dir = tempfile::tempdir().unwrap();
+        // Build a 100ms 8kHz mono 16-bit PCM WAV (1600 bytes of samples).
+        let sample_bytes = 1600u32;
+        let mut wav = b"RIFF".to_vec();
+        wav.extend((sample_bytes + 36).to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        wav.extend([1, 0, 1, 0]);
+        wav.extend(8000u32.to_le_bytes());
+        wav.extend(16000u32.to_le_bytes());
+        wav.extend([2, 0, 16, 0]);
+        wav.extend(b"data");
+        wav.extend(sample_bytes.to_le_bytes());
+        wav.resize(44 + sample_bytes as usize, 1);
+        let first_path = dir.path().join("01_short.wav");
+        let second_path = dir.path().join("02_short.wav");
+        std::fs::write(&first_path, &wav).unwrap();
+        std::fs::write(&second_path, &wav).unwrap();
+        let first_id = crate::library::TrackId::local(&first_path);
+        let second_id = crate::library::TrackId::local(&second_path);
+
+        let (controls, inbox) = command::Controls::channel();
+        let shared = SharedState::default();
+        let cfg = Config {
+            song_dir: dir.path().to_path_buf(),
+            loop_mode: LoopMode::None,
+            ..Default::default()
+        };
+        let worker = spawn_test_worker(cfg, shared.clone(), inbox, |_| {});
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while shared.read().unwrap().track.as_ref().map(|t| &t.id) != Some(&first_id) {
+            assert!(Instant::now() < deadline, "Initial track did not load");
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        controls.send(Cmd::Play);
+        let mut saw_progress = false;
+        while shared.read().unwrap().track.as_ref().map(|t| &t.id) != Some(&second_id) {
+            assert!(Instant::now() < deadline, "Worker did not auto-advance to second track");
+            let pos = shared.read().unwrap().position_now();
+            if !pos.is_zero() {
+                saw_progress = true;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(saw_progress, "Expected live AudioClock position to advance during playback");
+
+        while shared.read().unwrap().status != Status::Stopped {
+            assert!(Instant::now() < deadline, "Worker did not stop after final track");
+            thread::sleep(Duration::from_millis(10));
+        }
+        controls.send(Cmd::Shutdown);
+        worker.join().unwrap();
     }
 
     #[cfg(target_os = "linux")]
@@ -1746,8 +2148,7 @@ mod tests {
 
             h.core.handle(Cmd::PlayTrack(local.id.clone())).unwrap();
             h.core.handle(Cmd::PlayLink(wy_link(510, "Pending"))).unwrap();
-            h.core.player.clear();
-            h.core.tick();
+            h.finish_track();
             assert!(h.core.state.sink_empty);
             assert_eq!(h.core.state.status, Status::Playing);
 
@@ -1777,10 +2178,10 @@ mod tests {
             h.core.handle(Cmd::PlayTrack(local.id.clone())).unwrap();
             assert!(h.core.state.can_seek());
 
-            // Simulate natural EOF of local -> tick() starts loading NextOnline.
-            h.core.player.clear();
-            h.core.tick();
+            // Natural EOF of the local track starts loading NextOnline.
+            h.finish_track();
             assert!(h.core.online.pending_id().is_some());
+            assert!(!h.core.output.is_open());
             assert!(h.core.state.sink_empty);
             assert!(!h.core.state.can_seek());
             assert_eq!(h.core.state.position, h.core.state.duration);
@@ -1826,8 +2227,7 @@ mod tests {
             h.core.handle(Cmd::PlayTrack(first.id.clone())).unwrap();
             h.core.handle(Cmd::PlayLink(wy_link(508, "ManualB"))).unwrap();
             let id_b = h.core.online.pending_id().unwrap();
-            h.core.player.clear();
-            h.core.tick();
+            h.finish_track();
             assert_eq!(h.core.online.pending_id(), Some(id_b));
             assert!(h.core.state.sink_empty);
             assert!(!h.core.state.can_seek());
@@ -1845,8 +2245,7 @@ mod tests {
             // Same scenario when user disables the active script after EOF during manual load.
             h.core.handle(Cmd::PlayTrack(first.id.clone())).unwrap();
             h.core.handle(Cmd::PlayLink(wy_link(509, "ManualC"))).unwrap();
-            h.core.player.clear();
-            h.core.tick();
+            h.finish_track();
             h.core.handle(Cmd::EnableScript(false)).unwrap();
             assert!(!h.core.online.loading());
             assert_eq!(h.core.state.status, Status::Stopped);
@@ -1895,8 +2294,7 @@ mod tests {
 
             // LoopMode::Track on EOF re-requests online_a.
             h.core.handle(Cmd::SetLoopMode(LoopMode::Track)).unwrap();
-            h.core.player.clear();
-            h.core.tick();
+            h.finish_track();
             assert_eq!(h.core.online.nav_context(true).0.map(|t| &t.id), Some(&online_a.id));
         }
 

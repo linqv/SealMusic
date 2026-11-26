@@ -33,6 +33,17 @@ pub enum PlayerCommand {
     Search(String),
     ReloadDetails,
     MediaDone(super::jobs::Completion),
+    TrackEnded {
+        generation: u64,
+        had_samples: bool,
+    },
+    OutputError {
+        generation: u64,
+        error: rodio::CpalError,
+    },
+    RetryOutput {
+        generation: u64,
+    },
     #[cfg(target_os = "linux")]
     SearchCatalog(String, String, u32),
     #[cfg(target_os = "linux")]

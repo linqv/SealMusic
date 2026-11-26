@@ -237,15 +237,15 @@ msgctxt "OnlineGlobal"
 msgid "Audio decoding failed ({})."
 msgstr "音频解码失败（{}）。"
 
-#: ui/app.slint:217
-msgctxt "MainWindow"
-msgid "Loading {} (paused)"
-msgstr "正在加载 {}（已暂停）"
+#: ui/online.slint:34
+msgctxt "OnlineGlobal"
+msgid "Buffering paused"
+msgstr "缓冲已暂停"
 
-#: ui/app.slint:218
-msgctxt "MainWindow"
-msgid "Loading {}"
-msgstr "正在加载 {}"
+#: ui/online.slint:35
+msgctxt "OnlineGlobal"
+msgid "Buffering"
+msgstr "缓冲中"
 
 #: ui/app.slint:455
 msgctxt "MainWindow"

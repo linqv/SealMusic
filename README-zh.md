@@ -38,6 +38,8 @@ SLINT_BACKEND=winit-software ./target/release/sealmusic
 
 ## 构建与打包
 
+Linux 构建需要 ALSA 和 PipeWire 开发库，以及 `pkg-config` 和 `libclang`。音频跟随系统默认输出，后端依次尝试 PipeWire、PulseAudio 和 ALSA。没有 PipeWire 客户端库的系统可用 `--no-default-features` 构建，仅启用 PulseAudio 和 ALSA。
+
 开发运行使用 `cargo run`。Linux 上使用 `cargo release --locked` 针对构建机器的 CPU 生成 `target/release/sealmusic`。需要把二进制分发到不同机器时，使用 `cargo build --locked --release` 采用默认的 CPU 目标。打包脚本使用 cargo-packager，产物位于 `target/release`。
 
 | 平台 | 命令 |

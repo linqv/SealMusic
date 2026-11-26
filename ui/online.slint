@@ -30,6 +30,9 @@ export global OnlineGlobal {
     in property <string> preview-track;
     in property <string> loading;
     in property <bool> loading-paused;
+    out property <string> buffering-status: root.loading == "" ? ""
+        : root.loading-paused ? @tr("Buffering paused")
+        : @tr("Buffering");
     pure callback is-link(string) -> bool;
     pure callback is-blank(string) -> bool;
     in property <bool> local-playback;

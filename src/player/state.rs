@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{Arc, RwLock},
     time::{Duration, Instant},
@@ -7,6 +7,7 @@ use std::{
 
 use rand::seq::SliceRandom;
 
+use super::clock::AudioClock;
 use crate::library::{
     SortKey, Track, TrackId,
     lyrics::LyricLine,
@@ -34,6 +35,7 @@ pub struct PlaybackState {
     pub duration: Duration,
     pub position: Duration,
     pub sampled_at: Instant,
+    pub clock: Option<Arc<AudioClock>>,
     pub status: Status,
     pub volume: f32,
     pub loop_mode: LoopMode,
@@ -55,6 +57,7 @@ impl Default for PlaybackState {
             duration: Duration::ZERO,
             position: Duration::ZERO,
             sampled_at: Instant::now(),
+            clock: None,
             status: Status::Stopped,
             volume: 1.,
             loop_mode: LoopMode::Playlist,
@@ -72,17 +75,22 @@ impl Default for PlaybackState {
 }
 impl PlaybackState {
     pub fn position_now(&self) -> Duration {
-        // Incomplete streams may stall between samples. Use Rodio's measured
-        // position there so UI and MPRIS don't count buffering time as playback.
-        if self.status == Status::Playing && !self.sink_empty && self.input_seekable {
-            let position = self.position.saturating_add(self.sampled_at.elapsed());
-            if self.duration.is_zero() {
-                position
-            } else {
-                position.min(self.duration)
-            }
+        if self.status != Status::Playing || self.sink_empty || self.deferred {
+            return self.position;
+        }
+        // Audio callbacks can stall even for seekable inputs. Extrapolating past the
+        // measured position would make progress jump backwards when samples resume.
+        let position = if let Some(clock) = &self.clock {
+            clock.position()
+        } else if self.input_seekable {
+            self.position.saturating_add(self.sampled_at.elapsed())
         } else {
             self.position
+        };
+        if self.duration.is_zero() {
+            position
+        } else {
+            position.min(self.duration)
         }
     }
     pub fn can_seek(&self) -> bool {
@@ -137,6 +145,7 @@ pub enum PlaybackEvent {
 pub struct Queue {
     order: Vec<Arc<Track>>,
     index_by_id: HashMap<TrackId, usize>,
+    empty_tracks: HashSet<TrackId>,
     back: VecDeque<TrackId>,
     forward: VecDeque<TrackId>,
     projected_upcoming: Option<(Option<usize>, bool)>,
@@ -162,6 +171,7 @@ impl Queue {
         }
         self.back.retain(|id| self.index_by_id.contains_key(id));
         self.forward.retain(|id| self.index_by_id.contains_key(id));
+        self.empty_tracks.retain(|id| self.index_by_id.contains_key(id));
     }
     #[cfg(target_os = "linux")]
     pub fn remove_tracks(&mut self, ids: &[TrackId]) {
@@ -184,6 +194,17 @@ impl Queue {
     }
     pub fn get(&self, id: &TrackId) -> Option<Arc<Track>> {
         self.index_by_id.get(id).map(|&idx| Arc::clone(&self.order[idx]))
+    }
+
+    pub fn record_empty_track(&mut self, id: &TrackId) -> bool {
+        if self.index_by_id.contains_key(id) {
+            self.empty_tracks.insert(id.clone());
+        }
+        self.empty_tracks.len() == self.index_by_id.len()
+    }
+
+    pub fn reset_empty_tracks(&mut self) {
+        self.empty_tracks.clear();
     }
 
     pub fn invalidate_upcoming(&mut self) {
@@ -277,7 +298,8 @@ impl Queue {
         history_skip: usize,
         from_history: bool,
     ) {
-        if old.as_ref().is_some_and(|t| t.id == *new) {
+        let same_track = old.as_ref().is_some_and(|t| t.id == *new);
+        if same_track && !from_history {
             return;
         }
         self.projected_upcoming = None;
@@ -297,7 +319,7 @@ impl Queue {
         } else if history_skip > 0 {
             source.truncate(source.len().saturating_sub(history_skip));
         }
-        if let Some(old) = old.filter(|t| self.index_by_id.contains_key(&t.id)) {
+        if let Some(old) = old.filter(|t| !same_track && self.index_by_id.contains_key(&t.id)) {
             if dest.len() >= 256 {
                 dest.pop_front();
             }
@@ -319,6 +341,23 @@ mod tests {
             Duration::from_secs(2),
         ))
     }
+    #[test]
+    fn forward_history_consumes_the_current_track_after_pruning() {
+        let (a, b, c) = (track("a"), track("b"), track("c"));
+        let mut queue = Queue::default();
+        queue.rebuild(&[a.clone(), b.clone(), c.clone()], false, None);
+        queue.record(Some(a.clone()), &b.id, Some(false));
+        queue.record(Some(b), &a.id, Some(false));
+        queue.rebuild(&[a.clone(), c.clone()], false, Some(&a.id));
+
+        let (next, from_history) = queue.step_skip(Some(&a.id), true, LoopMode::Playlist, 0);
+        assert_eq!(next.unwrap().id, a.id);
+        assert!(from_history);
+        queue.record_navigation(Some(a.clone()), &a.id, Some(true), 0, from_history);
+
+        assert_eq!(queue.step(Some(&a.id), true, LoopMode::Playlist).unwrap().id, c.id);
+    }
+
     #[test]
     fn history_survives_reorder_and_drops_removed_tracks() {
         let (a, b, c) = (track("a"), track("b"), track("c"));
@@ -447,5 +486,39 @@ mod tests {
         assert!(!s.can_seek());
         assert!(!s.accepts_position(Some(&t.id), Duration::from_secs(2)));
         assert_eq!(s.position_now(), Duration::from_secs(10));
+    }
+
+    #[test]
+    fn audio_clock_tracks_samples_without_advancing_during_a_stall() {
+        let clock = Arc::new(AudioClock::new(Duration::from_millis(1200)));
+        let seekable = PlaybackState {
+            status: Status::Playing,
+            duration: Duration::from_secs(30),
+            sampled_at: Instant::now() - Duration::from_secs(1),
+            clock: Some(clock.clone()),
+            ..Default::default()
+        };
+        let streaming = PlaybackState {
+            input_seekable: false,
+            ..seekable.clone()
+        };
+        for state in [&seekable, &streaming] {
+            assert_eq!(state.position_now(), Duration::from_millis(1200));
+        }
+        clock.store(Duration::from_millis(1220));
+        for state in [&seekable, &streaming] {
+            assert_eq!(state.position_now(), Duration::from_millis(1220));
+        }
+
+        let paused = PlaybackState {
+            status: Status::Paused,
+            position: seekable.position_now(),
+            ..seekable.clone()
+        };
+        clock.store(Duration::from_millis(1240));
+        assert_eq!(paused.position_now(), Duration::from_millis(1220));
+        // A successful seek can explicitly move the audio position backwards.
+        clock.store(Duration::from_secs(1));
+        assert_eq!(seekable.position_now(), Duration::from_secs(1));
     }
 }

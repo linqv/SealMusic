@@ -323,6 +323,8 @@ export component ControlPanel inherits Rectangle {
     in property <float> progress;
     in property <int> progress-secs;
     in property <bool> can-seek;
+    in property <string> buffering-status;
+    in property <string> buffering-track;
     in property <float> duration;
     in property <bool> paused;
     in property <LoopMode> loop_mode;
@@ -348,10 +350,11 @@ export component ControlPanel inherits Rectangle {
         x: root.side-padding;
         y: (parent.height - self.height) / 2;
         width: min(270px, transport.x - self.x - 16px);
-        height: 48px;
+        height: root.has-track && root.buffering-status != "" ? 64px : 48px;
         spacing: 4px;
 
         cover-button := Rectangle {
+            y: (parent.height - self.height) / 2;
             width: 48px;
             height: 48px;
             border-radius: 8px;
@@ -415,21 +418,28 @@ export component ControlPanel inherits Rectangle {
             alignment: center;
             padding-left: 8px;
             spacing: 2px;
-            Text {
+            if root.has-track || root.buffering-status == "": Text {
                 text: root.has-track ? root.current_song.song_name : @tr("No track selected");
                 font-weight: 600;
                 color: Theme.text;
                 overflow: elide;
             }
-            if root.current_song.singer != "": Text {
-                text: root.current_song.singer;
+            if root.buffering-status != "" || root.current_song.singer != "": Text {
+                text: root.buffering-status != "" ? root.buffering-status : root.current_song.singer;
                 font-size: 12px;
                 color: Theme.text.with-alpha(0.6);
+                overflow: elide;
+            }
+            if root.buffering-status != "": Text {
+                text: root.buffering-track;
+                font-size: 12px;
+                color: Theme.text;
                 overflow: elide;
             }
         }
 
         if root.has-track: LikeButton {
+            y: (parent.height - self.height) / 2;
             track: root.current_song.id;
         }
     }
