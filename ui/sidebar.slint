@@ -10,7 +10,6 @@ export component SidebarNavItem inherits Rectangle {
     callback clicked();
     height: 38px;
     border-radius: 8px;
-    clip: true;
     background: touch.pressed ? Theme.press : (selected ? Theme.hover : (touch.has-hover ? Theme.hover : transparent));
 
     Rectangle {

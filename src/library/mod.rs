@@ -9,6 +9,16 @@ use std::{
     time::Duration,
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub enum SortKey {
+    #[serde(rename = "BySongName")]
+    Title,
+    #[serde(rename = "BySinger")]
+    Artist,
+    #[serde(rename = "ByDuration")]
+    Duration,
+}
+
 /// Independent of queue order and of the lossy display spelling of an OS path.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct TrackId(pub String);
@@ -45,8 +55,6 @@ pub struct Track {
     pub title: String,
     pub artist: String,
     pub album: String,
-    pub title_lower: String,
-    pub artist_lower: String,
     pub duration: Duration,
 }
 
@@ -58,15 +66,11 @@ impl Track {
         artist: String,
         duration: Duration,
     ) -> Self {
-        let title_lower = title.to_lowercase();
-        let artist_lower = artist.to_lowercase();
         Self {
             id,
             origin,
             title,
             artist,
-            title_lower,
-            artist_lower,
             album: String::new(),
             duration,
         }

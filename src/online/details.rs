@@ -1,27 +1,28 @@
 //! Online track cover art and lyrics fetching across the 5 LX platforms
 //! (`kw`, `kg`, `tx`, `wy`, `mg`), adapted from LX Music Desktop / lx-mygomusic.
-use std::io::Read;
+use std::{io::Read, time::Duration};
 
 use base64::{
     Engine as _, alphabet,
     engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
 };
 use flate2::read::ZlibDecoder;
-use reqwest::{Client, RequestBuilder, Response};
+use reqwest::{Client, RequestBuilder};
 use serde_json::{Value, json};
+use tokio::{sync::Semaphore, task::JoinError};
 use url::Url;
 
 use super::{
-    OnlineTrack, decode_html, id_string,
+    API_BODY_LIMIT, OnlineTrack, decode_html, id_string, read_bounded,
     search::{DESKTOP_UA, normalize_mg_img, number, wy_eapi},
 };
 use crate::library::{
     lyrics::{LyricLine, LyricWord, parse_lyrics},
-    metadata::{self, TrackDetails},
+    metadata::TrackDetails,
 };
 
 const COVER_LIMIT: usize = 4 * 1024 * 1024;
-const API_LIMIT: usize = 2 * 1024 * 1024;
+static COVER_DECODE_SLOT: Semaphore = Semaphore::const_new(1);
 const ZLIB_LIMIT: usize = 4 * 1024 * 1024;
 const KW_XOR_KEY: &[u8] = b"yeelion";
 const KG_KRC_KEY: [u8; 16] = [
@@ -83,27 +84,14 @@ fn as_http_url(raw: &str) -> Option<&str> {
     (matches!(url.scheme(), "http" | "https") && url.host_str().is_some()).then_some(trimmed)
 }
 
-async fn read_bounded(mut response: Response, limit: usize) -> Option<Vec<u8>> {
-    if response.content_length().is_some_and(|n| n > limit as u64) {
-        return None;
-    }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.ok()? {
-        if chunk.len() > limit - bytes.len() {
-            return None;
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    Some(bytes)
-}
-
 async fn fetch_bytes(req: RequestBuilder, limit: usize) -> Option<Vec<u8>> {
-    let response = req.send().await.ok()?.error_for_status().ok()?;
+    let response =
+        req.timeout(Duration::from_secs(20)).send().await.ok()?.error_for_status().ok()?;
     read_bounded(response, limit).await
 }
 
 async fn fetch_text(req: RequestBuilder) -> Option<String> {
-    let bytes = fetch_bytes(req, API_LIMIT).await?;
+    let bytes = fetch_bytes(req, API_BODY_LIMIT).await?;
     Some(match String::from_utf8(bytes) {
         Ok(s) => s,
         Err(err) => String::from_utf8_lossy(err.as_bytes()).into_owned(),
@@ -111,22 +99,34 @@ async fn fetch_text(req: RequestBuilder) -> Option<String> {
 }
 
 async fn fetch_json(req: RequestBuilder) -> Option<Value> {
-    let bytes = fetch_bytes(req, API_LIMIT).await?;
+    let bytes = fetch_bytes(req, API_BODY_LIMIT).await?;
     serde_json::from_slice(&bytes).ok()
+}
+
+pub(super) async fn run_cover_decode<T: Send + 'static>(
+    decode: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, JoinError> {
+    let permit = COVER_DECODE_SLOT.acquire().await.expect("cover decode slot is never closed");
+    tokio::task::spawn_blocking(move || {
+        // A blocking decode can keep running after its awaiting task is cancelled.
+        let _permit = permit;
+        decode()
+    })
+    .await
 }
 
 pub(super) async fn fetch_cover(
     client: &Client,
     url: &str,
     referer: Option<&str>,
-) -> Option<metadata::DecodedCover> {
+) -> Option<TrackDetails> {
     let url = as_http_url(url)?;
     let mut req = client.get(url).header("User-Agent", DESKTOP_UA);
     if let Some(referer) = referer {
         req = req.header("Referer", referer);
     }
     let bytes = fetch_bytes(req, COVER_LIMIT).await?;
-    tokio::task::spawn_blocking(move || metadata::decode_cover_full(&bytes)).await.ok()?
+    run_cover_decode(move || TrackDetails::from_cover_bytes(&bytes)).await.ok()?
 }
 
 pub fn inline_details(reference: &OnlineTrack) -> TrackDetails {
@@ -141,21 +141,41 @@ pub fn inline_details(reference: &OnlineTrack) -> TrackDetails {
     }
 }
 
-pub async fn fetch_details(reference: &OnlineTrack, details: TrackDetails) -> Option<TrackDetails> {
+pub async fn fetch_details(
+    reference: &OnlineTrack,
+    need_cover: bool,
+    need_lyrics: bool,
+) -> Option<TrackDetails> {
     let client = super::api_client()?;
-    fetch_details_with(client, &Endpoints::production(), reference, details).await
+    fetch_details_parts(client, &Endpoints::production(), reference, need_cover, need_lyrics).await
 }
 
+#[cfg(test)]
 async fn fetch_details_with(
     client: &Client,
     endpoints: &Endpoints,
     reference: &OnlineTrack,
-    mut details: TrackDetails,
+    details: TrackDetails,
+) -> Option<TrackDetails> {
+    fetch_details_parts(
+        client,
+        endpoints,
+        reference,
+        details.cover.is_none(),
+        details.lyrics.is_empty(),
+    )
+    .await
+}
+
+async fn fetch_details_parts(
+    client: &Client,
+    endpoints: &Endpoints,
+    reference: &OnlineTrack,
+    need_cover: bool,
+    need_lyrics: bool,
 ) -> Option<TrackDetails> {
     let info = reference.info();
     let source = info["source"].as_str()?;
-    let need_cover = details.cover.is_none();
-    let need_lyrics = details.lyrics.is_empty();
     if !need_cover && !need_lyrics {
         return None;
     }
@@ -177,19 +197,12 @@ async fn fetch_details_with(
         },
     );
 
-    let mut changed = false;
-    if let Some(decoded) = cover {
-        details.cover = Some(decoded.cover);
-        details.ambient = Some(decoded.ambient);
-        details.palette = decoded.palette;
-        details.raw_cover = None;
-        changed = true;
+    if cover.is_none() && lyrics.is_empty() {
+        return None;
     }
-    if !lyrics.is_empty() {
-        details.lyrics = lyrics;
-        changed = true;
-    }
-    changed.then_some(details)
+    let mut details = cover.unwrap_or_default();
+    details.lyrics = lyrics;
+    Some(details)
 }
 
 fn decode_base64(input: &str) -> Option<Vec<u8>> {
@@ -293,7 +306,7 @@ async fn resolve_and_fetch_cover(
     endpoints: &Endpoints,
     source: &str,
     info: &Value,
-) -> Option<metadata::DecodedCover> {
+) -> Option<TrackDetails> {
     let referer = cover_referer(source);
     let mut tried = Vec::new();
 
@@ -857,7 +870,7 @@ async fn get_kw_lyrics(client: &Client, endpoints: &Endpoints, info: &Value) -> 
                 ("encode", "utf8"),
             ])
             .header("User-Agent", DESKTOP_UA),
-        API_LIMIT,
+        API_BODY_LIMIT,
     )
     .await
         && let Some(decoded) = decode_kw_mobi_lyric(&raw)
@@ -900,17 +913,22 @@ fn duration_ms_from_info(info: &Value) -> u64 {
     0
 }
 
-fn parse_krc_words(body: &str, line_start_ms: u64) -> (String, Vec<LyricWord>) {
+fn parse_timed_words(
+    body: &str,
+    (open, close): (char, char),
+    origin_ms: u64,
+    normalize: fn(&str) -> String,
+) -> (String, Vec<LyricWord>) {
     let mut plain = String::with_capacity(body.len());
     let mut words = Vec::new();
     let mut cur_timing: Option<(u64, u64)> = None;
     let mut cur_text = String::new();
     let mut rest = body;
 
-    while let Some(start) = rest.find('<') {
+    while let Some(start) = rest.find(open) {
         let before = &rest[..start];
-        let after = &rest[start + 1..];
-        if let Some(end) = after.find('>') {
+        let after = &rest[start + open.len_utf8()..];
+        if let Some(end) = after.find(close) {
             let tag = &after[..end];
             let mut parts = tag.split(',');
             if let (Some(off), Some(dur), Some(third), None) =
@@ -923,10 +941,10 @@ fn parse_krc_words(body: &str, line_start_ms: u64) -> (String, Vec<LyricWord>) {
                     cur_text.push_str(before);
                 }
                 if let Some((w_off, w_dur)) = cur_timing.take() {
-                    let decoded = decode_html(&std::mem::take(&mut cur_text));
+                    let decoded = normalize(&std::mem::take(&mut cur_text));
                     if !decoded.is_empty() {
                         words.push(LyricWord {
-                            time: (line_start_ms.saturating_add(w_off)) as f32 / 1000.0,
+                            time: (origin_ms.saturating_add(w_off)) as f32 / 1000.0,
                             duration: w_dur as f32 / 1000.0,
                             text: decoded,
                         });
@@ -935,14 +953,14 @@ fn parse_krc_words(body: &str, line_start_ms: u64) -> (String, Vec<LyricWord>) {
                     cur_text.clear();
                 }
                 cur_timing = Some((off_ms, dur_ms));
-                rest = &after[end + 1..];
+                rest = &after[end + close.len_utf8()..];
                 continue;
             }
         }
         plain.push_str(before);
-        plain.push('<');
+        plain.push(open);
         cur_text.push_str(before);
-        cur_text.push('<');
+        cur_text.push(open);
         rest = after;
     }
 
@@ -951,16 +969,16 @@ fn parse_krc_words(body: &str, line_start_ms: u64) -> (String, Vec<LyricWord>) {
         cur_text.push_str(rest);
     }
     if let Some((w_off, w_dur)) = cur_timing {
-        let decoded = decode_html(&cur_text);
+        let decoded = normalize(&cur_text);
         if !decoded.is_empty() {
             words.push(LyricWord {
-                time: (line_start_ms.saturating_add(w_off)) as f32 / 1000.0,
+                time: (origin_ms.saturating_add(w_off)) as f32 / 1000.0,
                 duration: w_dur as f32 / 1000.0,
                 text: decoded,
             });
         }
     }
-    let cleaned = decode_html(plain.trim());
+    let cleaned = normalize(plain.trim());
     (cleaned.trim().to_owned(), words)
 }
 
@@ -1031,7 +1049,7 @@ fn parse_kg_krc_text(raw: &str) -> Vec<LyricLine> {
         } else {
             100.0
         };
-        let (cleaned, words) = parse_krc_words(body, start_ms);
+        let (cleaned, words) = parse_timed_words(body, ('<', '>'), start_ms, decode_html);
         if !cleaned.is_empty() {
             primary_lines.push(LyricLine {
                 time: start_secs,
@@ -1349,68 +1367,6 @@ fn parse_wy_header_info(raw: &str) -> Vec<String> {
         .collect()
 }
 
-fn parse_yrc_words(body: &str) -> (String, Vec<LyricWord>) {
-    let mut plain = String::with_capacity(body.len());
-    let mut words = Vec::new();
-    let mut cur_timing: Option<(u64, u64)> = None;
-    let mut cur_text = String::new();
-    let mut rest = body;
-
-    while let Some(start) = rest.find('(') {
-        let before = &rest[..start];
-        let after = &rest[start + 1..];
-        if let Some(end) = after.find(')') {
-            let tag = &after[..end];
-            let mut parts = tag.split(',');
-            if let (Some(st), Some(dur), Some(third), None) =
-                (parts.next(), parts.next(), parts.next(), parts.next())
-                && let (Ok(st_ms), Ok(dur_ms), Ok(_)) =
-                    (st.parse::<u64>(), dur.parse::<u64>(), third.parse::<u64>())
-            {
-                if !before.is_empty() {
-                    plain.push_str(before);
-                    cur_text.push_str(before);
-                }
-                if let Some((w_start, w_dur)) = cur_timing.take() {
-                    let seg = std::mem::take(&mut cur_text);
-                    if !seg.is_empty() {
-                        words.push(LyricWord {
-                            time: w_start as f32 / 1000.0,
-                            duration: w_dur as f32 / 1000.0,
-                            text: seg,
-                        });
-                    }
-                } else {
-                    cur_text.clear();
-                }
-                cur_timing = Some((st_ms, dur_ms));
-                rest = &after[end + 1..];
-                continue;
-            }
-        }
-        plain.push_str(before);
-        plain.push('(');
-        cur_text.push_str(before);
-        cur_text.push('(');
-        rest = after;
-    }
-
-    if !rest.is_empty() {
-        plain.push_str(rest);
-        cur_text.push_str(rest);
-    }
-    if let Some((w_start, w_dur)) = cur_timing
-        && !cur_text.is_empty()
-    {
-        words.push(LyricWord {
-            time: w_start as f32 / 1000.0,
-            duration: w_dur as f32 / 1000.0,
-            text: cur_text,
-        });
-    }
-    (plain.trim().to_owned(), words)
-}
-
 fn parse_yrc_lines(lines: &[String]) -> Vec<(u64, LyricLine)> {
     lines
         .iter()
@@ -1422,7 +1378,7 @@ fn parse_yrc_lines(lines: &[String]) -> Vec<(u64, LyricLine)> {
             else {
                 return None;
             };
-            let (text, words) = parse_yrc_words(body);
+            let (text, words) = parse_timed_words(body, ('(', ')'), 0, str::to_owned);
             if text.is_empty() {
                 return None;
             }

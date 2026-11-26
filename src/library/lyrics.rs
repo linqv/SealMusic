@@ -236,10 +236,6 @@ fn is_attached_trailing_punct(ch: char) -> bool {
     )
 }
 
-fn is_attached_leading_punct(ch: char) -> bool {
-    matches!(ch, '(' | '[' | '{' | '（' | '【' | '《' | '「' | '『' | '“' | '‘')
-}
-
 fn char_weight(ch: char) -> f32 {
     if ch.is_whitespace() {
         0.35
@@ -265,59 +261,6 @@ fn effective_sweep_duration(text: &str, raw_duration: f32) -> f32 {
         return estimated.min(raw_duration);
     }
     (raw_duration * 0.94).max(0.25)
-}
-
-fn tokenize_text(text: &str) -> Vec<(String, bool)> {
-    let mut tokens: Vec<(String, bool)> = Vec::new();
-    let mut current = String::new();
-    let mut pending_leading = String::new();
-
-    for ch in text.chars() {
-        if ch.is_whitespace() {
-            if !current.is_empty() {
-                tokens.push((std::mem::take(&mut current), true));
-            } else if let Some(last) = tokens.last_mut() {
-                last.1 = true;
-            }
-            continue;
-        }
-        if is_cjk(ch) {
-            if !current.is_empty() {
-                tokens.push((std::mem::take(&mut current), false));
-            }
-            let mut unit = std::mem::take(&mut pending_leading);
-            unit.push(ch);
-            tokens.push((unit, false));
-            continue;
-        }
-        if is_attached_leading_punct(ch) && current.is_empty() {
-            pending_leading.push(ch);
-            continue;
-        }
-        if is_attached_trailing_punct(ch)
-            && current.is_empty()
-            && let Some(last) = tokens.last_mut()
-            && !last.1
-        {
-            last.0.push(ch);
-            continue;
-        }
-        if !pending_leading.is_empty() {
-            current.push_str(&std::mem::take(&mut pending_leading));
-        }
-        current.push(ch);
-    }
-
-    if !pending_leading.is_empty() {
-        current.push_str(&pending_leading);
-    }
-    if !current.is_empty() {
-        tokens.push((current, false));
-    }
-    if let Some(last) = tokens.last_mut() {
-        last.1 = false;
-    }
-    tokens
 }
 
 fn normalize_timed_words(words: &[LyricWord]) -> Vec<DisplayWord> {
@@ -348,40 +291,9 @@ fn normalize_timed_words(words: &[LyricWord]) -> Vec<DisplayWord> {
     out
 }
 
-fn synthesize_words(text: &str, start: f32, sweep_duration: f32) -> Vec<DisplayWord> {
-    let tokens = tokenize_text(text);
-    if tokens.is_empty() {
-        return Vec::new();
-    }
-    let weights: Vec<f32> = tokens
-        .iter()
-        .map(|(tok, space)| {
-            text_weight(tok)
-                + if *space {
-                    0.25
-                } else {
-                    0.0
-                }
-        })
-        .collect();
-    let total_weight: f32 = weights.iter().sum::<f32>().max(1.0);
-    let mut cursor = start;
-    let mut out = Vec::with_capacity(tokens.len());
-    for ((tok, space_after), weight) in tokens.into_iter().zip(weights) {
-        let dur = (sweep_duration * (weight / total_weight)).max(0.04);
-        out.push(DisplayWord {
-            time: cursor,
-            duration: dur,
-            text: tok,
-            space_after,
-        });
-        cursor += dur;
-    }
-    out
-}
-
 /// Groups consecutive lines that share a timestamp into primary + translation
-/// pairs and prepares per-word sweep timings for the lyrics view.
+/// pairs and keeps explicit word-level sweep timings intact while leaving plain
+/// line-synced LRC unsplit.
 pub fn group_for_display(lines: &[LyricLine], track_duration: f32) -> Vec<DisplayLyricLine> {
     struct RawGroup<'a> {
         time: f32,
@@ -449,14 +361,9 @@ pub fn group_for_display(lines: &[LyricLine], track_duration: f32) -> Vec<Displa
             _ => g.time + gap,
         };
         let words = if !g.words.is_empty() {
-            let normalized = normalize_timed_words(g.words);
-            if normalized.is_empty() {
-                synthesize_words(g.text, g.time, effective_sweep_duration(g.text, gap))
-            } else {
-                normalized
-            }
+            normalize_timed_words(g.words)
         } else {
-            synthesize_words(g.text, g.time, effective_sweep_duration(g.text, gap))
+            Vec::new()
         };
         result.push(DisplayLyricLine {
             time: g.time,
@@ -518,11 +425,11 @@ mod tests {
     }
 
     #[test]
-    fn groups_bilingual_lines_and_synthesizes_monotonic_word_timings() {
+    fn groups_bilingual_lines_without_splitting_plain_lrc_and_keeps_timed_words() {
         let lines = parse_lyrics(
             "[00:01.54]夢ならば\n\
              [00:01.54]如果只是一场梦\n\
-             [00:04.00]was heißt Wirklichkeit?\n\
+             [00:04.00]<00:04.00>was <00:04.50>heißt <00:05.00>Wirklichkeit?\n\
              [00:08.00]also,sehen wir vom Bildschirm auf",
         );
         let display = group_for_display(&lines, 180.0);
@@ -530,8 +437,7 @@ mod tests {
         assert_eq!(display[0].text, "夢ならば");
         assert_eq!(display[0].translation, "如果只是一场梦");
         assert!((display[0].end_time - 4.0).abs() < 1e-3);
-        assert_eq!(display[0].words.len(), 4);
-        assert!(display[0].words.iter().all(|w| !w.space_after));
+        assert!(display[0].words.is_empty());
 
         assert_eq!(display[1].text, "was heißt Wirklichkeit?");
         let tokens: Vec<_> =
@@ -541,9 +447,9 @@ mod tests {
             assert!(pair[1].time >= pair[0].time);
         }
 
-        // Last line duration should be capped reasonably instead of stretching to track end.
-        let last_word = display[2].words.last().unwrap();
-        assert!(last_word.time + last_word.duration < 20.0);
+        // Plain last line keeps words empty and extends to track duration.
+        assert!(display[2].words.is_empty());
+        assert!((display[2].end_time - 180.0).abs() < 1e-3);
     }
 
     #[test]

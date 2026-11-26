@@ -1,13 +1,11 @@
 use std::{
     path::PathBuf,
-    sync::{Arc, mpsc},
+    sync::{Arc, Weak, mpsc},
     time::Duration,
 };
 
-use crate::{
-    library::TrackId,
-    slint_types::{LoopMode, SortKey},
-};
+use super::state::LoopMode;
+use crate::library::{SortKey, TrackId};
 
 pub enum PlayerCommand {
     Play,
@@ -33,6 +31,8 @@ pub enum PlayerCommand {
     Refresh(PathBuf),
     Sort(SortKey, bool),
     Search(String),
+    ReloadDetails,
+    MediaDone(super::jobs::Completion),
     #[cfg(target_os = "linux")]
     SearchCatalog(String, String, u32),
     #[cfg(target_os = "linux")]
@@ -71,8 +71,7 @@ pub struct Controls(Arc<mpsc::Sender<Request>>);
 
 pub struct Inbox {
     pub rx: mpsc::Receiver<Request>,
-    #[cfg(target_os = "linux")]
-    pub sender: std::sync::Weak<mpsc::Sender<Request>>,
+    pub sender: Weak<mpsc::Sender<Request>>,
 }
 
 impl Controls {
@@ -81,7 +80,6 @@ impl Controls {
         let tx = Arc::new(tx);
         let inbox = Inbox {
             rx,
-            #[cfg(target_os = "linux")]
             sender: Arc::downgrade(&tx),
         };
         (Self(tx), inbox)

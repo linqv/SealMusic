@@ -19,12 +19,17 @@ pub fn local_action(track: &Track, name: &str) -> Value {
 pub async fn enhance(
     script: Script,
     track: &Track,
-    mut details: TrackDetails,
+    need_cover: bool,
+    need_lyrics: bool,
     alert: lx_probe::AlertHandler,
 ) -> Option<TrackDetails> {
+    if !need_cover && !need_lyrics {
+        return None;
+    }
     let mut session = script.session(alert).await.ok()?;
+    let mut details = TrackDetails::default();
     let mut changed = false;
-    if details.lyrics.is_empty()
+    if need_lyrics
         && script.supports_local("lyric")
         && let Ok(result) = session.action(&local_action(track, "lyric")).await
     {
@@ -37,15 +42,16 @@ pub async fn enhance(
         details.lyrics = parse_lyrics(&lrc);
         changed = !details.lyrics.is_empty();
     }
-    if details.cover.is_none()
+    if need_cover
         && script.supports_local("pic")
         && let Ok(url) = session.resolve(&local_action(track, "pic")).await
         && let Some(client) = super::api_client()
         && let Some(decoded) = details::fetch_cover(client, &url, None).await
     {
-        details.cover = Some(decoded.cover);
-        details.ambient = Some(decoded.ambient);
-        details.palette = decoded.palette;
+        details = TrackDetails {
+            lyrics: details.lyrics,
+            ..decoded
+        };
         changed = true;
     }
     changed.then_some(details)

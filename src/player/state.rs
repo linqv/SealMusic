@@ -7,10 +7,18 @@ use std::{
 
 use rand::seq::SliceRandom;
 
-use crate::{
-    library::{Track, TrackId, metadata::TrackDetails},
-    slint_types::{LoopMode, SortKey},
+use crate::library::{
+    SortKey, Track, TrackId,
+    lyrics::LyricLine,
+    metadata::{CoverSource, TrackDetails},
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub enum LoopMode {
+    None,
+    Track,
+    Playlist,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Status {
@@ -36,10 +44,8 @@ pub struct PlaybackState {
     pub deferred: bool,
     pub sink_empty: bool,
     pub input_seekable: bool,
-    #[cfg(target_os = "linux")]
-    pub art_url: Option<Arc<str>>,
-    #[cfg(target_os = "linux")]
-    pub synced_lyrics: Option<Arc<str>>,
+    pub cover_source: Option<Arc<CoverSource>>,
+    pub lyrics: Arc<[LyricLine]>,
 }
 
 impl Default for PlaybackState {
@@ -59,10 +65,8 @@ impl Default for PlaybackState {
             deferred: false,
             sink_empty: false,
             input_seekable: true,
-            #[cfg(target_os = "linux")]
-            art_url: None,
-            #[cfg(target_os = "linux")]
-            synced_lyrics: None,
+            cover_source: None,
+            lyrics: Arc::from([]),
         }
     }
 }
@@ -102,6 +106,7 @@ pub enum PlaybackEvent {
     Upcoming(Vec<Arc<Track>>),
     Details {
         details: TrackDetails,
+        lyrics: Option<Arc<[crate::library::lyrics::LyricLine]>>,
         position: Duration,
         cover_changed: bool,
     },

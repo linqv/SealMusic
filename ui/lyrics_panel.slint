@@ -130,7 +130,8 @@ component AtmosphericVolumeBar inherits HorizontalLayout {
     private property <float> pointer-volume: (track-touch.mouse-x / max(1px, track-touch.width)).clamp(0, 1);
     private property <bool> active: track-touch.has-hover || track-touch.pressed || slider-keys.has-focus;
     private property <length> bar-height: root.active ? 6px : 4px;
-    private property <length> thumb-size: root.active ? 12px : 10px;
+    private property <float> thumb-scale: root.active ? 1.0 : 0.8333;
+    animate thumb-scale { duration: 140ms; easing: ease-out; }
 
     height: 24px;
     spacing: 10px;
@@ -215,14 +216,14 @@ component AtmosphericVolumeBar inherits HorizontalLayout {
         Rectangle {
             x: (parent.width - self.width) * root.volume.clamp(0, 1);
             y: (parent.height - self.height) / 2;
-            width: root.thumb-size;
-            height: root.thumb-size;
-            border-radius: self.width / 2;
+            width: 12px;
+            height: 12px;
+            border-radius: 6px;
             background: Theme.text;
-            drop-shadow-color: #00000038;
-            drop-shadow-blur: 4px;
-            drop-shadow-offset-y: 1px;
-            animate width, height { duration: 140ms; easing: ease-out; }
+            border-width: 1px;
+            border-color: Theme.is-dark ? #00000040 : #00000020;
+            transform-origin: { x: self.width / 2, y: self.height / 2 };
+            transform-scale: root.thumb-scale;
         }
 
         track-touch := TouchArea {
@@ -289,16 +290,18 @@ component AtmosphericVolumeBar inherits HorizontalLayout {
 
 component KaraokeWord inherits HorizontalLayout {
     in property <LyricWord> word;
-    in property <bool> active;
-    in property <float> lyric-time;
+    in property <int> word-index;
+    in property <int> active-word-index: -1;
+    in property <float> active-word-progress: 0;
     in property <length> font-size;
     in property <color> sung-color;
     in property <color> unsung-color;
     in property <length> max-line-width;
 
-    private property <float> progress: !root.active ? 1 : root.word.duration > 0.001
-        ? ((root.lyric-time - root.word.time) / root.word.duration).clamp(0, 1)
-        : (root.lyric-time >= root.word.time ? 1 : 0);
+    private property <int> phase: root.word-index < root.active-word-index ? 2
+        : root.word-index == root.active-word-index ? 1 : 0;
+    private property <float> progress: root.phase == 2 ? 1.0
+        : root.phase == 0 ? 0.0 : root.active-word-progress;
     private property <float> feather: 0.16;
     private property <float> stop-hi: (root.progress * (1 + root.feather) - root.feather).clamp(0, 1);
     private property <float> stop-lo: (root.progress * (1 + root.feather)).clamp(0, 1);
@@ -313,6 +316,7 @@ component KaraokeWord inherits HorizontalLayout {
         font-size: root.font-size;
         font-weight: 700;
         wrap: word-wrap;
+        accessible-role: none;
         color: root.progress <= 0.001 ? root.unsung-brush
             : root.progress >= 0.999 ? root.sung-brush
             : @linear-gradient(90deg,
@@ -326,10 +330,12 @@ component KaraokeWord inherits HorizontalLayout {
 component LyricsView inherits Flickable {
     in property <[LyricItem]> lyrics;
     in property <int> active-index: -1;
-    in property <float> lyric-time;
+    in property <int> active-word-index: -1;
+    in property <float> active-word-progress: 0;
     in property <bool> can-seek;
     in property <bool> animate-follow;
     in property <length> font-size;
+    in property <int> follow-seq;
     callback seek(float);
 
     private property <length> line-gap: (root.height * 0.036).clamp(18px, 32px);
@@ -347,14 +353,14 @@ component LyricsView inherits Flickable {
             ? (root.active-top - root.anchor).clamp(0px, root.max-offset) : -1px,
         revision: root.layout-revision,
     };
-    private property <bool> snap-on-layout;
+    private property <bool> snap-on-layout: true;
 
     private property <bool> gliding;
     private property <length> glide-target;
     private property <length> glide-a;
     private property <length> glide-b;
-    private property <float> glide-omega: 10;
-    private property <duration> glide-duration: 2s;
+    private property <float> glide-omega: 16;
+    private property <duration> glide-duration: 750ms;
     private property <float> glide-start;
     private property <float> glide-deadline;
     // A linear property animation provides a frame clock and honors reduced motion.
@@ -396,7 +402,7 @@ component LyricsView inherits Flickable {
         // Retarget from the visible viewport and carry the current velocity forward.
         let residual = -root.content-y - target;
         let velocity = root.gliding ? root.glide-velocity : 0px;
-        if abs(residual) < 0.5px && abs(velocity) < 20px {
+        if abs(residual) < 1.0px && abs(velocity) < 30px {
             root.stop-glide();
             root.place-scroll(target);
             return;
@@ -413,11 +419,14 @@ component LyricsView inherits Flickable {
     changed glide-clock => {
         if root.gliding {
             if root.glide-clock >= root.glide-deadline
-                || (abs(root.glide-residual) < 0.5px && abs(root.glide-velocity) < 20px) {
+                || (abs(root.glide-residual) < 1.0px && abs(root.glide-velocity) < 30px) {
                 root.stop-glide();
                 root.place-scroll(root.glide-target);
             } else {
-                root.place-scroll(root.glide-target + root.glide-residual);
+                let next-offset = root.glide-target + root.glide-residual;
+                if abs(next-offset - (-root.content-y)) >= 0.5px {
+                    root.place-scroll(next-offset);
+                }
             }
         }
     }
@@ -427,6 +436,7 @@ component LyricsView inherits Flickable {
         root.scroll-to-active();
     }
 
+    changed follow-seq => { root.follow-lyrics(); }
     changed follow-target => {
         if !manual-scroll.running {
             root.scroll-to-active();
@@ -467,23 +477,21 @@ component LyricsView inherits Flickable {
 
         for item[index] in root.lyrics: row := Rectangle {
             property <bool> active: index == root.active-index;
+            property <bool> use-karaoke: self.active && item.words.length > 0;
+            property <bool> in-viewport: self.active
+                || (self.y + self.height + root.content-y >= -120px
+                    && self.y + root.content-y <= root.height + 120px);
             property <length> active-line-top: self.active ? self.y : -1px;
             property <length> line-width: max(0px, root.width - root.inset-left - root.inset-right);
-            property <length> line-mid: self.y + self.height / 2 + root.content-y;
+            property <length> line-mid: self.in-viewport ? self.y + self.height / 2 + root.content-y : -1000px;
             property <float> top-fade: (self.line-mid / root.fade-zone).clamp(0, 1);
             property <float> bottom-fade: ((root.height - self.line-mid) / root.fade-zone).clamp(0, 1);
-            property <float> raw-edge: min(self.top-fade, self.bottom-fade);
+            property <float> raw-edge: self.in-viewport ? min(self.top-fade, self.bottom-fade) : 0.0;
             property <float> edge-alpha: lyric-touch.has-hover ? max(0.88, self.raw-edge) : self.raw-edge;
             property <float> emphasis: self.active ? 1.0 : 0.0;
             property <float> base-alpha: 0.36 + 0.64 * self.emphasis;
-            property <float> line-scale: self.active ? 1.0 : 0.94;
             animate emphasis {
-                duration: 280ms;
-                easing: ease-out;
-                enabled: root.animate-follow;
-            }
-            animate line-scale {
-                duration: 600ms;
+                duration: 240ms;
                 easing: ease-out;
                 enabled: root.animate-follow;
             }
@@ -498,6 +506,7 @@ component LyricsView inherits Flickable {
             changed active-line-top => { self.report-active-top(); }
             init => { self.report-active-top(); }
 
+            visible: self.in-viewport;
             height: content.preferred-height + root.line-gap;
             border-radius: 10px;
             background: lyric-touch.has-hover ? Theme.text.with-alpha(0.07) : transparent;
@@ -518,10 +527,8 @@ component LyricsView inherits Flickable {
                 width: row.line-width;
                 height: self.preferred-height;
                 spacing: 6px;
-                transform-scale: row.line-scale;
-                transform-origin: { x: 0px, y: self.height / 2 };
 
-                if item.words.length == 0: Text {
+                if !row.use-karaoke: Text {
                     width: 100%;
                     text: item.text;
                     font-size: root.font-size;
@@ -529,20 +536,22 @@ component LyricsView inherits Flickable {
                     color: Theme.text.with-alpha(row.base-alpha * row.edge-alpha);
                     horizontal-alignment: left;
                     wrap: word-wrap;
+                    accessible-role: none;
                 }
 
-                // Keep the wrapped geometry stable when the current line changes.
-                if item.words.length > 0: FlexboxLayout {
+                // Mount word-level karaoke only on the active line when explicit word timings exist.
+                if row.use-karaoke: FlexboxLayout {
                     width: 100%;
                     alignment: start;
                     cross-axis-alignment: start;
                     spacing-horizontal: 0px;
                     spacing-vertical: 2px;
 
-                    for word in item.words: KaraokeWord {
+                    for word[word-index] in item.words: KaraokeWord {
                         word: word;
-                        active: row.active;
-                        lyric-time: root.lyric-time;
+                        word-index: word-index;
+                        active-word-index: root.active-word-index;
+                        active-word-progress: root.active-word-progress;
                         font-size: root.font-size;
                         sung-color: Theme.text.with-alpha(row.base-alpha * row.edge-alpha);
                         unsung-color: Theme.text.with-alpha(0.36 * row.edge-alpha);
@@ -553,11 +562,11 @@ component LyricsView inherits Flickable {
                 if item.translation != "": Text {
                     width: 100%;
                     text: item.translation;
-                    font-size: max(13px, root.font-size * 0.58);
-                    font-weight: 500;
+                    font-size: round(max(13, root.font-size / 1px * 0.58)) * 1px;
                     color: Theme.text.with-alpha((0.30 + 0.48 * row.emphasis) * row.edge-alpha);
                     horizontal-alignment: left;
                     wrap: word-wrap;
+                    accessible-role: none;
                 }
             }
 
@@ -581,10 +590,12 @@ export component NowPlaying inherits Rectangle {
     in property <[SongInfo]> upcoming;
     in property <[LyricItem]> lyrics;
     in property <int> active-lyric-index;
-    in property <float> lyric-time;
+    in property <int> active-word-index: -1;
+    in property <float> active-word-progress: 0;
     in-out property <bool> show-queue;
     in property <bool> can-seek;
     in property <float> progress;
+    in property <int> progress-secs;
     in property <float> duration;
     in property <bool> paused;
     in property <bool> shuffle;
@@ -592,6 +603,7 @@ export component NowPlaying inherits Rectangle {
     in-out property <float> volume;
     in property <bool> sliding;
     in property <bool> resting-open;
+    in property <int> follow-seq;
 
     callback dismiss();
     callback seek(float);
@@ -604,15 +616,14 @@ export component NowPlaying inherits Rectangle {
     callback change-volume(float);
     pure callback format-duration(float) -> string;
 
-    public function follow-lyrics() { lyrics-list.follow-lyrics(); }
-
     private property <length> gutter: (root.width * 0.055).clamp(36px, 84px);
     private property <length> column-width: min(
         (root.width * 0.27).clamp(216px, 324px),
         (root.height * 0.40).clamp(180px, 300px)
     );
     private property <float> vertical-space: ((root.height - 500px) / 200px).clamp(0, 1);
-    private property <length> lyric-font-size: (root.height * 0.044).clamp(22px, 34px);
+    private property <length> lyric-font-size: root.height >= 720px ? 32px
+        : root.height >= 580px ? 26px : 22px;
     private property <bool> has-track: root.current-song.id != "";
     private property <string> subtitle: root.current-song.singer != "" && root.current-song.album != ""
         ? "\{root.current-song.singer} — \{root.current-song.album}"
@@ -671,14 +682,10 @@ export component NowPlaying inherits Rectangle {
         }
     }
 
-    // Keep the backdrop cached at 1:1 panel resolution (both with and without
-    // blurred ambient artwork) so software rendering hits integer-aligned 1:1 blits
-    // on every karaoke frame instead of re-rasterizing gradients or blur.
     Rectangle {
         width: 100%;
         height: 100%;
         clip: true;
-        cache-rendering-hint: true;
 
         if Theme.cover-recoloring && root.has-ambient-image: Rectangle {
             width: 100%;
@@ -702,27 +709,16 @@ export component NowPlaying inherits Rectangle {
         }
 
         if !(Theme.cover-recoloring && root.has-ambient-image): Rectangle {
-            private property <float> upscale: 4;
             width: 100%;
             height: 100%;
-            transform-origin: { x: 0px, y: 0px };
-            transform-scale: self.upscale;
+
+            CoverBackdrop {
+                base-color: Theme.is-dark ? #18212d : #f0f3f9;
+                animate-colors: root.resting-open;
+            }
 
             Rectangle {
-                x: 0px;
-                y: 0px;
-                width: ceil(parent.width / 1px / parent.upscale) * 1px;
-                height: ceil(parent.height / 1px / parent.upscale) * 1px;
-                cache-rendering-hint: true;
-
-                CoverBackdrop {
-                    base-color: Theme.is-dark ? #18212d : #f0f3f9;
-                    animate-colors: root.resting-open;
-                }
-
-                Rectangle {
-                    background: @linear-gradient(180deg, Theme.surface.with-alpha(0.12) 0%, Theme.surface.with-alpha(0.42) 100%);
-                }
+                background: @linear-gradient(180deg, Theme.surface.with-alpha(0.12) 0%, Theme.surface.with-alpha(0.42) 100%);
             }
         }
     }
@@ -750,8 +746,8 @@ export component NowPlaying inherits Rectangle {
         subtle: true;
         icon: IconSet.ChevronDown;
         icon-size: 20px;
-        opacity: root.tabs-visible || self.hovered ? 0.8 : 0.34;
-        animate opacity {
+        icon-alpha: root.tabs-visible || self.hovered ? 0.8 : 0.34;
+        animate icon-alpha {
             duration: 300ms;
             enabled: !root.sliding;
         }
@@ -817,20 +813,16 @@ export component NowPlaying inherits Rectangle {
                 height: root.column-width;
 
                 art := Rectangle {
-                    width: parent.width * root.cover-scale;
-                    height: self.width;
-                    x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
                     border-radius: 12px;
                     background: Theme.surface;
-                    drop-shadow-color: Theme.is-dark ? #00000066 : #0000002e;
-                    drop-shadow-blur: root.paused ? 12px : 26px;
-                    drop-shadow-offset-y: root.paused ? 6px : 12px;
-                    animate drop-shadow-blur, drop-shadow-offset-y {
-                        duration: 420ms;
-                        easing: cubic-bezier(0.22, 1.0, 0.36, 1.0);
-                        enabled: !root.sliding;
-                    }
+                    border-width: 1px;
+                    border-color: Theme.is-dark ? #ffffff18 : #0000001a;
+                    transform-origin: { x: self.width / 2, y: self.height / 2 };
+                    transform-scale: root.cover-scale;
 
                     Rectangle {
                         border-radius: 12px;
@@ -856,14 +848,14 @@ export component NowPlaying inherits Rectangle {
                     spacing: 2px;
                     Text {
                         text: root.has-track ? root.current-song.song_name : @tr("No track selected");
-                        font-size: 18px + 4px * root.vertical-space;
+                        font-size: root.height >= 600px ? 22px : 18px;
                         font-weight: 700;
                         color: Theme.text;
                         overflow: elide;
                     }
                     if root.subtitle != "": Text {
                         text: root.subtitle;
-                        font-size: 13px + root.vertical-space * 1px;
+                        font-size: 14px;
                         color: Theme.text.with-alpha(0.65);
                         overflow: elide;
                     }
@@ -920,10 +912,9 @@ export component NowPlaying inherits Rectangle {
                 }
                 HorizontalLayout {
                     Text {
-                        text: root.format-duration(seek-bar.displayed-position);
+                        text: root.format-duration(seek-bar.dragging ? seek-bar.displayed-position : root.progress-secs);
                         color: Theme.text.with-alpha(0.62);
                         font-size: 11px;
-                        font-weight: 500;
                     }
                     Rectangle { horizontal-stretch: 1; }
                     Rectangle {
@@ -936,12 +927,11 @@ export component NowPlaying inherits Rectangle {
                         right-time := Text {
                             text: root.duration > 0
                                 ? (root.show-remaining
-                                    ? "-\{root.format-duration(max(0, root.duration - seek-bar.displayed-position))}"
+                                    ? "-\{root.format-duration(max(0, root.duration - (seek-bar.dragging ? seek-bar.displayed-position : root.progress-secs)))}"
                                     : root.format-duration(root.duration))
                                 : "–:––";
                             color: time-touch.has-hover ? Theme.text.with-alpha(0.9) : Theme.text.with-alpha(0.62);
                             font-size: 11px;
-                            font-weight: 500;
                         }
                         time-touch := TouchArea {
                             enabled: root.duration > 0;
@@ -978,27 +968,27 @@ export component NowPlaying inherits Rectangle {
         Rectangle {
             horizontal-stretch: 1;
 
-            lyrics-list := LyricsView {
+            if !root.show-queue && root.lyrics.length > 0: LyricsView {
                 x: 0px;
                 y: 0px;
                 width: parent.width;
                 height: parent.height;
-                visible: !root.show-queue && root.lyrics.length > 0;
                 lyrics: root.lyrics;
                 active-index: root.active-lyric-index;
-                lyric-time: root.lyric-time;
+                active-word-index: root.active-word-index;
+                active-word-progress: root.active-word-progress;
                 can-seek: root.can-seek;
                 animate-follow: root.resting-open && !root.show-queue;
                 font-size: root.lyric-font-size;
+                follow-seq: root.follow-seq;
                 seek(pos) => { root.seek(pos); }
             }
 
-            ListView {
+            if root.show-queue && root.upcoming.length > 0: ListView {
                 x: 0px;
                 y: 12px;
                 width: parent.width;
                 height: max(0px, parent.height - 12px);
-                visible: root.show-queue && root.upcoming.length > 0;
                 mouse-drag-pan-enabled: false;
 
                 for track[index] in root.upcoming: QueueRow {

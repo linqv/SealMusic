@@ -88,17 +88,13 @@ pub(super) struct Online {
     pub tracks: VecDeque<Arc<Track>>,
     // Keep last so every Job and Stream drops (setting cancelled and waking
     // Condvars) before Runtime::drop waits on blocking tasks.
-    runtime: Runtime,
+    runtime: Option<Runtime>,
 }
 
 impl Online {
     pub fn new(tx: Weak<mpsc::Sender<Request>>) -> Self {
         Self {
-            runtime: tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(1)
-                .enable_all()
-                .build()
-                .expect("LX runtime"),
+            runtime: None,
             tx,
             seq: 0,
             search: None,
@@ -112,6 +108,16 @@ impl Online {
             active_stream: None,
             tracks: VecDeque::new(),
         }
+    }
+
+    fn runtime(&mut self) -> &Runtime {
+        self.runtime.get_or_insert_with(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .expect("LX runtime")
+        })
     }
 
     fn alert_handler(&self, id: u64) -> lx_probe::AlertHandler {
@@ -193,8 +199,6 @@ impl Online {
             + track.title.capacity()
             + track.artist.capacity()
             + track.album.capacity()
-            + track.title_lower.capacity()
-            + track.artist_lower.capacity()
     }
 
     fn upsert(&mut self, track: Arc<Track>) -> Vec<TrackId> {
@@ -258,7 +262,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         let id = self.online.seq;
         let tx = self.online.tx.clone();
         let alert = self.online.alert_handler(id);
-        let handle = self.online.runtime.spawn(async move {
+        let handle = self.online.runtime().spawn(async move {
             match Script::import(path, alert).await {
                 Ok((script, drain)) => {
                     Completion::Imported(id, Ok(script)).send(tx.clone());
@@ -311,32 +315,38 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         self.online.import_drain.take();
         self.online.shown_alert = false;
         if let Some(track) = self.state.track.clone().filter(|t| t.local_path().is_some()) {
-            self.details(&track);
+            self.details(&track, false);
         }
         self.rebuild_order();
         self.script_event();
         self.results();
     }
 
-    pub(super) fn enhance_details(&mut self, track: &Arc<Track>, details: &TrackDetails) {
+    pub(super) fn enhance_details(
+        &mut self,
+        track: &Arc<Track>,
+        need_cover: bool,
+        need_lyrics: bool,
+    ) {
         self.online.details.take();
         match &track.origin {
             TrackOrigin::Local(_) => {
                 let Some(script) = self.cfg.lx_script.as_ref() else {
                     return;
                 };
-                if !(details.lyrics.is_empty() && script.supports_local("lyric")
-                    || details.cover.is_none() && script.supports_local("pic"))
-                {
+                let want_lyrics = need_lyrics && script.supports_local("lyric");
+                let want_cover = need_cover && script.supports_local("pic");
+                if !want_lyrics && !want_cover {
                     return;
                 }
                 self.online.seq += 1;
                 let id = self.online.seq;
                 let tx = self.online.tx.clone();
                 let alert = self.online.alert_handler(id);
-                let (script, track, details) = (script.clone(), track.clone(), details.clone());
-                let handle = self.online.runtime.spawn(async move {
-                    let result = online::enhance(script, &track, details, alert).await;
+                let (script, track) = (script.clone(), track.clone());
+                let handle = self.online.runtime().spawn(async move {
+                    let result =
+                        online::enhance(script, &track, want_cover, want_lyrics, alert).await;
                     Completion::Details(id, track.id.clone(), result).send(tx);
                 });
                 self.online.details = Some(Job {
@@ -345,7 +355,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                 });
             }
             TrackOrigin::Online(reference) => {
-                if self.state.deferred || (!details.lyrics.is_empty() && details.cover.is_some()) {
+                if self.state.deferred || (!need_lyrics && !need_cover) {
                     return;
                 }
                 self.online.seq += 1;
@@ -353,9 +363,8 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                 let tx = self.online.tx.clone();
                 let track_id = track.id.clone();
                 let reference = reference.clone();
-                let details = details.clone();
-                let handle = self.online.runtime.spawn(async move {
-                    let result = online::fetch_details(&reference, details).await;
+                let handle = self.online.runtime().spawn(async move {
+                    let result = online::fetch_details(&reference, need_cover, need_lyrics).await;
                     Completion::Details(id, track_id, result).send(tx);
                 });
                 self.online.details = Some(Job {
@@ -402,7 +411,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         self.online.seq += 1;
         let id = self.online.seq;
         let tx = self.online.tx.clone();
-        let handle = self.online.runtime.spawn(async move {
+        let handle = self.online.runtime().spawn(async move {
             Completion::Search(id, online::search(&source, query.trim(), page).await).send(tx);
         });
         self.online.search = Some(Job {
@@ -463,7 +472,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         let tx = self.online.tx.clone();
         let alert = self.online.alert_handler(id);
         let resume = !ctx.position.is_zero();
-        let handle = self.online.runtime.spawn(async move {
+        let handle = self.online.runtime().spawn(async move {
             let transfer_tx = tx.clone();
             let result = online::prepare(script, action, alert, resume, move || {
                 Completion::TransferEnded(id).send(transfer_tx);
@@ -559,7 +568,9 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             return true;
         };
         let status = stream.status();
-        let embedded = status.is_ok().then(|| stream.take_details()).flatten();
+        let embedded = (status.is_ok() && self.pending_local_details.is_none())
+            .then(|| stream.take_details())
+            .flatten();
         match status {
             Ok((seekable, duration)) => {
                 self.state.input_seekable = seekable;
@@ -786,7 +797,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         self.state.status = Status::Paused;
         self.state.deferred = true;
         self.rebuild_order();
-        self.details(&track);
+        self.details(&track, true);
         true
     }
 }
@@ -804,6 +815,7 @@ mod tests {
         );
         let reference = OnlineTrack::parse(url.as_str()).unwrap();
         let mut online = Online::new(Weak::new());
+        assert!(online.runtime.is_none());
 
         for index in 0..3 {
             let mut track = reference.track().unwrap();

@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use image::{DynamicImage, GenericImageView, RgbaImage};
+use jpeg_decoder::{CodingProcess, Decoder as JpegDecoder, PixelFormat};
 use lofty::{
     config::ParseOptions,
     error::LoftyError,
@@ -17,12 +18,13 @@ use super::{
     lyrics::{LyricLine, read_lyrics},
 };
 
-const MAX_COVER_DIMENSION: u32 = 512;
+const MAX_COVER_DIMENSION: u32 = 320;
+const MAX_COVER_SOURCE_DIMENSION: u16 = 8192;
+const MAX_COVER_DECODE_BYTES: usize = 64 * 1024 * 1024;
 const AMBIENT_COVER_DIMENSION: u32 = 64;
 const AMBIENT_BLUR_SIGMA: f32 = 7.0;
 const PALETTE_COVER_DIMENSION: u32 = 384;
 const PALETTE_QUALITY: u8 = 5;
-#[cfg(target_os = "linux")]
 const MAX_RAW_COVER_BYTES: usize = 512 * 1024;
 
 pub fn read_meta_info(path: &Path) -> Result<Track, LoftyError> {
@@ -57,11 +59,11 @@ impl CoverPalette {
     }
 }
 
-#[cfg(target_os = "linux")]
-#[derive(Clone)]
-pub struct RawCover {
-    pub bytes: Arc<[u8]>,
+#[derive(Debug, Eq, PartialEq)]
+pub struct CoverSource {
+    pub bytes: Box<[u8]>,
     pub extension: &'static str,
+    pub palette: Option<CoverPalette>,
 }
 
 #[derive(Clone)]
@@ -82,7 +84,7 @@ impl From<RgbaImage> for CoverImage {
 }
 
 impl CoverImage {
-    #[cfg(any(target_os = "linux", test))]
+    #[cfg(test)]
     pub fn dimensions(&self) -> (u32, u32) {
         (self.pixels.width(), self.pixels.height())
     }
@@ -93,12 +95,78 @@ pub struct TrackDetails {
     pub cover: Option<CoverImage>,
     pub ambient: Option<CoverImage>,
     pub palette: Option<CoverPalette>,
-    #[cfg(target_os = "linux")]
-    pub raw_cover: Option<RawCover>,
+    pub cover_source: Option<Arc<CoverSource>>,
     pub lyrics: Vec<LyricLine>,
 }
 
-pub(crate) struct DecodedCover {
+impl TrackDetails {
+    pub(crate) fn from_cover_bytes(bytes: &[u8]) -> Option<Self> {
+        let decoded = decode_cover_full(bytes)?;
+        let source = CoverSource::new(bytes, &decoded.cover, decoded.palette)?;
+        let mut details = Self::from(decoded);
+        details.cover_source = Some(Arc::new(source));
+        Some(details)
+    }
+}
+
+impl From<DecodedCover> for TrackDetails {
+    fn from(decoded: DecodedCover) -> Self {
+        Self {
+            cover: Some(decoded.cover),
+            ambient: Some(decoded.ambient),
+            palette: decoded.palette,
+            ..Self::default()
+        }
+    }
+}
+
+impl CoverSource {
+    fn new(bytes: &[u8], cover: &CoverImage, palette: Option<CoverPalette>) -> Option<Self> {
+        use image::{
+            ExtendedColorType, ImageEncoder, ImageFormat,
+            codecs::png::{CompressionType, FilterType, PngEncoder},
+        };
+
+        if bytes.len() <= MAX_RAW_COVER_BYTES {
+            let extension = match image::guess_format(bytes).ok()? {
+                ImageFormat::Png => ".png",
+                ImageFormat::Jpeg => ".jpg",
+                ImageFormat::Gif => ".gif",
+                ImageFormat::WebP => ".webp",
+                ImageFormat::Bmp => ".bmp",
+                _ => ".bin",
+            };
+            return Some(Self {
+                bytes: bytes.into(),
+                extension,
+                palette,
+            });
+        }
+
+        let mut bytes = Vec::new();
+        PngEncoder::new_with_quality(&mut bytes, CompressionType::Fast, FilterType::Sub)
+            .write_image(
+                cover.pixels.as_bytes(),
+                cover.pixels.width(),
+                cover.pixels.height(),
+                ExtendedColorType::Rgba8,
+            )
+            .ok()?;
+        Some(Self {
+            bytes: bytes.into_boxed_slice(),
+            extension: ".png",
+            palette,
+        })
+    }
+
+    pub(crate) fn render(&self) -> TrackDetails {
+        decode_scaled_cover(&self.bytes)
+            .map(|image| render_cover(image, self.palette).into())
+            .unwrap_or_default()
+    }
+}
+
+struct DecodedCover {
     pub cover: CoverImage,
     pub ambient: CoverImage,
     pub palette: Option<CoverPalette>,
@@ -178,22 +246,86 @@ pub(crate) fn extract_palette(img: &DynamicImage) -> Option<CoverPalette> {
     })
 }
 
-pub(crate) fn decode_cover_full(bytes: &[u8]) -> Option<DecodedCover> {
-    let mut reader =
-        image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
-    let mut limits = image::Limits::default();
-    limits.max_alloc = Some(64 * 1024 * 1024);
-    limits.max_image_width = Some(8192);
-    limits.max_image_height = Some(8192);
-    reader.limits(limits);
-    let img = reader.decode().ok()?;
+fn decode_jpeg(bytes: &[u8]) -> Option<DynamicImage> {
+    let mut decoder = JpegDecoder::new(bytes);
+    decoder.read_info().ok()?;
+    let info = decoder.info()?;
+    let longest = info.width.max(info.height);
+    if info.width == 0
+        || info.height == 0
+        || longest > MAX_COVER_SOURCE_DIMENSION
+        || usize::from(info.width) * usize::from(info.height) * info.pixel_format.pixel_bytes()
+            > MAX_COVER_DECODE_BYTES
+    {
+        return None;
+    }
+    // Progressive JPEGs still need full-size coefficient buffers, even with a scaled output.
+    let (width, height) = if info.coding_process == CodingProcess::DctSequential
+        && u32::from(longest) >= 2 * MAX_COVER_DIMENSION
+    {
+        decoder.scale(MAX_COVER_DIMENSION as u16, MAX_COVER_DIMENSION as u16).ok()?
+    } else {
+        (info.width, info.height)
+    };
+    decoder.set_max_decoding_buffer_size(MAX_COVER_DECODE_BYTES);
+    let pixels = decoder.decode().ok()?;
+    let (width, height) = (u32::from(width), u32::from(height));
+    match info.pixel_format {
+        PixelFormat::RGB24 => {
+            image::RgbImage::from_raw(width, height, pixels).map(DynamicImage::ImageRgb8)
+        }
+        PixelFormat::L8 => {
+            image::GrayImage::from_raw(width, height, pixels).map(DynamicImage::ImageLuma8)
+        }
+        PixelFormat::L16 => {
+            let luma: Vec<u8> = pixels.as_chunks::<2>().0.iter().map(|pair| pair[0]).collect();
+            image::GrayImage::from_raw(width, height, luma).map(DynamicImage::ImageLuma8)
+        }
+        PixelFormat::CMYK32 => {
+            let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
+            for &[c, m, y, k] in pixels.as_chunks::<4>().0 {
+                let k = u16::from(k);
+                rgb.push(((u16::from(c) * k) / 255) as u8);
+                rgb.push(((u16::from(m) * k) / 255) as u8);
+                rgb.push(((u16::from(y) * k) / 255) as u8);
+            }
+            image::RgbImage::from_raw(width, height, rgb).map(DynamicImage::ImageRgb8)
+        }
+    }
+}
+
+fn decode_scaled_cover(bytes: &[u8]) -> Option<DynamicImage> {
+    let img = if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        decode_jpeg(bytes)?
+    } else {
+        let mut reader =
+            image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+        let mut limits = image::Limits::default();
+        limits.max_alloc = Some(MAX_COVER_DECODE_BYTES as u64);
+        limits.max_image_width = Some(u32::from(MAX_COVER_SOURCE_DIMENSION));
+        limits.max_image_height = limits.max_image_width;
+        reader.limits(limits);
+        reader.decode().ok()?
+    };
+    Some(scale_cover(img))
+}
+
+fn decode_cover_full(bytes: &[u8]) -> Option<DecodedCover> {
+    let img = decode_scaled_cover(bytes)?;
     let palette = extract_palette(&img);
-    let ambient = make_ambient_cover(&img);
-    Some(DecodedCover {
-        cover: resize_cover(img).into(),
+    Some(render_cover(img, palette))
+}
+
+fn render_cover(img: DynamicImage, palette: Option<CoverPalette>) -> DecodedCover {
+    let cover_rgba = img.into_rgba8();
+    let ambient = make_ambient_cover(&cover_rgba);
+    let cover = cover_rgba.into();
+    crate::trim_allocator();
+    DecodedCover {
+        cover,
         ambient,
         palette,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -201,20 +333,19 @@ pub(crate) fn decode_cover(bytes: &[u8]) -> Option<(CoverImage, Option<CoverPale
     decode_cover_full(bytes).map(|decoded| (decoded.cover, decoded.palette))
 }
 
-fn make_ambient_cover(img: &DynamicImage) -> CoverImage {
-    let tiny = img
-        .resize_exact(
-            AMBIENT_COVER_DIMENSION,
-            AMBIENT_COVER_DIMENSION,
-            image::imageops::FilterType::Triangle,
-        )
-        .into_rgba8();
+fn make_ambient_cover(img: &RgbaImage) -> CoverImage {
+    let tiny = image::imageops::resize(
+        img,
+        AMBIENT_COVER_DIMENSION,
+        AMBIENT_COVER_DIMENSION,
+        image::imageops::FilterType::Triangle,
+    );
     image::imageops::blur(&tiny, AMBIENT_BLUR_SIGMA).into()
 }
 
-fn resize_cover(img: DynamicImage) -> RgbaImage {
+fn scale_cover(img: DynamicImage) -> DynamicImage {
     let longest = img.width().max(img.height());
-    let resized = if longest >= 2 * MAX_COVER_DIMENSION {
+    if longest >= 2 * MAX_COVER_DIMENSION {
         // Large reductions can average directly into the destination, without a
         // full-width floating-point intermediate. Keep Triangle for small reductions.
         img.thumbnail(MAX_COVER_DIMENSION, MAX_COVER_DIMENSION)
@@ -222,19 +353,6 @@ fn resize_cover(img: DynamicImage) -> RgbaImage {
         img.resize(MAX_COVER_DIMENSION, MAX_COVER_DIMENSION, image::imageops::FilterType::Triangle)
     } else {
         img
-    };
-    resized.into_rgba8()
-}
-
-#[cfg(target_os = "linux")]
-fn raw_cover_extension(mime: Option<&lofty::picture::MimeType>) -> Option<&'static str> {
-    use lofty::picture::MimeType;
-    match mime? {
-        MimeType::Png => Some(".png"),
-        MimeType::Jpeg => Some(".jpg"),
-        MimeType::Gif => Some(".gif"),
-        MimeType::Unknown(s) if s.eq_ignore_ascii_case("image/webp") => Some(".webp"),
-        _ => None,
     }
 }
 
@@ -243,37 +361,16 @@ fn extract_details(tagged: Option<&lofty::file::TaggedFile>, path: Option<&Path>
     let picture = tag.and_then(|tag| {
         tag.get_picture_type(PictureType::CoverFront).or_else(|| tag.pictures().first())
     });
-    let (cover, ambient, palette) = picture
-        .and_then(|pic| decode_cover_full(pic.data()))
-        .map_or((None, None, None), |decoded| {
-            (Some(decoded.cover), Some(decoded.ambient), decoded.palette)
-        });
-    #[cfg(target_os = "linux")]
-    let raw_cover = picture.and_then(|pic| {
-        if cover.is_none() || pic.data().len() > MAX_RAW_COVER_BYTES {
-            return None;
-        }
-        let extension = raw_cover_extension(pic.mime_type())?;
-        Some(RawCover {
-            bytes: Arc::from(pic.data()),
-            extension,
-        })
-    });
+    let mut details =
+        picture.and_then(|pic| TrackDetails::from_cover_bytes(pic.data())).unwrap_or_default();
     let embedded = tag.and_then(|tag| {
         tag.get_string(ItemKey::UnsyncLyrics).or_else(|| tag.get_string(ItemKey::Lyrics))
     });
-    let lyrics = match path {
+    details.lyrics = match path {
         Some(path) => read_lyrics(path, embedded),
         None => super::lyrics::parse_lyrics(embedded.unwrap_or_default()),
     };
-    TrackDetails {
-        cover,
-        ambient,
-        palette,
-        #[cfg(target_os = "linux")]
-        raw_cover,
-        lyrics,
-    }
+    details
 }
 
 pub fn read_details(path: &Path) -> TrackDetails {
@@ -326,6 +423,26 @@ mod tests {
         oversized_png.extend_from_slice(&9000u32.to_be_bytes());
         oversized_png.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
         assert!(decode_cover(&oversized_png).is_none());
+    }
+
+    #[test]
+    fn large_sequential_jpeg_decodes_directly_to_reduced_pixels() {
+        let image = image::RgbImage::from_pixel(2048, 1024, image::Rgb([59, 104, 142]));
+        let mut jpeg = Cursor::new(Vec::new());
+        image.write_to(&mut jpeg, image::ImageFormat::Jpeg).unwrap();
+
+        let thumb = decode_jpeg(jpeg.get_ref()).unwrap();
+        assert_eq!(thumb.dimensions(), (512, 256));
+        let details = decode_cover_full(jpeg.get_ref()).unwrap();
+        assert_eq!(details.cover.dimensions(), (MAX_COVER_DIMENSION, MAX_COVER_DIMENSION / 2));
+        assert_eq!(details.ambient.dimensions(), (64, 64));
+        assert!(details.palette.is_some());
+
+        let small = image::RgbImage::from_pixel(120, 80, image::Rgb([12, 90, 180]));
+        let mut small_jpeg = Cursor::new(Vec::new());
+        small.write_to(&mut small_jpeg, image::ImageFormat::Jpeg).unwrap();
+        let small_details = decode_cover_full(small_jpeg.get_ref()).unwrap();
+        assert_eq!(small_details.cover.dimensions(), (120, 80));
     }
 
     #[test]

@@ -37,6 +37,7 @@ export {
 export global PlaybackGlobal {
     in property <bool> can-seek;
     in-out property <float> progress;
+    in-out property <int> progress_secs;
     in-out property <float> duration;
     in-out property <bool> paused;
     in-out property <LoopMode> loop_mode;
@@ -49,7 +50,8 @@ export global DisplayGlobal {
     in-out property <SongInfo> current_song;
     in-out property <[LyricItem]> lyrics;
     in-out property <int> active_lyric_index: -1;
-    in-out property <float> lyric_time: 0;
+    in-out property <int> active_word_index: -1;
+    in-out property <float> active_word_progress: 0;
     in property <[SongInfo]> upcoming;
     in property <image> album_image;
     in property <image> ambient_image;
@@ -127,7 +129,7 @@ export component MainWindow inherits Window {
     icon: @image-url("cover.svg");
     no-frame: true;
     resize-border-width: root.maximized ? 0px : 5px;
-    background: transparent;
+    background: Theme.panel;
     forward-focus: content-pane;
     callback toggle_play();
     callback play(SongInfo);
@@ -147,11 +149,12 @@ export component MainWindow inherits Window {
     callback search_songs(string);
     pure callback format_duration(float) -> string;
     pure callback open_url_in_browser(string);
-    pure callback prev-lyric-time(float, [LyricItem]) -> float;
-    pure callback next-lyric-time(float, [LyricItem]) -> float;
+    callback prev-lyric-time([LyricItem]) -> float;
+    callback next-lyric-time([LyricItem]) -> float;
     callback page_changed(int);
     callback lyrics_visibility_changed();
     callback queue_visibility_changed();
+    callback now_playing_visibility_changed();
     callback now_playing_sliding_changed();
     in property <string> version;
     in-out property <int> current_page: 0;
@@ -168,14 +171,17 @@ export component MainWindow inherits Window {
     // Latched edge-triggered flags so descendants (and Layer ItemCache trackers)
     // do not subscribe to per-frame `now-playing-offset` updates during a slide.
     out property <bool> now-playing-sliding: false;
-    private property <bool> now-playing-visible: false;
+    out property <bool> now-playing-visible: false;
     private property <bool> now-playing-resting-open: false;
     private property <bool> main-view-visible: true;
     private property <bool> show-queue;
     out property <bool> queue-visible: root.show-queue && root.now-playing-visible;
     out property <bool> lyrics-visible: root.now-playing-open && !root.show-queue;
+    private property <int> follow-lyrics-seq: 0;
+    private property <color> palette-bg: Palette.background;
+    private property <bool> palette-is-dark: root.palette-bg.to-hsv().value < 0.5;
 
-    public function follow-lyrics() { now-playing.follow-lyrics(); }
+    public function follow-lyrics() { root.follow-lyrics-seq += 1; }
     in-out property <bool> sidebar_expanded: false;
     in-out property <string> operation_error_message: "";
     public function set_light_theme(yes: bool) {
@@ -186,6 +192,11 @@ export component MainWindow inherits Window {
         } else {
             Palette.color-scheme = ColorScheme.dark;
         }
+    }
+    public function follow_system_palette() {
+        Palette.color-scheme = ColorScheme.unknown;
+        Theme.is-dark = root.palette-is-dark;
+        DisplayGlobal.light_ui = !root.palette-is-dark;
     }
     in property <string> update-message;
     in property <string> update-url;
@@ -225,14 +236,20 @@ export component MainWindow inherits Window {
     changed raw-main-view-visible => { root.sync-now-playing-flags(); }
     changed lyrics-visible => { root.lyrics_visibility_changed(); }
     changed queue-visible => { root.queue_visibility_changed(); }
+    changed now-playing-visible => { root.now_playing_visibility_changed(); }
     changed now-playing-sliding => { root.now_playing_sliding_changed(); }
+    changed palette-is-dark => {
+        if DisplayGlobal.follow_system_theme {
+            Theme.is-dark = root.palette-is-dark;
+            DisplayGlobal.light_ui = !root.palette-is-dark;
+        }
+    }
     changed current_page => { root.close-collection-picker(); }
     changed width => { root.close-collection-picker(); }
     changed height => { root.close-collection-picker(); }
     window-frame := Rectangle {
         width: 100%;
         height: 100%;
-        border-radius: root.maximized || root.now-playing-sliding ? 0px : 6px;
         background: Theme.panel;
         clip: true;
 
@@ -265,7 +282,7 @@ export component MainWindow inherits Window {
                 y: 0px;
                 width: 100%;
                 height: root.now-playing-sliding
-                    ? min(parent.height, now-playing-layer.y + 1px)
+                    ? min(parent.height, parent.height * root.now-playing-offset + 1px)
                     : parent.height;
                 clip: root.now-playing-sliding;
                 visible: root.main-view-visible;
@@ -287,7 +304,6 @@ export component MainWindow inherits Window {
 
                         Rectangle {
                             vertical-stretch: 1;
-                            border-top-left-radius: 10px;
                             clip: true;
 
                             if root.current_page == 0: SongListView {
@@ -352,11 +368,24 @@ export component MainWindow inherits Window {
                                     }
                                 }
                             }
+
+                            // Match the sidebar at the corner without clipping the page into a texture.
+                            Path {
+                                x: 0px;
+                                y: 0px;
+                                width: 10px;
+                                height: 10px;
+                                viewbox-width: 10;
+                                viewbox-height: 10;
+                                commands: "M 0 0 H 10 A 10 10 0 0 0 0 10 Z";
+                                fill: Theme.panel;
+                            }
                         }
 
                         ControlPanel {
                             can-seek: PlaybackGlobal.can-seek;
                             progress: PlaybackGlobal.progress;
+                            progress-secs: PlaybackGlobal.progress_secs;
                             duration: PlaybackGlobal.duration;
                             paused: PlaybackGlobal.paused;
                             shuffle: PlaybackGlobal.shuffle;
@@ -378,19 +407,18 @@ export component MainWindow inherits Window {
                 }
             }
 
-            now-playing-layer := Rectangle {
+            if root.now-playing-visible: Rectangle {
                 x: 0px;
                 y: parent.height * root.now-playing-offset;
                 width: 100%;
                 height: 100%;
-                cache-rendering-hint: root.now-playing-sliding && root.now-playing-visible;
 
-                now-playing := NowPlaying {
+                NowPlaying {
                     width: 100%;
                     height: 100%;
-                    visible: root.now-playing-visible;
                     sliding: root.now-playing-sliding;
                     resting-open: root.now-playing-resting-open;
+                    follow-seq: root.follow-lyrics-seq;
                     album-image: DisplayGlobal.album_image;
                     ambient-image: DisplayGlobal.ambient_image;
                     has-ambient-image: DisplayGlobal.has_ambient_image;
@@ -398,10 +426,12 @@ export component MainWindow inherits Window {
                     upcoming: DisplayGlobal.upcoming;
                     lyrics: DisplayGlobal.lyrics;
                     active-lyric-index: DisplayGlobal.active_lyric_index;
-                    lyric-time: DisplayGlobal.lyric_time;
+                    active-word-index: DisplayGlobal.active_word_index;
+                    active-word-progress: DisplayGlobal.active_word_progress;
                     show-queue <=> root.show-queue;
                     can-seek: PlaybackGlobal.can-seek;
                     progress: PlaybackGlobal.progress;
+                    progress-secs: PlaybackGlobal.progress_secs;
                     duration: PlaybackGlobal.duration;
                     paused: PlaybackGlobal.paused;
                     shuffle: PlaybackGlobal.shuffle;
@@ -447,7 +477,7 @@ export component MainWindow inherits Window {
                 keys: @keys(RightArrow);
                 activated => {
                     if (root.lyrics-visible && DisplayGlobal.lyrics.length > 0) {
-                        root.change_progress(root.next-lyric-time(PlaybackGlobal.progress, DisplayGlobal.lyrics));
+                        root.change_progress(root.next-lyric-time(DisplayGlobal.lyrics));
                     } else {
                         root.seek_relative(15);
                     }
@@ -464,7 +494,7 @@ export component MainWindow inherits Window {
                 keys: @keys(LeftArrow);
                 activated => {
                     if (root.lyrics-visible && DisplayGlobal.lyrics.length > 0) {
-                        root.change_progress(root.prev-lyric-time(PlaybackGlobal.progress, DisplayGlobal.lyrics));
+                        root.change_progress(root.prev-lyric-time(DisplayGlobal.lyrics));
                     } else {
                         root.seek_relative(-15);
                     }
@@ -611,7 +641,6 @@ export component MainWindow inherits Window {
     Rectangle {
         width: 100%;
         height: 100%;
-        border-radius: root.maximized || root.now-playing-sliding ? 0px : 6px;
         border-width: root.maximized ? 0px : 1px;
         border-color: Theme.border;
         background: transparent;

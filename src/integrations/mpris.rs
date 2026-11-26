@@ -1,7 +1,7 @@
 use std::{
     fmt::Write as _,
     fs,
-    io::{BufWriter, Write as _},
+    io::Write as _,
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -13,10 +13,6 @@ use std::{
 };
 
 use futures_lite::future::block_on;
-use image::{
-    ExtendedColorType, ImageEncoder,
-    codecs::png::{CompressionType, FilterType, PngEncoder},
-};
 use mpris_server::{
     LoopStatus, Metadata, PlaybackRate, PlaybackStatus, PlayerInterface, Property, RootInterface,
     Server, Signal, Time, TrackId, Volume,
@@ -24,12 +20,11 @@ use mpris_server::{
 };
 
 use crate::{
-    library::{self, Track},
+    library::{self, Track, metadata::CoverSource},
     player::{
         command::{Controls, PlayerCommand as Cmd},
-        state::{PlaybackState, SharedState, Status},
+        state::{LoopMode, PlaybackState, SharedState, Status},
     },
-    slint_types::LoopMode,
 };
 
 const SYNCED_LYRICS_KEY: &str = "com.gitee.gmg137.NeteaseCloudMusicGtk4:syncedLyrics";
@@ -57,7 +52,7 @@ fn push_json_string(out: &mut String, s: &str) {
     out.push('"');
 }
 
-pub fn encode_synced_lyrics(
+fn encode_synced_lyrics(
     track_id: &library::TrackId,
     lines: &[library::lyrics::LyricLine],
 ) -> Option<Arc<str>> {
@@ -155,36 +150,12 @@ fn cover_cache_dir() -> PathBuf {
         .join("sealmusic/art")
 }
 
-pub fn cache_cover_raw(
-    bytes: &[u8],
-    extension: &str,
-) -> std::result::Result<tempfile::NamedTempFile, Box<dyn std::error::Error>> {
+fn cache_cover(cover: &CoverSource) -> std::io::Result<tempfile::NamedTempFile> {
     let dir = cover_cache_dir();
     fs::create_dir_all(&dir)?;
-    let mut f = tempfile::Builder::new().suffix(extension).tempfile_in(dir)?;
-    {
-        let mut writer = BufWriter::new(f.as_file_mut());
-        writer.write_all(bytes)?;
-        writer.flush()?;
-    }
-    Ok(f)
-}
-
-pub fn cache_cover(
-    image: &crate::library::metadata::CoverImage,
-) -> std::result::Result<tempfile::NamedTempFile, Box<dyn std::error::Error>> {
-    let dir = cover_cache_dir();
-    fs::create_dir_all(&dir)?;
-    let mut f = tempfile::Builder::new().suffix(".png").tempfile_in(dir)?;
-    {
-        let mut writer = BufWriter::new(f.as_file_mut());
-        let encoder =
-            PngEncoder::new_with_quality(&mut writer, CompressionType::Fast, FilterType::Sub);
-        let (width, height) = image.dimensions();
-        encoder.write_image(image.pixels.as_bytes(), width, height, ExtendedColorType::Rgba8)?;
-        writer.flush()?;
-    }
-    Ok(f)
+    let mut file = tempfile::Builder::new().suffix(cover.extension).tempfile_in(dir)?;
+    file.write_all(&cover.bytes)?;
+    Ok(file)
 }
 
 fn same_opt_arc<T: ?Sized + PartialEq>(a: &Option<Arc<T>>, b: &Option<Arc<T>>) -> bool {
@@ -195,14 +166,55 @@ fn same_opt_arc<T: ?Sized + PartialEq>(a: &Option<Arc<T>>, b: &Option<Arc<T>>) -
     }
 }
 
+fn metadata_changed(old: &PlaybackState, new: &PlaybackState) -> bool {
+    !same_opt_arc(&old.track, &new.track)
+        || old.duration != new.duration
+        || !same_opt_arc(&old.cover_source, &new.cover_source)
+        || lyrics_changed(old, new)
+}
+
+fn lyrics_changed(old: &PlaybackState, new: &PlaybackState) -> bool {
+    !Arc::ptr_eq(&old.lyrics, &new.lyrics) && old.lyrics != new.lyrics
+}
+
 #[derive(Default)]
 struct CachedMetadata {
-    initialized: bool,
-    track: Option<Arc<Track>>,
-    art_url: Option<Arc<str>>,
+    state: PlaybackState,
+    cover_file: Option<tempfile::NamedTempFile>,
     synced_lyrics: Option<Arc<str>>,
-    duration: Duration,
     value: Metadata,
+}
+
+impl CachedMetadata {
+    fn project(&mut self, state: PlaybackState) -> Metadata {
+        if metadata_changed(&self.state, &state) {
+            let track_changed = self.state.track.as_ref().map(|track| &track.id)
+                != state.track.as_ref().map(|track| &track.id);
+            if track_changed || !same_opt_arc(&self.state.cover_source, &state.cover_source) {
+                self.cover_file = state.cover_source.as_ref().and_then(|source| {
+                    cache_cover(source).inspect_err(|err| log::warn!("Cover cache: {err}")).ok()
+                });
+            }
+            let url = self
+                .cover_file
+                .as_ref()
+                .and_then(|file| url::Url::from_file_path(file.path()).ok());
+            if track_changed || lyrics_changed(&self.state, &state) {
+                self.synced_lyrics = state
+                    .track
+                    .as_ref()
+                    .and_then(|track| encode_synced_lyrics(&track.id, &state.lyrics));
+            }
+            self.value = build_metadata(
+                state.track.as_deref(),
+                state.duration,
+                url.as_ref().map(url::Url::as_str),
+                self.synced_lyrics.as_deref(),
+            );
+            self.state = state;
+        }
+        self.value.clone()
+    }
 }
 
 struct Desktop {
@@ -223,6 +235,12 @@ impl Desktop {
     }
     fn read<R>(&self, f: impl FnOnce(&PlaybackState) -> R) -> R {
         f(&self.state.read().unwrap())
+    }
+    fn project_metadata(&self) -> Metadata {
+        // Serialize getter and signal projection before taking the latest snapshot.
+        // An older signal must never replace a file the getter just handed out.
+        let mut cache = self.metadata_cache.lock().unwrap();
+        cache.project(self.read(Clone::clone))
     }
 }
 
@@ -270,15 +288,6 @@ fn build_metadata(
     }
     m.build()
 }
-fn metadata(state: &PlaybackState) -> Metadata {
-    build_metadata(
-        state.track.as_deref(),
-        state.duration,
-        state.art_url.as_deref(),
-        state.synced_lyrics.as_deref(),
-    )
-}
-
 impl RootInterface for Desktop {
     async fn raise(&self) -> fdo::Result<()> {
         self.send(Cmd::Raise).await
@@ -385,28 +394,7 @@ impl PlayerInterface for Desktop {
         Ok(self.send(Cmd::SetShuffle(s)).await?)
     }
     async fn metadata(&self) -> fdo::Result<Metadata> {
-        let (track, art_url, synced_lyrics, duration) = self
-            .read(|s| (s.track.clone(), s.art_url.clone(), s.synced_lyrics.clone(), s.duration));
-        let mut cache = self.metadata_cache.lock().unwrap();
-        if !cache.initialized
-            || !same_opt_arc(&cache.track, &track)
-            || !same_opt_arc(&cache.art_url, &art_url)
-            || !same_opt_arc(&cache.synced_lyrics, &synced_lyrics)
-            || cache.duration != duration
-        {
-            cache.value = build_metadata(
-                track.as_deref(),
-                duration,
-                art_url.as_deref(),
-                synced_lyrics.as_deref(),
-            );
-            cache.track = track;
-            cache.art_url = art_url;
-            cache.synced_lyrics = synced_lyrics;
-            cache.duration = duration;
-            cache.initialized = true;
-        }
-        Ok(cache.value.clone())
+        Ok(self.project_metadata())
     }
     async fn volume(&self) -> fdo::Result<Volume> {
         Ok(self.read(|s| s.volume.into()))
@@ -443,17 +431,17 @@ impl PlayerInterface for Desktop {
     }
 }
 
-fn changes(old: &PlaybackState, new: &PlaybackState) -> Vec<Property> {
+fn changes(
+    old: &PlaybackState,
+    new: &PlaybackState,
+    metadata: impl FnOnce() -> Metadata,
+) -> Vec<Property> {
     let mut properties = Vec::new();
     if old.status != new.status {
         properties.push(Property::PlaybackStatus(status(new.status)));
     }
-    if !same_opt_arc(&old.track, &new.track)
-        || !same_opt_arc(&old.art_url, &new.art_url)
-        || !same_opt_arc(&old.synced_lyrics, &new.synced_lyrics)
-        || old.duration != new.duration
-    {
-        properties.push(Property::Metadata(metadata(new)));
+    if metadata_changed(old, new) {
+        properties.push(Property::Metadata(metadata()));
     }
     if old.volume != new.volume {
         properties.push(Property::Volume(new.volume.into()));
@@ -485,7 +473,6 @@ pub fn start(
     controls: Controls,
     state: SharedState,
     can_run_hidden: Arc<AtomicBool>,
-    mpris_available: Arc<AtomicBool>,
 ) -> (mpsc::Sender<Update>, thread::JoinHandle<()>) {
     let (tx, rx) = mpsc::channel::<Update>();
     let handle = thread::spawn(move || {
@@ -494,13 +481,11 @@ pub fn start(
             Err(e) => {
                 // The Linux tray also needs a session bus. Avoid hiding an unreachable window.
                 can_run_hidden.store(false, Ordering::Release);
-                mpris_available.store(false, Ordering::Release);
                 log::warn!("MPRIS unavailable: {e}");
                 return;
             }
         };
         can_run_hidden.store(true, Ordering::Release);
-        mpris_available.store(true, Ordering::Release);
         let mut previous = Arc::new(PlaybackState::default());
         while let Ok((mut current, mut seeked)) = rx.recv() {
             while let Ok((newer, newer_seeked)) = rx.try_recv() {
@@ -509,7 +494,7 @@ pub fn start(
                     seeked = newer_seeked;
                 }
             }
-            let properties = changes(&previous, &current);
+            let properties = changes(&previous, &current, || server.imp().project_metadata());
             let result = block_on(async {
                 if !properties.is_empty() {
                     server.properties_changed(properties).await?;
@@ -529,7 +514,6 @@ pub fn start(
             }
             previous = current;
         }
-        mpris_available.store(false, Ordering::Release);
         if let Err(e) = block_on(server.release_bus_name()) {
             log::warn!("Releasing MPRIS: {e}");
         }
@@ -656,6 +640,25 @@ mod tests {
         assert!(encoded.ends_with("]}"));
     }
 
+    fn metadata(state: &PlaybackState) -> Metadata {
+        CachedMetadata::default().project(state.clone())
+    }
+
+    fn test_changes(old: &PlaybackState, new: &PlaybackState) -> Vec<Property> {
+        changes(old, new, || metadata(new))
+    }
+
+    fn sample_cover() -> Arc<CoverSource> {
+        let mut img = image::RgbaImage::new(2, 3);
+        img.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        library::metadata::TrackDetails::from_cover_bytes(png.get_ref())
+            .unwrap()
+            .cover_source
+            .unwrap()
+    }
+
     #[test]
     fn metadata_maps_track_fields_and_roundtrips_track_id() {
         let empty = metadata(&PlaybackState::default());
@@ -663,29 +666,30 @@ mod tests {
         assert!(empty.get_value(SYNCED_LYRICS_KEY).is_none());
 
         let track = sample_track("track_1");
-        let synced_lyrics = encode_synced_lyrics(
-            &track.id,
-            &[crate::library::lyrics::LyricLine {
-                time: 1.25,
-                duration: 2.0,
-                text: "First line".into(),
-                words: Vec::new(),
-            }],
-        );
+        let lyrics = Arc::from([crate::library::lyrics::LyricLine {
+            time: 1.25,
+            duration: 2.0,
+            text: "First line".into(),
+            words: Vec::new(),
+        }]);
+        let synced_lyrics = encode_synced_lyrics(&track.id, &lyrics);
         let state = PlaybackState {
             track: Some(track.clone()),
             duration: track.duration,
-            art_url: Some("file:///tmp/cover.png".into()),
-            synced_lyrics: synced_lyrics.clone(),
+            cover_source: Some(sample_cover()),
+            lyrics,
             ..Default::default()
         };
-        let meta = metadata(&state);
+        let mut projector = CachedMetadata::default();
+        let meta = projector.project(state);
         assert_eq!(meta.trackid().unwrap().as_str(), track.id.0);
         assert_eq!(TrackId::try_from(track.id.0.as_str()).unwrap().to_string(), track.id.0);
         assert_eq!(meta.length().unwrap().as_micros(), 125_000_000);
         assert_eq!(meta.title(), Some("Sample Title"));
         assert_eq!(meta.artist(), Some(vec!["Sample Artist".into()]));
-        assert_eq!(meta.art_url().unwrap().as_str(), "file:///tmp/cover.png");
+        let path =
+            url::Url::parse(meta.art_url().unwrap().as_str()).unwrap().to_file_path().unwrap();
+        assert!(path.exists());
         let raw_lyrics =
             meta.get::<mpris_server::zbus::zvariant::Str<'_>>(SYNCED_LYRICS_KEY).unwrap().unwrap();
         assert_eq!(raw_lyrics.as_str(), synced_lyrics.unwrap().as_ref());
@@ -739,14 +743,13 @@ mod tests {
             can_next: true,
             can_previous: true,
             can_play: true,
-            art_url: Some("file:///tmp/a.png".into()),
             ..Default::default()
         };
 
         let mut position_only = base.clone();
         position_only.position = Duration::from_secs(4);
         position_only.sampled_at = Instant::now() + Duration::from_secs(3);
-        assert!(changes(&base, &position_only).is_empty());
+        assert!(test_changes(&base, &position_only).is_empty());
 
         let updated = PlaybackState {
             track: Some(track_b),
@@ -758,10 +761,9 @@ mod tests {
             can_next: false,
             can_previous: false,
             can_play: false,
-            art_url: Some("file:///tmp/b.png".into()),
             ..base.clone()
         };
-        let diff = changes(&base, &updated);
+        let diff = test_changes(&base, &updated);
         assert!(diff.contains(&Property::PlaybackStatus(PlaybackStatus::Playing)));
         assert!(diff.contains(&Property::Metadata(metadata(&updated))));
         assert!(diff.contains(&Property::Volume(0.5)));
@@ -776,32 +778,37 @@ mod tests {
             status: Status::Stopped,
             ..base.clone()
         };
-        assert!(changes(&base, &stopped).contains(&Property::CanSeek(false)));
+        assert!(test_changes(&base, &stopped).contains(&Property::CanSeek(false)));
 
         let deferred = PlaybackState {
             deferred: true,
             ..base.clone()
         };
-        assert!(changes(&base, &deferred).contains(&Property::CanSeek(false)));
+        assert!(test_changes(&base, &deferred).contains(&Property::CanSeek(false)));
 
         let drained = PlaybackState {
             sink_empty: true,
             ..base.clone()
         };
-        assert!(changes(&base, &drained).contains(&Property::CanSeek(false)));
+        assert!(test_changes(&base, &drained).contains(&Property::CanSeek(false)));
 
         let lyrics_only = PlaybackState {
-            synced_lyrics: Some(Arc::from("{\"version\":1,\"trackId\":\"/a\",\"lines\":[]}")),
+            lyrics: Arc::from([library::lyrics::LyricLine {
+                time: 0.0,
+                duration: 1.0,
+                text: "First line".into(),
+                words: Vec::new(),
+            }]),
             ..base.clone()
         };
-        assert!(changes(&base, &lyrics_only).contains(&Property::Metadata(metadata(&lyrics_only))));
+        assert!(
+            test_changes(&base, &lyrics_only).contains(&Property::Metadata(metadata(&lyrics_only)))
+        );
     }
 
     #[test]
     fn cache_cover_writes_png_and_cleans_up_on_drop() {
-        let mut img = image::RgbaImage::new(2, 3);
-        img.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
-        let temp = cache_cover(&img.into()).unwrap();
+        let temp = cache_cover(&sample_cover()).unwrap();
         let path = temp.path().to_path_buf();
         assert!(path.exists());
         let decoded = image::open(&path).unwrap();
@@ -823,13 +830,7 @@ mod tests {
         let (controls, rx) = Controls::channel();
         let shared = SharedState::default();
         let can_run_hidden = Arc::new(AtomicBool::new(false));
-        let mpris_available = Arc::new(AtomicBool::new(true));
-        let (desktop, service) = start(
-            controls.clone(),
-            shared.clone(),
-            can_run_hidden.clone(),
-            mpris_available.clone(),
-        );
+        let (desktop, service) = start(controls.clone(), shared.clone(), can_run_hidden.clone());
         let cfg = Config {
             song_dir: dir.path().to_path_buf(),
             ..Default::default()
@@ -902,7 +903,15 @@ mod tests {
             assert!(player.get_property::<bool>("CanGoNext").await.unwrap());
             assert!(player.get_property::<bool>("CanGoPrevious").await.unwrap());
 
-            let meta: HashMap<String, OwnedValue> = player.get_property("Metadata").await.unwrap();
+            let meta = loop {
+                let current: HashMap<String, OwnedValue> =
+                    player.get_property("Metadata").await.unwrap();
+                if current.contains_key("mpris:artUrl") && current.contains_key(SYNCED_LYRICS_KEY) {
+                    break current;
+                }
+                assert!(std::time::Instant::now() < deadline, "Track details did not load");
+                thread::sleep(Duration::from_millis(20));
+            };
             let track_id_1 =
                 OwnedObjectPath::try_from(meta["mpris:trackid"].try_clone().unwrap()).unwrap();
             assert!(track_id_1.as_str().starts_with("/dev/sealmusic/track/local_"));
@@ -1015,9 +1024,7 @@ mod tests {
         let (controls, rx) = Controls::channel();
         let shared = SharedState::default();
         let can_run_hidden = Arc::new(AtomicBool::new(false));
-        let mpris_available = Arc::new(AtomicBool::new(true));
-        let (desktop, service) =
-            start(controls.clone(), shared.clone(), can_run_hidden, mpris_available);
+        let (desktop, service) = start(controls.clone(), shared.clone(), can_run_hidden);
         let worker = crate::player::spawn_test_worker(online_cfg, shared, rx, move |event| {
             if let Event::State(s, seeked) = &event {
                 let _ = desktop.send((Arc::clone(s), *seeked));
@@ -1081,16 +1088,9 @@ mod tests {
     fn mpris_degrades_without_session_bus() {
         let (controls, _rx) = Controls::channel();
         let can_run_hidden = Arc::new(AtomicBool::new(true));
-        let mpris_available = Arc::new(AtomicBool::new(true));
-        let (desktop, service) = start(
-            controls,
-            SharedState::default(),
-            can_run_hidden.clone(),
-            mpris_available.clone(),
-        );
+        let (desktop, service) = start(controls, SharedState::default(), can_run_hidden.clone());
         drop(desktop);
         service.join().unwrap();
         assert!(!can_run_hidden.load(Ordering::Acquire));
-        assert!(!mpris_available.load(Ordering::Acquire));
     }
 }

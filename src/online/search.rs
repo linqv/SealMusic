@@ -7,18 +7,14 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use openssl::{
-    hash::{MessageDigest, hash},
-    symm::{Cipher, encrypt},
-};
+use lx_probe::crypto::{AesMode, aes_encrypt, md5_hex, sha1};
 use reqwest::Response;
 use serde_json::{Value, json};
 
-use super::OnlineTrack;
+use super::{API_BODY_LIMIT, OnlineTrack, read_bounded};
 use crate::library::Track;
 
 const PAGE_SIZE: u32 = 30;
-const MAX_BODY: usize = 2 * 1024 * 1024;
 const KW_SEARCH_URL: &str = concat!(
     "https://search.kuwo.cn/r.s?client=kt&ver=kwplayer_ar_9.2.2.1&vipver=1",
     "&uid=794762570&show_copyright_off=1&newver=1&ft=music&cluster=0&strategy=2012",
@@ -196,22 +192,9 @@ async fn search_platform(source: &str, query: &str, page: u32) -> Result<SearchP
     let response = response.and_then(Response::error_for_status).map_err(|err| {
         log::warn!("Catalog search request failed ({source}): {}", err.without_url());
     })?;
-    let body = read_json(response).await?;
+    let bytes = read_bounded(response, API_BODY_LIMIT).await.ok_or(())?;
+    let body = serde_json::from_slice(&bytes).map_err(|_| ())?;
     parse_source_page(source, body, page)
-}
-
-async fn read_json(mut response: Response) -> Result<Value, ()> {
-    if response.content_length().is_some_and(|n| n > MAX_BODY as u64) {
-        return Err(());
-    }
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| ())? {
-        if chunk.len() > MAX_BODY - body.len() {
-            return Err(());
-        }
-        body.extend_from_slice(&chunk);
-    }
-    serde_json::from_slice(&body).map_err(|_| ())
 }
 
 fn parse_source_page(source: &str, body: Value, page: u32) -> Result<SearchPage, ()> {
@@ -264,11 +247,6 @@ fn format_size(size: u64) -> String {
         unit += 1;
     }
     format!("{val:.2} {}", UNITS[unit])
-}
-
-fn md5_hex(bytes: &[u8]) -> Result<String, ()> {
-    let digest = hash(MessageDigest::md5(), bytes).map_err(|_| ())?;
-    Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 fn collect_tracks(
@@ -490,7 +468,7 @@ fn zzc_sign(text: &str) -> Result<String, ()> {
         89, 39, 179, 150, 218, 82, 58, 252, 177, 52, 186, 123, 120, 64, 242, 133, 143, 161, 121,
         179,
     ];
-    let digest = hash(MessageDigest::sha1(), text.as_bytes()).map_err(|_| ())?;
+    let digest = sha1(text.as_bytes());
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
     let pick = |indexes: &[usize]| -> String {
         indexes.iter().filter_map(|&idx| hex.as_bytes().get(idx).map(|&b| b as char)).collect()
@@ -593,10 +571,10 @@ pub(super) fn wy_eapi(url: &str, object: &Value) -> Result<String, ()> {
     const EAPI_KEY: &[u8; 16] = b"e82ckenh8dichen8";
     let text = serde_json::to_string(object).map_err(|_| ())?;
     let message = format!("nobody{url}use{text}md5forencrypt");
-    let digest = md5_hex(message.as_bytes())?;
+    let digest = md5_hex(message.as_bytes());
     let data = format!("{url}-36cd479b6b5-{text}-36cd479b6b5-{digest}");
     let encrypted =
-        encrypt(Cipher::aes_128_ecb(), EAPI_KEY, None, data.as_bytes()).map_err(|_| ())?;
+        aes_encrypt(AesMode::Aes128Ecb, EAPI_KEY, &[], data.as_bytes()).map_err(|_| ())?;
     Ok(encrypted.iter().map(|b| format!("{b:02X}")).collect())
 }
 
@@ -659,7 +637,7 @@ fn mg_sign(time: &str, query: &str) -> Result<(&'static str, String), ()> {
     const DEVICE_ID: &str = "963B7AA0D21511ED807EE5846EC87D20";
     const SIG_MD5: &str = "6cdc72a439cef99a3418d2a78aa28c73";
     let raw = format!("{query}{SIG_MD5}yyapp2d16148780a1dcc7408e06336b98cfd50{DEVICE_ID}{time}");
-    Ok((DEVICE_ID, md5_hex(raw.as_bytes())?))
+    Ok((DEVICE_ID, md5_hex(raw.as_bytes())))
 }
 
 fn parse_mg(body: Value, page: u32) -> Result<SearchPage, ()> {
@@ -1051,7 +1029,10 @@ mod tests {
             "zzc790be3fkydls8wd25ty3g8tneo6yjymkea23f3fe"
         );
         let eapi = wy_eapi(WY_SEARCH_PATH, &json!({"keyword": "Fade"})).unwrap();
-        assert!(!eapi.is_empty() && eapi.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(
+            eapi,
+            "74A595527B7A1647174ADDB4F261E92F180F42F921F98E9D338C60DB20AF499CEA90E95FB2FDA117A0B5D8175C2F21E58373E20335FCAEFFFC254767452001FFDF6EEAFA9293AF7C6CC8E718741466295D866F31B4216E541BBA1515A215FEE8D76CFF0E76938EACAEF61FE01DBA83EB"
+        );
         let (device_id, sign) = mg_sign("1700000000000", "Fade").unwrap();
         assert_eq!(device_id, "963B7AA0D21511ED807EE5846EC87D20");
         assert_eq!(sign.len(), 32);

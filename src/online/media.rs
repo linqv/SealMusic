@@ -1,28 +1,11 @@
-use std::{
-    sync::OnceLock,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use reqwest::{Client, Response, StatusCode, Url};
 
-use super::{PreparedAudio, Result, Script, sanitize_log, stream::download_and_decode};
+use super::{PreparedAudio, Result, Script, api_client, sanitize_log, stream::download_and_decode};
 use crate::slint_types::OnlineIssue;
 
 const LIMIT: u64 = 256 * 1024 * 1024;
-
-fn media_client() -> Option<&'static Client> {
-    static CLIENT: OnceLock<Option<Client>> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            Client::builder()
-                .connect_timeout(Duration::from_secs(15))
-                .read_timeout(Duration::from_secs(30))
-                .build()
-                .map_err(|e| log::warn!("Could not build media HTTP client: {e}"))
-                .ok()
-        })
-        .as_ref()
-}
 
 fn url_has_expired_param(url: &Url) -> bool {
     url.query_pairs().any(|(k, v)| {
@@ -118,7 +101,7 @@ pub async fn prepare(
         .as_str()
         .map(|q| format!("{source} · {q}"))
         .unwrap_or_else(|| source.to_owned());
-    let client = media_client().ok_or_else(|| (OnlineIssue::Transfer, context.clone()))?;
+    let client = api_client().ok_or_else(|| (OnlineIssue::Transfer, context.clone()))?;
 
     // Drop the script worker subprocess as soon as we have a non-expired media response.
     let response = {
@@ -148,6 +131,7 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
         },
         thread,
+        time::Duration,
     };
 
     use super::*;

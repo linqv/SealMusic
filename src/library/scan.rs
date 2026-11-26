@@ -5,8 +5,7 @@ use std::{
 
 use rayon::prelude::*;
 
-use super::{Track, metadata::read_meta_info};
-use crate::slint_types::SortKey;
+use super::{SortKey, Track, metadata::read_meta_info};
 
 fn audio_paths(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(dir
@@ -44,9 +43,9 @@ pub fn scan(dir: &Path) -> std::io::Result<Vec<Arc<Track>>> {
 pub fn sort(tracks: &mut [Arc<Track>], key: SortKey, ascending: bool) {
     tracks.sort_unstable_by(|a, b| {
         let order = match key {
-            SortKey::BySongName => a.title.cmp(&b.title),
-            SortKey::BySinger => a.artist.cmp(&b.artist),
-            SortKey::ByDuration => a.duration.cmp(&b.duration),
+            SortKey::Title => a.title.cmp(&b.title),
+            SortKey::Artist => a.artist.cmp(&b.artist),
+            SortKey::Duration => a.duration.cmp(&b.duration),
         }
         .then_with(|| a.id.0.cmp(&b.id.0));
         if ascending {
@@ -62,12 +61,31 @@ pub fn search(query: &str, tracks: &[Arc<Track>]) -> Vec<Arc<Track>> {
     if query.is_empty() {
         return vec![];
     }
-    let score = |value: &str, exact, prefix, partial| {
-        if value == query {
+    let mut scratch = String::new();
+    let mut score = |value: &str, exact, prefix, partial| {
+        let lowered = if value.is_ascii() {
+            if !value.bytes().any(|b| b.is_ascii_uppercase()) {
+                value
+            } else {
+                scratch.clear();
+                scratch.push_str(value);
+                scratch.make_ascii_lowercase();
+                scratch.as_str()
+            }
+        } else {
+            scratch.clear();
+            for ch in value.chars() {
+                for lower in ch.to_lowercase() {
+                    scratch.push(lower);
+                }
+            }
+            scratch.as_str()
+        };
+        if lowered == query {
             exact
-        } else if value.starts_with(&query) {
+        } else if lowered.starts_with(&query) {
             prefix
-        } else if value.contains(&query) {
+        } else if lowered.contains(&query) {
             partial
         } else {
             0
@@ -76,7 +94,7 @@ pub fn search(query: &str, tracks: &[Arc<Track>]) -> Vec<Arc<Track>> {
     let mut hits: Vec<_> = tracks
         .iter()
         .filter_map(|t| {
-            let rank = score(&t.title_lower, 100, 80, 60) + score(&t.artist_lower, 50, 40, 20);
+            let rank = score(&t.title, 100, 80, 60) + score(&t.artist, 50, 40, 20);
             (rank > 0).then(|| (std::cmp::Reverse(rank), t.clone()))
         })
         .collect();
@@ -110,20 +128,20 @@ mod tests {
             make_track("a", "Same", "Alpha", 40),
         ];
 
-        sort(&mut tracks, SortKey::BySongName, true);
+        sort(&mut tracks, SortKey::Title, true);
         let ids: Vec<_> = tracks.iter().map(|t| t.id.0.as_str()).collect();
         // Plain codepoint order: 'S' < '中' (U+4E2D) < '啊' (U+554A), never pinyin ('啊' before '中').
         assert_eq!(ids, ["a", "b", "d", "c"]);
 
-        sort(&mut tracks, SortKey::BySongName, false);
+        sort(&mut tracks, SortKey::Title, false);
         let ids_desc: Vec<_> = tracks.iter().map(|t| t.id.0.as_str()).collect();
         assert_eq!(ids_desc, ["c", "d", "b", "a"]);
 
-        sort(&mut tracks, SortKey::BySinger, true);
+        sort(&mut tracks, SortKey::Artist, true);
         let artists: Vec<_> = tracks.iter().map(|t| t.id.0.as_str()).collect();
         assert_eq!(artists, ["a", "c", "d", "b"]);
 
-        sort(&mut tracks, SortKey::ByDuration, true);
+        sort(&mut tracks, SortKey::Duration, true);
         let durations: Vec<_> = tracks.iter().map(|t| t.duration.as_secs()).collect();
         assert_eq!(durations, [10, 20, 30, 40]);
     }
@@ -142,6 +160,14 @@ mod tests {
 
         let hits: Vec<_> = search("ALPHA", &tracks).into_iter().map(|t| t.id.0.clone()).collect();
         assert_eq!(hits, ["exact", "prefix", "partial", "artist"]);
+
+        let unicode = vec![
+            make_track("cjk", "晴天", "周杰伦", 240),
+            make_track("accent", "Über", "Björk", 200),
+        ];
+        assert_eq!(search("周杰伦", &unicode)[0].id.0, "cjk");
+        assert_eq!(search("über", &unicode)[0].id.0, "accent");
+        assert_eq!(search("BJÖRK", &unicode)[0].id.0, "accent");
     }
 }
 
@@ -167,7 +193,7 @@ mod benchmarks {
                     paths.iter().filter_map(|p| read_track(p)).collect()
                 };
                 let read = start.elapsed();
-                sort(&mut songs, SortKey::BySongName, true);
+                sort(&mut songs, SortKey::Title, true);
                 let sorted = start.elapsed();
                 std::hint::black_box(search("0", &songs));
                 println!(

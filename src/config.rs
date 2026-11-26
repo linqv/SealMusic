@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::slint_types::{LoopMode, SortKey};
+use crate::{library::SortKey, player::state::LoopMode};
 
 pub(crate) fn config_path() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
@@ -67,7 +67,7 @@ impl Default for Config {
             progress: 0.,
             loop_mode: LoopMode::Playlist,
             shuffle: false,
-            sort_key: SortKey::BySongName,
+            sort_key: SortKey::Title,
             sort_ascending: true,
             lang: String::new(),
             light_ui: false,
@@ -163,6 +163,14 @@ mod tests {
             assert!(cfg.cover_recoloring);
         }
         assert!(!Config::parse("cover_recoloring = false").unwrap().cover_recoloring);
+
+        let cfg =
+            Config::parse("play_mode='Random'\nloop_mode='None'\nsort_key='ByDuration'").unwrap();
+        assert_eq!(cfg.loop_mode, LoopMode::None);
+        assert_eq!(cfg.sort_key, SortKey::Duration);
+        let saved: toml::Table = toml::to_string(&cfg).unwrap().parse().unwrap();
+        assert_eq!(saved["loop_mode"].as_str(), Some("None"));
+        assert_eq!(saved["sort_key"].as_str(), Some("ByDuration"));
 
         #[cfg(target_os = "linux")]
         {

@@ -28,6 +28,14 @@ playerctl -p sealmusic position 10+
 
 ![设置页](assets/settings-zh.png)
 
+## Linux 渲染
+
+SealMusic 在 Wayland 上默认使用 FemtoVG + OpenGL ES，也可通过 `SLINT_BACKEND=winit-femtovg` 显式选择。OpenGL ES 不可用时，完全退出 SealMusic 后可用 Slint 的 CPU 软件渲染重新启动。
+
+```sh
+SLINT_BACKEND=winit-software ./target/release/sealmusic
+```
+
 ## 构建与打包
 
 开发运行使用 `cargo run`。Linux 上使用 `cargo release --locked` 针对构建机器的 CPU 生成 `target/release/sealmusic`。需要把二进制分发到不同机器时，使用 `cargo build --locked --release` 采用默认的 CPU 目标。打包脚本使用 cargo-packager，产物位于 `target/release`。

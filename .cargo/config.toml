@@ -3,5 +3,5 @@ release = [
     "build",
     "--release",
     "--config",
-    """target.'cfg(target_os = "linux")'.rustflags = ["-C", "target-cpu=native"]""",
+    """target.'cfg(target_os = "linux")'.rustflags = ["-C", "target-cpu=native", "-C", "force-unwind-tables=no"]""",
 ]

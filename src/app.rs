@@ -1,5 +1,7 @@
 use std::{
+    any::Any,
     cell::{Cell, OnceCell, RefCell},
+    collections::HashSet,
     rc::Rc,
     sync::{
         Arc,
@@ -12,7 +14,10 @@ use slint::{Model, ToSharedString};
 
 use crate::{
     config::Config,
-    library::{Track, TrackId, lyrics::group_for_display},
+    library::{
+        Track, TrackId,
+        lyrics::{LyricLine, group_for_display},
+    },
     player::{
         self,
         command::{Controls, PlayerCommand as Cmd},
@@ -22,11 +27,35 @@ use crate::{
 };
 
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
-const PROGRESS_TICK_MS: u64 = 200;
-const LYRIC_TICK_MS: u64 = 25;
-const PROGRESS_SUBDIV: u8 = (PROGRESS_TICK_MS / LYRIC_TICK_MS) as u8;
+const PROGRESS_TICK_MS: u64 = 250;
+const KARAOKE_TICK_MS: u64 = 33;
+const LYRIC_MIN_WAIT_MS: u64 = 8;
+const LYRIC_MAX_WAIT_MS: u64 = 1000;
+const WORD_PROGRESS_STEPS: f32 = 24.0;
 
-type LyricTimeline = Rc<RefCell<Vec<(f32, f32)>>>;
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WordSpan {
+    start: f32,
+    end: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct LineTiming {
+    start: f32,
+    end: f32,
+    words: Vec<WordSpan>,
+    sweep_end: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LyricCursor {
+    line_index: i32,
+    word_index: i32,
+    word_progress: f32,
+    sweeping: bool,
+}
+
+type LyricTimeline = Rc<RefCell<Vec<LineTiming>>>;
 
 fn default_cover() -> slint::Image {
     thread_local! {
@@ -40,110 +69,423 @@ fn default_cover() -> slint::Image {
     })
 }
 
-fn find_active_lyric(timeline: &[(f32, f32)], pos: f32) -> i32 {
-    let idx = timeline.partition_point(|&(start, _)| start <= pos);
+fn find_active_lyric(timeline: &[LineTiming], pos: f32) -> i32 {
+    let idx = timeline.partition_point(|line| line.start <= pos);
     let Some(i) = idx.checked_sub(1) else {
         return -1;
     };
-    let (start, end) = timeline[i];
-    if pos >= start && pos < end {
+    let line = &timeline[i];
+    if pos >= line.start && pos < line.end {
         i as i32
     } else {
         -1
     }
 }
 
-fn sync_active_lyric(ui: &MainWindow, timeline: &LyricTimeline, pos: f32) {
-    let display = ui.global::<DisplayGlobal>();
-    display.set_lyric_time(pos);
-    let active = find_active_lyric(&timeline.borrow(), pos);
-    if active != display.get_active_lyric_index() {
-        display.set_active_lyric_index(active);
+fn resolve_lyric_cursor(timeline: &[LineTiming], pos: f32) -> LyricCursor {
+    let line_index = find_active_lyric(timeline, pos);
+    if line_index < 0 {
+        return LyricCursor {
+            line_index: -1,
+            word_index: -1,
+            word_progress: 0.0,
+            sweeping: false,
+        };
     }
+    let line = &timeline[line_index as usize];
+    if line.words.is_empty() {
+        return LyricCursor {
+            line_index,
+            word_index: -1,
+            word_progress: 0.0,
+            sweeping: false,
+        };
+    }
+    if pos < line.words[0].start {
+        return LyricCursor {
+            line_index,
+            word_index: -1,
+            word_progress: 0.0,
+            sweeping: false,
+        };
+    }
+    if pos >= line.sweep_end {
+        return LyricCursor {
+            line_index,
+            word_index: line.words.len() as i32,
+            word_progress: 1.0,
+            sweeping: false,
+        };
+    }
+    let wi = line.words.partition_point(|w| w.start <= pos).saturating_sub(1);
+    let w = line.words[wi];
+    if pos >= w.end {
+        return LyricCursor {
+            line_index,
+            word_index: wi as i32,
+            word_progress: 1.0,
+            sweeping: false,
+        };
+    }
+    let raw = ((pos - w.start) / (w.end - w.start)).clamp(0.0, 1.0);
+    let word_progress = (raw * WORD_PROGRESS_STEPS).round() / WORD_PROGRESS_STEPS;
+    LyricCursor {
+        line_index,
+        word_index: wi as i32,
+        word_progress,
+        sweeping: true,
+    }
+}
+
+fn next_lyric_delay(timeline: &[LineTiming], pos: f32, cursor: LyricCursor) -> Option<Duration> {
+    if timeline.is_empty() {
+        return None;
+    }
+    if cursor.sweeping {
+        return Some(Duration::from_millis(KARAOKE_TICK_MS));
+    }
+    let mut next_ts: Option<f32> = None;
+    let mut consider = |ts: f32| {
+        if ts.is_finite() && ts > pos {
+            next_ts = Some(next_ts.map_or(ts, |cur| cur.min(ts)));
+        }
+    };
+    if cursor.line_index >= 0 {
+        let line = &timeline[cursor.line_index as usize];
+        if let Some(word) = line.words.iter().find(|w| w.start > pos) {
+            consider(word.start);
+        }
+        consider(line.end);
+    }
+    let next_idx = timeline.partition_point(|line| line.start <= pos);
+    if let Some(next_line) = timeline.get(next_idx) {
+        consider(next_line.start);
+    }
+    let ts = next_ts?;
+    let wait_ms = ((f64::from(ts) - f64::from(pos)).max(0.0) * 1000.0).round() as u64;
+    Some(Duration::from_millis(wait_ms.clamp(LYRIC_MIN_WAIT_MS, LYRIC_MAX_WAIT_MS)))
+}
+
+fn min_progress_step(duration: f32, now_playing_open: bool) -> f32 {
+    if !duration.is_finite() || duration <= 0.0 {
+        return 0.5;
+    }
+    let bar_px = if now_playing_open {
+        324.0
+    } else {
+        520.0
+    };
+    (duration / bar_px).clamp(0.2, 1.0)
+}
+
+fn set_progress_exact(playback: &PlaybackGlobal<'_>, pos: f32) {
+    playback.set_progress(pos);
+    let secs = pos.max(0.0).floor() as i32;
+    if secs != playback.get_progress_secs() {
+        playback.set_progress_secs(secs);
+    }
+}
+
+fn sync_progress_quantized(ui: &MainWindow, pos: f32) {
+    let playback = ui.global::<PlaybackGlobal>();
+    let secs = pos.max(0.0).floor() as i32;
+    let secs_changed = secs != playback.get_progress_secs();
+    if secs_changed {
+        playback.set_progress_secs(secs);
+    }
+    let now_playing_open = ui.get_lyrics_visible() || ui.get_queue_visible();
+    let step = min_progress_step(playback.get_duration(), now_playing_open);
+    let prev = playback.get_progress();
+    if secs_changed || pos < prev || (pos - prev) >= step {
+        playback.set_progress(pos);
+    }
+}
+
+fn sync_active_lyric(ui: &MainWindow, timeline: &LyricTimeline, pos: f32) -> LyricCursor {
+    let display = ui.global::<DisplayGlobal>();
+    let cursor = resolve_lyric_cursor(&timeline.borrow(), pos);
+    if cursor.line_index != display.get_active_lyric_index() {
+        display.set_active_lyric_index(cursor.line_index);
+    }
+    if cursor.word_index != display.get_active_word_index() {
+        display.set_active_word_index(cursor.word_index);
+    }
+    if (cursor.word_progress - display.get_active_word_progress()).abs() > f32::EPSILON {
+        display.set_active_word_progress(cursor.word_progress);
+    }
+    cursor
 }
 
 fn sync_visible_progress(ui: &MainWindow, state: &SharedState, timeline: &LyricTimeline) {
     let playback = ui.global::<PlaybackGlobal>();
     let pos = state.read().unwrap().position_now().as_secs_f32();
-    playback.set_progress(pos);
+    set_progress_exact(&playback, pos);
     if ui.get_lyrics_visible() {
         sync_active_lyric(ui, timeline, pos);
     }
 }
 
-fn sync_progress_timer(
-    ui: &MainWindow,
-    timer: &Rc<slint::Timer>,
-    timer_ms: &Rc<Cell<u64>>,
-    state: &SharedState,
-    timeline: &LyricTimeline,
-) {
-    let should_run = ui.window().is_visible() && !ui.global::<PlaybackGlobal>().get_paused();
+fn schedule_lyric_timer(ui: &MainWindow, sync: &Rc<UiSync>) {
+    let should_run = ui.window().is_visible()
+        && !ui.global::<PlaybackGlobal>().get_paused()
+        && ui.get_lyrics_visible()
+        && !ui.get_now_playing_sliding()
+        && !sync.timeline.borrow().is_empty();
     if !should_run {
-        timer.stop();
-        timer_ms.set(0);
+        sync.lyric_timer.stop();
         return;
     }
-    let fast =
-        ui.get_lyrics_visible() && !ui.get_now_playing_sliding() && !timeline.borrow().is_empty();
-    let desired_ms = if fast {
-        LYRIC_TICK_MS
-    } else {
-        PROGRESS_TICK_MS
+    let pos = sync.state.read().unwrap().position_now().as_secs_f32();
+    let cursor = sync_active_lyric(ui, &sync.timeline, pos);
+    let Some(delay) = next_lyric_delay(&sync.timeline.borrow(), pos, cursor) else {
+        sync.lyric_timer.stop();
+        return;
     };
-    if timer.running() && timer_ms.get() == desired_ms {
-        return;
-    }
-    timer_ms.set(desired_ms);
     let weak = ui.as_weak();
-    let timer_ref = Rc::clone(timer);
-    let timer_ms_ref = Rc::clone(timer_ms);
-    let state = state.clone();
-    let timeline = Rc::clone(timeline);
-    let subdiv = Cell::new(0u8);
-    timer.start(slint::TimerMode::Repeated, Duration::from_millis(desired_ms), move || {
+    let sync_ref = Rc::clone(sync);
+    sync.lyric_timer.start(slint::TimerMode::SingleShot, delay, move || {
         let Some(ui) = weak.upgrade() else {
-            timer_ref.stop();
-            timer_ms_ref.set(0);
+            sync_ref.lyric_timer.stop();
             return;
         };
-        if !ui.window().is_visible() || ui.global::<PlaybackGlobal>().get_paused() {
-            timer_ref.stop();
-            timer_ms_ref.set(0);
-            return;
-        }
-        if ui.get_now_playing_sliding() {
-            return;
-        }
-        if fast {
-            let pos = state.read().unwrap().position_now().as_secs_f32();
-            if ui.get_lyrics_visible() {
-                sync_active_lyric(&ui, &timeline, pos);
-            }
-            let tick = (subdiv.get() + 1) % PROGRESS_SUBDIV;
-            subdiv.set(tick);
-            if tick == 0 {
-                ui.global::<PlaybackGlobal>().set_progress(pos);
-            }
-        } else {
-            sync_visible_progress(&ui, &state, &timeline);
-        }
+        schedule_lyric_timer(&ui, &sync_ref);
     });
 }
 
+fn sync_timers(ui: &MainWindow, sync: &Rc<UiSync>) {
+    let should_run = ui.window().is_visible() && !ui.global::<PlaybackGlobal>().get_paused();
+    if !should_run {
+        sync.progress_timer.stop();
+        sync.lyric_timer.stop();
+        return;
+    }
+    if !sync.progress_timer.running() {
+        let weak = ui.as_weak();
+        let sync_ref = Rc::clone(sync);
+        sync.progress_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(PROGRESS_TICK_MS),
+            move || {
+                let Some(ui) = weak.upgrade() else {
+                    sync_ref.progress_timer.stop();
+                    return;
+                };
+                if !ui.window().is_visible() || ui.global::<PlaybackGlobal>().get_paused() {
+                    sync_ref.progress_timer.stop();
+                    sync_ref.lyric_timer.stop();
+                    return;
+                }
+                if ui.get_now_playing_sliding() {
+                    return;
+                }
+                let pos = sync_ref.state.read().unwrap().position_now().as_secs_f32();
+                sync_progress_quantized(&ui, pos);
+            },
+        );
+    }
+    schedule_lyric_timer(ui, sync);
+}
+
+struct ImmutableTracker;
+
+impl slint::ModelTracker for ImmutableTracker {
+    fn attach_peer(&self, _peer: slint::ModelPeer) {}
+    fn track_row_count_changes(&self) {}
+    fn track_row_data_changes(&self, _row: usize) {}
+}
+
+static IMMUTABLE_TRACKER: ImmutableTracker = ImmutableTracker;
+
+fn format_mmss(duration: Duration) -> slint::SharedString {
+    let secs = duration.as_secs();
+    format!("{:02}:{:02}", secs / 60, secs % 60).into()
+}
+
 fn song(t: &Track) -> SongInfo {
-    let secs = t.duration.as_secs();
     SongInfo {
         id: t.id.0.as_str().into(),
         song_name: t.title.as_str().into(),
         singer: t.artist.as_str().into(),
         album: t.album.as_str().into(),
-        duration: format!("{:02}:{:02}", secs / 60, secs % 60).into(),
+        duration: format_mmss(t.duration),
         is_local: t.local_path().is_some(),
     }
 }
+
+fn song_row(t: &Track) -> SongInfo {
+    SongInfo {
+        id: t.id.0.as_str().into(),
+        song_name: t.title.as_str().into(),
+        singer: t.artist.as_str().into(),
+        album: slint::SharedString::default(),
+        duration: format_mmss(t.duration),
+        is_local: t.local_path().is_some(),
+    }
+}
+
+struct TrackListModel(Vec<Arc<Track>>);
+
+impl Model for TrackListModel {
+    type Data = SongInfo;
+
+    fn row_count(&self) -> usize {
+        self.0.len()
+    }
+
+    fn row_data(&self, row: usize) -> Option<SongInfo> {
+        self.0.get(row).map(|track| song_row(track))
+    }
+
+    fn model_tracker(&self) -> &dyn slint::ModelTracker {
+        &IMMUTABLE_TRACKER
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+struct LikedTracksModel {
+    ids: Vec<Arc<str>>,
+    set: HashSet<Arc<str>>,
+}
+
+impl LikedTracksModel {
+    fn new(liked: Vec<TrackId>) -> Self {
+        let ids: Vec<Arc<str>> = liked.into_iter().map(|id| Arc::<str>::from(id.0)).collect();
+        let set: HashSet<Arc<str>> = ids.iter().cloned().collect();
+        Self {
+            ids,
+            set,
+        }
+    }
+}
+
+impl Model for LikedTracksModel {
+    type Data = slint::SharedString;
+
+    fn row_count(&self) -> usize {
+        self.ids.len()
+    }
+
+    fn row_data(&self, row: usize) -> Option<slint::SharedString> {
+        self.ids.get(row).map(|id| id.as_ref().into())
+    }
+
+    fn model_tracker(&self) -> &dyn slint::ModelTracker {
+        &IMMUTABLE_TRACKER
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct CatalogRowModel(Vec<Arc<Track>>);
+
+#[cfg(target_os = "linux")]
+impl Model for CatalogRowModel {
+    type Data = CatalogRow;
+
+    fn row_count(&self) -> usize {
+        self.0.len()
+    }
+
+    fn row_data(&self, row: usize) -> Option<CatalogRow> {
+        self.0.get(row).map(|track| CatalogRow {
+            song: song_row(track),
+            source: match &track.origin {
+                crate::library::TrackOrigin::Online(reference) => reference.source().into(),
+                crate::library::TrackOrigin::Local(_) => Default::default(),
+            },
+        })
+    }
+
+    fn model_tracker(&self) -> &dyn slint::ModelTracker {
+        &IMMUTABLE_TRACKER
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 fn model(tracks: Vec<Arc<Track>>) -> slint::ModelRc<SongInfo> {
-    slint::ModelRc::new(slint::VecModel::from(tracks.iter().map(|t| song(t)).collect::<Vec<_>>()))
+    slint::ModelRc::new(TrackListModel(tracks))
+}
+
+fn lyrics_should_project(ui: &MainWindow) -> bool {
+    ui.window().is_visible()
+        && (ui.get_lyrics_visible() || (ui.get_now_playing_visible() && !ui.get_queue_visible()))
+}
+
+fn project_lyrics(ui: &MainWindow, sync: &UiSync, pos: f32) {
+    let track_duration = sync.state.read().unwrap().duration.as_secs_f32();
+    let grouped = group_for_display(&sync.raw_lyrics.borrow(), track_duration);
+    let mut times = Vec::with_capacity(grouped.len());
+    let lyrics: Vec<_> = grouped
+        .into_iter()
+        .map(|line| {
+            let word_spans: Vec<_> = line
+                .words
+                .iter()
+                .map(|w| WordSpan {
+                    start: w.time,
+                    end: (w.time + w.duration).max(w.time + 0.001),
+                })
+                .collect();
+            let sweep_end = word_spans.iter().map(|w| w.end).fold(line.time, f32::max);
+            times.push(LineTiming {
+                start: line.time,
+                end: line.end_time,
+                words: word_spans,
+                sweep_end,
+            });
+            let words: Vec<_> = line
+                .words
+                .into_iter()
+                .map(|w| LyricWord {
+                    text: w.text.into(),
+                    space_after: w.space_after,
+                })
+                .collect();
+            LyricItem {
+                time: line.time,
+                text: line.text.into(),
+                translation: line.translation.into(),
+                words: slint::ModelRc::new(slint::VecModel::from(words)),
+            }
+        })
+        .collect();
+    *sync.timeline.borrow_mut() = times;
+    sync.lyrics_projected.set(true);
+    sync_active_lyric(ui, &sync.timeline, pos);
+    ui.global::<DisplayGlobal>().set_lyrics(slint::ModelRc::new(slint::VecModel::from(lyrics)));
+}
+
+fn clear_lyrics_projection(ui: &MainWindow, sync: &UiSync) {
+    if !sync.lyrics_projected.replace(false) {
+        return;
+    }
+    sync.timeline.borrow_mut().clear();
+    let display = ui.global::<DisplayGlobal>();
+    display.set_lyrics(Default::default());
+    display.set_active_lyric_index(-1);
+    display.set_active_word_index(-1);
+    display.set_active_word_progress(0.0);
+}
+
+fn sync_lyrics_projection(ui: &MainWindow, sync: &UiSync, pos: Option<f32>) {
+    if lyrics_should_project(ui) {
+        if !sync.lyrics_projected.get() {
+            let pos =
+                pos.unwrap_or_else(|| sync.state.read().unwrap().position_now().as_secs_f32());
+            project_lyrics(ui, sync, pos);
+        }
+    } else {
+        clear_lyrics_projection(ui, sync);
+    }
 }
 
 fn set_queue_projection(ui: &MainWindow, controls: &Controls, visible: bool) {
@@ -174,7 +516,24 @@ fn apply_cover_palette(ui: &MainWindow, palette: Option<crate::library::metadata
     theme.set_has_cover_palette(true);
 }
 
-fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
+fn clear_hidden_details(ui: &MainWindow, sync: &UiSync) {
+    sync.window_hidden.set(true);
+    sync.details_cleared.set(true);
+    *sync.raw_lyrics.borrow_mut() = Arc::from([]);
+    let display = ui.global::<DisplayGlobal>();
+    display.set_album_image(slint::Image::default());
+    display.set_ambient_image(slint::Image::default());
+    display.set_has_ambient_image(false);
+}
+
+fn restore_window_details(controls: &Controls, sync: &UiSync) {
+    sync.window_hidden.set(false);
+    if sync.details_cleared.replace(false) {
+        controls.send(Cmd::ReloadDetails);
+    }
+}
+
+fn apply(ui: &MainWindow, event: Event, sync: &Rc<UiSync>) {
     let display = ui.global::<DisplayGlobal>();
     let playback = ui.global::<PlaybackGlobal>();
     match event {
@@ -184,15 +543,17 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
             playback.set_paused(s.status != Status::Playing);
             playback.set_duration(s.duration.as_secs_f32());
             let pos = seeked.unwrap_or_else(|| s.position_now()).as_secs_f32();
-            playback.set_progress(pos);
+            set_progress_exact(&playback, pos);
             playback.set_volume(s.volume);
-            playback.set_loop_mode(s.loop_mode);
+            playback.set_loop_mode(s.loop_mode.into());
             playback.set_shuffle(s.shuffle);
-            sync_active_lyric(ui, &sync.timeline, pos);
+            if sync.lyrics_projected.get() {
+                sync_active_lyric(ui, &sync.timeline, pos);
+            }
             if ui.get_lyrics_visible() && seeked.is_some() {
                 ui.invoke_follow_lyrics();
             }
-            sync_progress_timer(ui, &sync.timer, &sync.timer_ms, &sync.state, &sync.timeline);
+            sync_timers(ui, sync);
         }
         Event::Upcoming(tracks) => {
             if ui.get_queue_visible() && ui.window().is_visible() {
@@ -201,9 +562,14 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
         }
         Event::Details {
             details,
+            lyrics,
             position,
             cover_changed,
         } => {
+            if sync.window_hidden.get() {
+                sync.details_cleared.set(true);
+                return;
+            }
             if cover_changed {
                 let cover = details
                     .cover
@@ -219,40 +585,19 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
                 }
                 apply_cover_palette(ui, details.palette);
             }
-            let track_duration = sync.state.read().unwrap().duration.as_secs_f32();
-            let grouped = group_for_display(&details.lyrics, track_duration);
-            let mut times = Vec::with_capacity(grouped.len());
-            let lyrics: Vec<_> = grouped
-                .into_iter()
-                .map(|line| {
-                    times.push((line.time, line.end_time));
-                    let words: Vec<_> = line
-                        .words
-                        .into_iter()
-                        .map(|w| LyricWord {
-                            time: w.time,
-                            duration: w.duration,
-                            text: w.text.into(),
-                            space_after: w.space_after,
-                        })
-                        .collect();
-                    LyricItem {
-                        time: line.time,
-                        end_time: line.end_time,
-                        text: line.text.into(),
-                        translation: line.translation.into(),
-                        words: slint::ModelRc::new(slint::VecModel::from(words)),
-                    }
-                })
-                .collect();
-            *sync.timeline.borrow_mut() = times;
-            sync_active_lyric(ui, &sync.timeline, position.as_secs_f32());
-            display.set_lyrics(slint::ModelRc::new(slint::VecModel::from(lyrics)));
-            sync_progress_timer(ui, &sync.timer, &sync.timer_ms, &sync.state, &sync.timeline);
+            if let Some(lyrics) = lyrics {
+                *sync.raw_lyrics.borrow_mut() = lyrics;
+                if lyrics_should_project(ui) {
+                    project_lyrics(ui, sync, position.as_secs_f32());
+                } else {
+                    clear_lyrics_projection(ui, sync);
+                }
+            }
+            sync_timers(ui, sync);
         }
         Event::Library(dir, key, asc, tracks) => {
             display.set_song_dir(dir.display().to_shared_string());
-            display.set_sort_key(key);
+            display.set_sort_key(key.into());
             display.set_sort_ascending(asc);
             display.set_library_songs(model(tracks));
             log::info!("Library ready");
@@ -269,9 +614,7 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
             )));
             collections.set_selected(selected as i32);
             collections.set_songs(model(tracks));
-            collections.set_liked_tracks(slint::ModelRc::new(slint::VecModel::from(
-                liked.into_iter().map(|id| id.0.into()).collect::<Vec<_>>(),
-            )));
+            collections.set_liked_tracks(slint::ModelRc::new(LikedTracksModel::new(liked)));
         }
         Event::CollectionSaveFailed => ui.invoke_show_collection_save_error(),
         Event::Results(v) => display.set_search_results(model(v)),
@@ -285,18 +628,7 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
             lx.set_catalog_failed(view.failed);
             lx.set_catalog_next(view.has_next);
             lx.set_catalog_partial_failure(view.partial_failure);
-            let rows: Vec<_> = view
-                .rows
-                .iter()
-                .map(|track| crate::slint_types::CatalogRow {
-                    song: song(track),
-                    source: match &track.origin {
-                        crate::library::TrackOrigin::Online(reference) => reference.source().into(),
-                        crate::library::TrackOrigin::Local(_) => Default::default(),
-                    },
-                })
-                .collect();
-            lx.set_catalog_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+            lx.set_catalog_rows(slint::ModelRc::new(CatalogRowModel(view.rows)));
         }
         #[cfg(target_os = "linux")]
         Event::Script(script, importing) => {
@@ -348,172 +680,23 @@ fn apply(ui: &MainWindow, event: Event, sync: &UiSync) {
         #[cfg(target_os = "linux")]
         Event::Raise => {
             let _ = ui.show();
+            restore_window_details(&sync.controls, sync);
             set_queue_projection(
                 ui,
                 &sync.controls,
                 ui.get_queue_visible() && ui.window().is_visible(),
             );
-            sync.theme.set_visible(true);
+            sync_lyrics_projection(ui, sync, None);
             sync_visible_progress(ui, &sync.state, &sync.timeline);
-            sync_progress_timer(ui, &sync.timer, &sync.timer_ms, &sync.state, &sync.timeline);
+            if ui.get_lyrics_visible() {
+                ui.invoke_follow_lyrics();
+            }
+            sync_timers(ui, sync);
         }
         #[cfg(target_os = "linux")]
         Event::Quit => {
             let _ = slint::quit_event_loop();
         }
-    }
-}
-
-#[cfg(target_os = "linux")]
-mod theme_watcher {
-    use std::{sync::Mutex, thread};
-
-    use futures_channel::mpsc::{self, UnboundedSender};
-    use futures_lite::{StreamExt, future};
-    use mpris_server::zbus::{
-        self,
-        zvariant::{OwnedValue, Value},
-    };
-    use slint::ComponentHandle;
-
-    use crate::slint_types::{DisplayGlobal, MainWindow};
-
-    enum Cmd {
-        CheckNow,
-        Shutdown,
-    }
-
-    pub struct ThemeWatcher {
-        tx: UnboundedSender<Cmd>,
-        handle: Mutex<Option<thread::JoinHandle<()>>>,
-    }
-
-    impl ThemeWatcher {
-        pub fn start(ui_weak: slint::Weak<MainWindow>, check_immediately: bool) -> Self {
-            let (tx, mut rx) = mpsc::unbounded::<Cmd>();
-            if check_immediately {
-                let _ = tx.unbounded_send(Cmd::CheckNow);
-            }
-            let handle = thread::spawn(move || {
-                future::block_on(async move {
-                    let Ok(conn) = zbus::Connection::session().await else {
-                        log::debug!("Theme watcher unavailable: no D-Bus session bus");
-                        return;
-                    };
-                    let Ok(proxy) = zbus::proxy::Builder::<zbus::Proxy<'_>>::new(&conn)
-                        .destination("org.freedesktop.portal.Desktop")
-                        .and_then(|b| b.path("/org/freedesktop/portal/desktop"))
-                        .and_then(|b| b.interface("org.freedesktop.portal.Settings"))
-                        .map(|b| b.cache_properties(zbus::proxy::CacheProperties::No))
-                    else {
-                        return;
-                    };
-                    let Ok(proxy) = proxy.build().await else {
-                        log::debug!("Theme watcher unavailable: portal Settings proxy failed");
-                        return;
-                    };
-                    let Ok(mut signals) = proxy.receive_signal("SettingChanged").await else {
-                        log::debug!(
-                            "Theme watcher unavailable: SettingChanged subscription failed"
-                        );
-                        return;
-                    };
-
-                    enum Event {
-                        Command(Option<Cmd>),
-                        Signal(Option<zbus::Message>),
-                    }
-
-                    loop {
-                        let next = future::or(async { Event::Command(rx.next().await) }, async {
-                            Event::Signal(signals.next().await)
-                        })
-                        .await;
-                        match next {
-                            Event::Command(Some(Cmd::CheckNow)) => {
-                                if let Some(is_light) = read_portal_light(&proxy).await {
-                                    apply_theme(&ui_weak, is_light);
-                                }
-                            }
-                            Event::Command(Some(Cmd::Shutdown)) | Event::Command(None) => break,
-                            Event::Signal(Some(msg)) => {
-                                if let Ok((ns, key, val)) =
-                                    msg.body().deserialize::<(String, String, OwnedValue)>()
-                                    && ns == "org.freedesktop.appearance"
-                                    && key == "color-scheme"
-                                    && let Some(is_light) = parse_color_scheme(&val)
-                                {
-                                    apply_theme(&ui_weak, is_light);
-                                }
-                            }
-                            Event::Signal(None) => break,
-                        }
-                    }
-                });
-            });
-            Self {
-                tx,
-                handle: Mutex::new(Some(handle)),
-            }
-        }
-
-        pub fn check_now(&self) {
-            let _ = self.tx.unbounded_send(Cmd::CheckNow);
-        }
-
-        pub fn set_visible(&self, _visible: bool) {}
-
-        pub fn stop(&self) {
-            let _ = self.tx.unbounded_send(Cmd::Shutdown);
-            if let Some(handle) = self.handle.lock().unwrap().take() {
-                let _ = handle.join();
-            }
-        }
-    }
-
-    async fn read_portal_light(proxy: &zbus::Proxy<'_>) -> Option<bool> {
-        let value = match proxy
-            .call::<_, _, OwnedValue>("ReadOne", &("org.freedesktop.appearance", "color-scheme"))
-            .await
-        {
-            Ok(v) => v,
-            Err(_) => proxy
-                .call::<_, _, OwnedValue>("Read", &("org.freedesktop.appearance", "color-scheme"))
-                .await
-                .ok()?,
-        };
-        parse_color_scheme(&value)
-    }
-
-    fn parse_color_scheme(value: &OwnedValue) -> Option<bool> {
-        let mut current: &Value<'_> = value;
-        while let Value::Value(inner) = current {
-            current = inner;
-        }
-        match current {
-            Value::U32(scheme) => Some(*scheme == 2),
-            _ => None,
-        }
-    }
-
-    fn apply_theme(ui_weak: &slint::Weak<MainWindow>, is_light: bool) {
-        let weak = ui_weak.clone();
-        let _ = slint::invoke_from_event_loop(move || {
-            if let Some(ui) = weak.upgrade() {
-                let display = ui.global::<DisplayGlobal>();
-                if display.get_follow_system_theme() && display.get_light_ui() != is_light {
-                    ui.invoke_set_light_theme(is_light);
-                    log::info!(
-                        "system theme changed to: {}",
-                        if is_light {
-                            "light"
-                        } else {
-                            "dark"
-                        }
-                    );
-                }
-            }
-        });
     }
 }
 
@@ -617,15 +800,21 @@ mod theme_watcher {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 use theme_watcher::ThemeWatcher;
 
 struct UiSync {
     #[cfg(target_os = "linux")]
     controls: Controls,
     state: SharedState,
-    timer: Rc<slint::Timer>,
-    timer_ms: Rc<Cell<u64>>,
+    progress_timer: Rc<slint::Timer>,
+    lyric_timer: Rc<slint::Timer>,
     timeline: LyricTimeline,
+    raw_lyrics: RefCell<Arc<[LyricLine]>>,
+    lyrics_projected: Cell<bool>,
+    window_hidden: Cell<bool>,
+    details_cleared: Cell<bool>,
+    #[cfg(not(target_os = "linux"))]
     theme: Rc<ThemeWatcher>,
 }
 
@@ -637,10 +826,16 @@ fn register_callbacks(
     ui: &MainWindow,
     controls: &Controls,
     can_run_hidden: Arc<AtomicBool>,
-    sync: &UiSync,
+    sync: &Rc<UiSync>,
 ) {
     let collections = ui.global::<CollectionsGlobal>();
-    collections.on_contains_track(|tracks, id| tracks.iter().any(|track| track == id));
+    collections.on_contains_track(|tracks, id| {
+        if let Some(liked) = tracks.as_any().downcast_ref::<LikedTracksModel>() {
+            liked.set.contains(id.as_str())
+        } else {
+            tracks.iter().any(|track| track == id)
+        }
+    });
     let tx = controls.clone();
     collections.on_select_collection(move |index| tx.send(Cmd::SelectCollection(index as usize)));
     let tx = controls.clone();
@@ -682,13 +877,13 @@ fn register_callbacks(
     let tx = controls.clone();
     ui.on_seek_relative(move |seconds| tx.send(Cmd::SeekRelative(i64::from(seconds) * 1_000_000)));
     let tx = controls.clone();
-    ui.on_switch_mode(move |m| tx.send(Cmd::SetLoopMode(m)));
+    ui.on_switch_mode(move |m| tx.send(Cmd::SetLoopMode(m.into())));
     let tx = controls.clone();
     ui.on_set_shuffle(move |s| tx.send(Cmd::SetShuffle(s)));
     let tx = controls.clone();
     ui.on_change_volume(move |v| tx.send(Cmd::SetVolume(v)));
     let tx = controls.clone();
-    ui.on_sort_song_list(move |k, a| tx.send(Cmd::Sort(k, a)));
+    ui.on_sort_song_list(move |k, a| tx.send(Cmd::Sort(k.into(), a)));
     let tx = controls.clone();
     let search_timer = Rc::new(slint::Timer::default());
     let pending_query = Rc::new(RefCell::new(String::new()));
@@ -762,12 +957,28 @@ fn register_callbacks(
             log::warn!("Language: {e:?}");
         }
     });
-    let theme = Rc::clone(&sync.theme);
-    ui.on_set_follow_system_theme(move |follow| {
-        if follow {
-            theme.check_now();
-        }
-    });
+    #[cfg(target_os = "linux")]
+    {
+        let weak = ui.as_weak();
+        ui.on_set_follow_system_theme(move |follow| {
+            if let Some(ui) = weak.upgrade() {
+                if follow {
+                    ui.invoke_follow_system_palette();
+                } else {
+                    ui.invoke_set_light_theme(ui.global::<DisplayGlobal>().get_light_ui());
+                }
+            }
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let theme = Rc::clone(&sync.theme);
+        ui.on_set_follow_system_theme(move |follow| {
+            if follow {
+                theme.check_now();
+            }
+        });
+    }
     #[cfg(target_os = "linux")]
     let catalog_controls = controls.clone();
     ui.on_page_changed(move |_page| {
@@ -777,17 +988,15 @@ fn register_callbacks(
         }
     });
     let weak = ui.as_weak();
-    let state = sync.state.clone();
-    let timer = Rc::clone(&sync.timer);
-    let timer_ms = Rc::clone(&sync.timer_ms);
-    let timeline = Rc::clone(&sync.timeline);
+    let sync_ref = Rc::clone(sync);
     ui.on_lyrics_visibility_changed(move || {
         if let Some(ui) = weak.upgrade() {
+            sync_lyrics_projection(&ui, &sync_ref, None);
             if ui.get_lyrics_visible() {
-                sync_visible_progress(&ui, &state, &timeline);
+                sync_visible_progress(&ui, &sync_ref.state, &sync_ref.timeline);
                 ui.invoke_follow_lyrics();
             }
-            sync_progress_timer(&ui, &timer, &timer_ms, &state, &timeline);
+            sync_timers(&ui, &sync_ref);
         }
     });
     let weak = ui.as_weak();
@@ -798,41 +1007,60 @@ fn register_callbacks(
         }
     });
     let weak = ui.as_weak();
-    let state = sync.state.clone();
-    let timer = Rc::clone(&sync.timer);
-    let timer_ms = Rc::clone(&sync.timer_ms);
-    let timeline = Rc::clone(&sync.timeline);
+    let sync_ref = Rc::clone(sync);
+    ui.on_now_playing_visibility_changed(move || {
+        if let Some(ui) = weak.upgrade() {
+            sync_lyrics_projection(&ui, &sync_ref, None);
+            sync_timers(&ui, &sync_ref);
+            if !ui.get_now_playing_visible() {
+                slint::Timer::single_shot(Duration::from_millis(50), crate::trim_allocator);
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    let sync_ref = Rc::clone(sync);
     ui.on_now_playing_sliding_changed(move || {
         if let Some(ui) = weak.upgrade() {
             if !ui.get_now_playing_sliding() {
-                sync_visible_progress(&ui, &state, &timeline);
+                sync_visible_progress(&ui, &sync_ref.state, &sync_ref.timeline);
             }
-            sync_progress_timer(&ui, &timer, &timer_ms, &state, &timeline);
+            sync_timers(&ui, &sync_ref);
         }
     });
-    ui.on_prev_lyric_time(|p, lines| {
-        lines.iter().map(|l| l.time).filter(|t| *t < p - 0.5).last().unwrap_or(0.)
+    let state = sync.state.clone();
+    let timeline = Rc::clone(&sync.timeline);
+    ui.on_prev_lyric_time(move |_lines| {
+        let p = state.read().unwrap().position_now().as_secs_f32();
+        timeline.borrow().iter().map(|l| l.start).rfind(|t| *t < p - 0.5).unwrap_or(0.)
     });
-    ui.on_next_lyric_time(|p, lines| {
-        lines.iter().map(|l| l.time).find(|t| *t > p + 0.5).unwrap_or(p)
+    let state = sync.state.clone();
+    let timeline = Rc::clone(&sync.timeline);
+    ui.on_next_lyric_time(move |_lines| {
+        let p = state.read().unwrap().position_now().as_secs_f32();
+        timeline.borrow().iter().map(|l| l.start).find(|t| *t > p + 0.5).unwrap_or(p)
     });
     ui.on_quit(|| {
         let _ = slint::quit_event_loop();
     });
-    let timer = Rc::clone(&sync.timer);
-    let timer_ms = Rc::clone(&sync.timer_ms);
-    let theme = Rc::clone(&sync.theme);
+    let sync_ref = Rc::clone(sync);
     let weak = ui.as_weak();
     let tx = controls.clone();
     ui.window().on_close_requested(move || {
-        timer.stop();
-        timer_ms.set(0);
-        theme.set_visible(false);
+        sync_ref.progress_timer.stop();
+        sync_ref.lyric_timer.stop();
+        #[cfg(not(target_os = "linux"))]
+        sync_ref.theme.set_visible(false);
         if let Some(ui) = weak.upgrade() {
             set_queue_projection(&ui, &tx, false);
+            clear_lyrics_projection(&ui, &sync_ref);
         }
         if !can_run_hidden.load(Ordering::Acquire) {
             let _ = slint::quit_event_loop();
+        } else {
+            if let Some(ui) = weak.upgrade() {
+                clear_hidden_details(&ui, &sync_ref);
+            }
+            slint::Timer::single_shot(Duration::from_millis(150), crate::trim_allocator);
         }
         slint::CloseRequestResponse::HideWindow
     });
@@ -849,23 +1077,25 @@ fn register_callbacks(
     });
 }
 
-fn register_tray(ui: &MainWindow, tray: &AppTray, controls: &Controls, sync: &UiSync) {
+fn register_tray(ui: &MainWindow, tray: &AppTray, controls: &Controls, sync: &Rc<UiSync>) {
     let weak = ui.as_weak();
     let tx = controls.clone();
-    let state = sync.state.clone();
-    let timer = Rc::clone(&sync.timer);
-    let timer_ms = Rc::clone(&sync.timer_ms);
-    let timeline = Rc::clone(&sync.timeline);
-    let theme = Rc::clone(&sync.theme);
+    let sync_ref = Rc::clone(sync);
     tray.on_show_window(move || {
         if let Some(ui) = weak.upgrade() {
             #[cfg(not(target_os = "linux"))]
             ui.window().set_minimized(false);
             let _ = ui.show();
+            restore_window_details(&tx, &sync_ref);
             set_queue_projection(&ui, &tx, ui.get_queue_visible() && ui.window().is_visible());
-            theme.set_visible(true);
-            sync_visible_progress(&ui, &state, &timeline);
-            sync_progress_timer(&ui, &timer, &timer_ms, &state, &timeline);
+            #[cfg(not(target_os = "linux"))]
+            sync_ref.theme.set_visible(true);
+            sync_lyrics_projection(&ui, &sync_ref, None);
+            sync_visible_progress(&ui, &sync_ref.state, &sync_ref.timeline);
+            if ui.get_lyrics_visible() {
+                ui.invoke_follow_lyrics();
+            }
+            sync_timers(&ui, &sync_ref);
         }
     });
     let tx = controls.clone();
@@ -888,16 +1118,29 @@ fn register_tray(ui: &MainWindow, tray: &AppTray, controls: &Controls, sync: &Ui
     });
 }
 
+#[cfg(target_os = "linux")]
+fn select_renderer() -> Result<(), slint::PlatformError> {
+    let backend = std::env::var("SLINT_BACKEND").unwrap_or_default();
+    let winit = || slint::BackendSelector::new().backend_name("winit".into());
+    match backend.to_ascii_lowercase().as_str() {
+        "" | "winit" | "femtovg" | "winit-femtovg" => {
+            winit().renderer_name("femtovg".into()).require_opengl_es().select()
+        }
+        "sw" | "software" | "winit-sw" | "winit-software" => {
+            winit().renderer_name("software".into()).select()
+        }
+        _ => Err(format!(
+            "Unsupported SLINT_BACKEND value {backend:?}. Use winit-femtovg or winit-software."
+        )
+        .into()),
+    }
+}
+
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let cfg = Config::load();
     #[cfg(target_os = "linux")]
-    if std::env::var_os("SLINT_BACKEND").is_none_or(|backend| backend.is_empty()) {
-        slint::BackendSelector::new()
-            .backend_name("winit".into())
-            .renderer_name("skia-software".into())
-            .select()?;
-    }
+    select_renderer()?;
     let ui = MainWindow::new()?;
     #[cfg(target_os = "linux")]
     slint::set_xdg_app_id(crate::APP_ID)?;
@@ -916,6 +1159,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         lx.set_quality(cfg.online_quality.as_str().into());
         lx.set_search_source(cfg.online_search_source.as_str().into());
     }
+    #[cfg(target_os = "linux")]
+    if cfg.follow_system_theme {
+        ui.invoke_follow_system_palette();
+    } else {
+        ui.invoke_set_light_theme(cfg.light_ui);
+    }
+    #[cfg(not(target_os = "linux"))]
     ui.invoke_set_light_theme(cfg.light_ui);
     display.set_app_font_family(
         if cfg!(windows) {
@@ -932,14 +1182,20 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (controls, rx) = Controls::channel();
     let shared = SharedState::default();
     let can_run_hidden = Arc::new(AtomicBool::new(tray.is_some()));
+    #[cfg(not(target_os = "linux"))]
     let theme = Rc::new(ThemeWatcher::start(ui.as_weak(), cfg.follow_system_theme));
     let sync = Rc::new(UiSync {
         #[cfg(target_os = "linux")]
         controls: controls.clone(),
         state: shared.clone(),
-        timer: Rc::new(slint::Timer::default()),
-        timer_ms: Rc::new(Cell::new(0)),
+        progress_timer: Rc::new(slint::Timer::default()),
+        lyric_timer: Rc::new(slint::Timer::default()),
         timeline: Rc::new(RefCell::new(Vec::new())),
+        raw_lyrics: RefCell::new(Arc::from([])),
+        lyrics_projected: Cell::new(false),
+        window_hidden: Cell::new(false),
+        details_cleared: Cell::new(false),
+        #[cfg(not(target_os = "linux"))]
         theme: Rc::clone(&theme),
     });
     GUI_SYNC.with(|cell| *cell.borrow_mut() = Some(Rc::clone(&sync)));
@@ -948,46 +1204,33 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         register_tray(&ui, tray, &controls, &sync);
     }
     #[cfg(target_os = "linux")]
-    let mpris_available = Arc::new(AtomicBool::new(true));
-    #[cfg(target_os = "linux")]
-    let (desktop, service) = crate::integrations::mpris::start(
-        controls.clone(),
-        shared.clone(),
-        can_run_hidden,
-        mpris_available.clone(),
-    );
+    let (desktop, service) =
+        crate::integrations::mpris::start(controls.clone(), shared.clone(), can_run_hidden);
     let weak = ui.as_weak();
     let mut scroll_y = Some(cfg.gallery_viewport_y);
-    let worker = player::start(
-        cfg,
-        shared,
-        rx,
+    let worker = player::start(cfg, shared, rx, move |event| {
         #[cfg(target_os = "linux")]
-        mpris_available,
-        move |event| {
-            #[cfg(target_os = "linux")]
-            if let Event::State(s, seeked) = &event {
-                let _ = desktop.send((Arc::clone(s), *seeked));
-            }
-            let restore = if matches!(event, Event::Collections(..)) {
-                scroll_y.take()
-            } else {
-                None
-            };
-            let weak = weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                let sync = GUI_SYNC.with(|cell| cell.borrow().clone());
-                if let Some(sync) = sync
-                    && let Some(ui) = weak.upgrade()
-                {
-                    apply(&ui, event, &sync);
-                    if let Some(y) = restore {
-                        ui.global::<DisplayGlobal>().set_gallery_viewport_y(y);
-                    }
+        if let Event::State(s, seeked) = &event {
+            let _ = desktop.send((Arc::clone(s), *seeked));
+        }
+        let restore = if matches!(event, Event::Collections(..)) {
+            scroll_y.take()
+        } else {
+            None
+        };
+        let weak = weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            let sync = GUI_SYNC.with(|cell| cell.borrow().clone());
+            if let Some(sync) = sync
+                && let Some(ui) = weak.upgrade()
+            {
+                apply(&ui, event, &sync);
+                if let Some(y) = restore {
+                    ui.global::<DisplayGlobal>().set_gallery_viewport_y(y);
                 }
-            });
-        },
-    );
+            }
+        });
+    });
     ui.show()?;
     log::info!("Window ready in {:?}", start.elapsed());
     let run = slint::run_event_loop_until_quit();
@@ -1000,7 +1243,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     if service.join().is_err() {
         log::warn!("MPRIS worker failed");
     }
-    sync.timer.stop();
+    sync.progress_timer.stop();
+    sync.lyric_timer.stop();
+    #[cfg(not(target_os = "linux"))]
     theme.stop();
     GUI_SYNC.with(|cell| cell.borrow_mut().take());
     cfg.lang = display.get_lang().into();
@@ -1029,11 +1274,47 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::find_active_lyric;
+    use std::time::Duration;
+
+    use super::{
+        KARAOKE_TICK_MS, LYRIC_MAX_WAIT_MS, LineTiming, LyricCursor, WordSpan, find_active_lyric,
+        min_progress_step, next_lyric_delay, resolve_lyric_cursor,
+    };
+
+    fn plain_line(start: f32, end: f32) -> LineTiming {
+        LineTiming {
+            start,
+            end,
+            words: Vec::new(),
+            sweep_end: start,
+        }
+    }
+
+    fn timed_line(start: f32, end: f32, words: &[(f32, f32)]) -> LineTiming {
+        let words: Vec<_> = words
+            .iter()
+            .map(|&(s, e)| WordSpan {
+                start: s,
+                end: e,
+            })
+            .collect();
+        let sweep_end = words.iter().map(|w| w.end).fold(start, f32::max);
+        LineTiming {
+            start,
+            end,
+            words,
+            sweep_end,
+        }
+    }
 
     #[test]
     fn find_active_lyric_handles_boundaries_gaps_and_bilingual_duplicates() {
-        let timeline = vec![(1.0, 1.0), (1.0, 3.0), (3.0, 5.0), (8.0, 108.0)];
+        let timeline = vec![
+            plain_line(1.0, 1.0),
+            plain_line(1.0, 3.0),
+            plain_line(3.0, 5.0),
+            plain_line(8.0, 108.0),
+        ];
         assert_eq!(find_active_lyric(&[], 1.0), -1);
         assert_eq!(find_active_lyric(&timeline, 0.5), -1);
         assert_eq!(find_active_lyric(&timeline, 1.0), 1);
@@ -1042,5 +1323,148 @@ mod tests {
         assert_eq!(find_active_lyric(&timeline, 6.0), -1);
         assert_eq!(find_active_lyric(&timeline, 8.0), 3);
         assert_eq!(find_active_lyric(&timeline, 108.0), -1);
+    }
+
+    #[test]
+    fn resolve_lyric_cursor_and_next_delay_sleep_between_plain_lines_and_sweep_only_active_word() {
+        let timeline = vec![plain_line(1.0, 4.0), timed_line(5.0, 9.0, &[(5.2, 5.6), (5.8, 6.2)])];
+
+        // Intro before first line sleeps until 1.0s (capped to LYRIC_MAX_WAIT_MS).
+        let intro = resolve_lyric_cursor(&timeline, 0.5);
+        assert_eq!(
+            intro,
+            LyricCursor {
+                line_index: -1,
+                word_index: -1,
+                word_progress: 0.0,
+                sweeping: false
+            }
+        );
+        assert_eq!(next_lyric_delay(&timeline, 0.5, intro), Some(Duration::from_millis(500)));
+
+        // Plain LRC line never enters karaoke sweep mode.
+        let plain = resolve_lyric_cursor(&timeline, 1.2);
+        assert_eq!(
+            plain,
+            LyricCursor {
+                line_index: 0,
+                word_index: -1,
+                word_progress: 0.0,
+                sweeping: false
+            }
+        );
+        assert_eq!(
+            next_lyric_delay(&timeline, 1.2, plain),
+            Some(Duration::from_millis(LYRIC_MAX_WAIT_MS))
+        );
+        assert_eq!(next_lyric_delay(&timeline, 3.7, plain), Some(Duration::from_millis(300)));
+
+        // Timed line before first word sleeps until first word starts at 5.2s.
+        let pre_word = resolve_lyric_cursor(&timeline, 5.0);
+        assert_eq!(
+            pre_word,
+            LyricCursor {
+                line_index: 1,
+                word_index: -1,
+                word_progress: 0.0,
+                sweeping: false
+            }
+        );
+        assert_eq!(next_lyric_delay(&timeline, 5.0, pre_word), Some(Duration::from_millis(200)));
+
+        // Active word sweep ticks at KARAOKE_TICK_MS.
+        let mid_word = resolve_lyric_cursor(&timeline, 5.4);
+        assert_eq!(mid_word.line_index, 1);
+        assert_eq!(mid_word.word_index, 0);
+        assert!((mid_word.word_progress - 0.5).abs() < 1e-4);
+        assert!(mid_word.sweeping);
+        assert_eq!(
+            next_lyric_delay(&timeline, 5.4, mid_word),
+            Some(Duration::from_millis(KARAOKE_TICK_MS))
+        );
+
+        // Gap between words stops sweeping and sleeps until the next word at 5.8s.
+        let between_words = resolve_lyric_cursor(&timeline, 5.65);
+        assert_eq!(
+            between_words,
+            LyricCursor {
+                line_index: 1,
+                word_index: 0,
+                word_progress: 1.0,
+                sweeping: false
+            }
+        );
+        assert_eq!(
+            next_lyric_delay(&timeline, 5.65, between_words),
+            Some(Duration::from_millis(150))
+        );
+
+        // After the last word finishes sweeping, marks all words sung and sleeps until line end.
+        let post_sweep = resolve_lyric_cursor(&timeline, 6.5);
+        assert_eq!(
+            post_sweep,
+            LyricCursor {
+                line_index: 1,
+                word_index: 2,
+                word_progress: 1.0,
+                sweeping: false
+            }
+        );
+        assert_eq!(
+            next_lyric_delay(&timeline, 6.5, post_sweep),
+            Some(Duration::from_millis(LYRIC_MAX_WAIT_MS))
+        );
+
+        // Past the final line end: no timer needed.
+        let past_end = resolve_lyric_cursor(&timeline, 9.5);
+        assert_eq!(next_lyric_delay(&timeline, 9.5, past_end), None);
+    }
+
+    #[test]
+    fn min_progress_step_scales_with_duration_and_bar_width() {
+        assert!((min_progress_step(240.0, true) - (240.0 / 324.0)).abs() < 1e-4);
+        assert!((min_progress_step(240.0, false) - (240.0 / 520.0)).abs() < 1e-4);
+        assert!((min_progress_step(30.0, true) - 0.2).abs() < 1e-4);
+        assert!((min_progress_step(600.0, true) - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn proxy_models_project_rows_lazily_and_lookup_likes_in_constant_time() {
+        use std::{path::PathBuf, sync::Arc};
+
+        use slint::Model;
+
+        use super::{LikedTracksModel, TrackListModel, song};
+        use crate::library::{Track, TrackId, TrackOrigin};
+
+        let mut t = Track::new(
+            TrackId("/dev/sealmusic/track/local_1".into()),
+            TrackOrigin::Local(PathBuf::from("/music/a.flac")),
+            "Title".into(),
+            "Artist".into(),
+            Duration::from_secs(125),
+        );
+        t.album = "Album".into();
+        let track = Arc::new(t);
+
+        let full = song(&track);
+        assert_eq!(full.album.as_str(), "Album");
+        assert_eq!(full.duration.as_str(), "02:05");
+
+        let list = TrackListModel(vec![track.clone()]);
+        assert_eq!(list.row_count(), 1);
+        let row = list.row_data(0).unwrap();
+        assert_eq!(row.id.as_str(), "/dev/sealmusic/track/local_1");
+        assert_eq!(row.song_name.as_str(), "Title");
+        assert_eq!(row.singer.as_str(), "Artist");
+        assert_eq!(row.album.as_str(), "");
+        assert_eq!(row.duration.as_str(), "02:05");
+        assert!(row.is_local);
+
+        let liked = LikedTracksModel::new(vec![track.id.clone()]);
+        assert_eq!(liked.row_count(), 1);
+        assert_eq!(liked.row_data(0).unwrap().as_str(), track.id.0.as_str());
+        assert!(liked.set.contains(track.id.0.as_str()));
+        assert!(!liked.set.contains("missing"));
     }
 }

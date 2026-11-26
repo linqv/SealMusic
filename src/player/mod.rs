@@ -1,11 +1,12 @@
 mod collections;
 pub mod command;
+mod jobs;
 mod local;
 #[cfg(target_os = "linux")]
 mod online;
 pub mod state;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(test, target_os = "linux"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     path::PathBuf,
@@ -15,13 +16,13 @@ use std::{
 };
 
 use command::{Inbox, PlayerCommand as Cmd};
+use jobs::{Completion as MediaDone, MediaJobs};
 use rodio::Source;
-use state::{PlaybackEvent as Event, PlaybackState, Queue, SharedState, Status};
+use state::{LoopMode, PlaybackEvent as Event, PlaybackState, Queue, SharedState, Status};
 
 use crate::{
     config::Config,
     library::{Track, collections::Collections, metadata, scan},
-    slint_types::LoopMode,
 };
 
 const POSITION_SYNC_TICKS: u8 = 5;
@@ -42,19 +43,17 @@ struct PlayerCore<F> {
     mixer: rodio::mixer::Mixer,
     player: rodio::Player,
     publish: F,
-    #[cfg(target_os = "linux")]
-    mpris_available: Arc<AtomicBool>,
-    #[cfg(target_os = "linux")]
-    artwork: Option<tempfile::NamedTempFile>,
-    #[cfg(target_os = "linux")]
-    details: metadata::TrackDetails,
+    jobs: MediaJobs,
+    scan_id: u64,
+    initial_playback: Option<Status>,
+    local_details_id: u64,
+    pending_local_details: Option<u64>,
 }
 
 pub fn start(
     cfg: Config,
     shared: SharedState,
     inbox: Inbox,
-    #[cfg(target_os = "linux")] mpris_available: Arc<AtomicBool>,
     mut publish: impl FnMut(Event) + Send + 'static,
 ) -> thread::JoinHandle<Config> {
     thread::spawn(move || {
@@ -67,16 +66,7 @@ pub fn start(
         };
         device.log_on_drop(false);
         let mixer = device.mixer().clone();
-        run_worker(
-            cfg,
-            Collections::load(),
-            shared,
-            inbox,
-            mixer,
-            #[cfg(target_os = "linux")]
-            mpris_available,
-            publish,
-        )
+        run_worker(cfg, Collections::load(), shared, inbox, mixer, publish)
     })
 }
 
@@ -100,15 +90,7 @@ pub(crate) fn spawn_test_worker(
                 thread::sleep(Duration::from_millis(10));
             }
         });
-        let cfg = run_worker(
-            cfg,
-            Collections::default(),
-            shared,
-            inbox,
-            mixer,
-            Arc::new(AtomicBool::new(true)),
-            publish,
-        );
+        let cfg = run_worker(cfg, Collections::default(), shared, inbox, mixer, publish);
         running.store(false, Ordering::Relaxed);
         let _ = audio.join();
         cfg
@@ -121,7 +103,6 @@ fn run_worker(
     shared: SharedState,
     inbox: Inbox,
     mixer: rodio::mixer::Mixer,
-    #[cfg(target_os = "linux")] mpris_available: Arc<AtomicBool>,
     publish: impl FnMut(Event) + Send + 'static,
 ) -> Config {
     if collections.get(cfg.selected_collection).is_none() {
@@ -146,35 +127,23 @@ fn run_worker(
         queue: Queue::default(),
         queue_visible: false,
         #[cfg(target_os = "linux")]
-        online: online::Online::new(inbox.sender),
+        online: online::Online::new(inbox.sender.clone()),
         query: String::new(),
         pending_seek: None,
         tick_count: 0,
         mixer,
         player,
         publish,
-        #[cfg(target_os = "linux")]
-        mpris_available,
-        #[cfg(target_os = "linux")]
-        artwork: None,
-        #[cfg(target_os = "linux")]
-        details: metadata::TrackDetails::default(),
+        jobs: MediaJobs::new(inbox.sender),
+        scan_id: 0,
+        initial_playback: Some(Status::Paused),
+        local_details_id: 0,
+        pending_local_details: None,
     };
     core.collection_event();
-    if let Err(e) = core.refresh(core.cfg.song_dir.clone(), true) {
-        core.rebuild_order();
-        core.error(e);
-    }
+    core.request_scan(core.cfg.song_dir.clone(), true);
     #[cfg(target_os = "linux")]
-    {
-        core.script_event();
-        if core.cfg.current_online.is_some() && !core.restore_online() {
-            core.cfg.current_online = None;
-            if let Err(e) = core.reset_and_restore_local(true) {
-                core.error(e);
-            }
-        }
-    }
+    core.script_event();
     core.broadcast();
     let rx = inbox.rx;
     loop {
@@ -209,22 +178,29 @@ fn run_worker(
         }
     }
     core.sample_position();
-    core.cfg.current_song_path =
-        core.state.track.as_ref().and_then(|t| t.local_path().map(ToOwned::to_owned));
     #[cfg(target_os = "linux")]
     {
         core.cancel_load();
         core.online.active_stream.take();
-        core.cfg.current_online = core.state.track.as_ref().and_then(|t| match &t.origin {
-            crate::library::TrackOrigin::Online(r) => Some(r.clone()),
-            _ => None,
-        });
     }
-    core.cfg.progress = if core.state.status == Status::Stopped {
-        0.
-    } else {
-        core.state.position.as_secs_f32()
-    };
+    // A quit during initialization must keep the saved track and position.
+    if core.initial_playback.is_none() || core.state.track.is_some() {
+        core.cfg.current_song_path =
+            core.state.track.as_ref().and_then(|track| track.local_path().map(ToOwned::to_owned));
+        #[cfg(target_os = "linux")]
+        {
+            core.cfg.current_online =
+                core.state.track.as_ref().and_then(|track| match &track.origin {
+                    crate::library::TrackOrigin::Online(reference) => Some(reference.clone()),
+                    _ => None,
+                });
+        }
+        core.cfg.progress = if core.state.status == Status::Stopped {
+            0.
+        } else {
+            core.state.position.as_secs_f32()
+        };
+    }
     core.player.clear();
     core.cfg.loop_mode = core.state.loop_mode;
     core.cfg.shuffle = core.state.shuffle;
@@ -376,19 +352,11 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         self.state.status = Status::Stopped;
         self.state.track = None;
         self.state.duration = Duration::ZERO;
+        self.pending_seek = None;
+        self.pending_local_details = None;
         #[cfg(target_os = "linux")]
-        {
-            self.online.cancel_details();
-            self.details = metadata::TrackDetails::default();
-            self.artwork = None;
-            self.state.art_url = None;
-            self.state.synced_lyrics = None;
-        }
-        (self.publish)(Event::Details {
-            details: Default::default(),
-            position: Duration::ZERO,
-            cover_changed: true,
-        });
+        self.online.cancel_details();
+        self.project_details(metadata::TrackDetails::default(), true, true);
     }
     fn reset_and_restore_local(&mut self, startup: bool) -> Result<(), String> {
         self.stop();
@@ -415,12 +383,24 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         }
         Ok(())
     }
-    fn refresh(&mut self, dir: PathBuf, startup: bool) -> Result<(), String> {
-        let mut tracks = match scan::scan(&dir) {
-            Ok(v) => v,
-            Err(e) if startup && e.kind() == std::io::ErrorKind::NotFound => vec![],
-            Err(e) => return Err(format!("{}: {e}", dir.display())),
+    fn request_scan(&mut self, dir: PathBuf, startup: bool) {
+        self.scan_id += 1;
+        let request = jobs::Scan {
+            id: self.scan_id,
+            dir,
+            startup,
         };
+        if self.jobs.scan.send(request).is_err() {
+            log::error!("Library scan worker closed");
+        }
+    }
+
+    fn apply_scan(
+        &mut self,
+        dir: PathBuf,
+        mut tracks: Vec<Arc<Track>>,
+        startup: bool,
+    ) -> Result<(), String> {
         scan::sort(&mut tracks, self.cfg.sort_key, self.cfg.sort_ascending);
         self.cfg.song_dir = dir;
         self.tracks = tracks;
@@ -441,7 +421,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                 .or_else(|| self.queue.get(&current.id))
         {
             self.state.track = Some(updated.clone());
-            self.details(&updated);
+            self.details(&updated, false);
             return Ok(());
         }
         #[cfg(target_os = "linux")]
@@ -453,17 +433,142 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         }
         self.reset_and_restore_local(startup)
     }
-    fn details(&mut self, t: &Arc<Track>) {
-        let details = match &t.origin {
-            crate::library::TrackOrigin::Local(path) => metadata::read_details(path),
+    fn details(&mut self, track: &Arc<Track>, changed: bool) {
+        self.pending_local_details = None;
+        #[cfg(target_os = "linux")]
+        self.online.cancel_details();
+        match &track.origin {
+            crate::library::TrackOrigin::Local(path) => {
+                if changed {
+                    self.project_details(metadata::TrackDetails::default(), true, true);
+                }
+                self.local_details_id += 1;
+                let id = self.local_details_id;
+                let request = jobs::Details::Read(id, track.id.clone(), path.clone());
+                if self.jobs.details.send(request).is_ok() {
+                    self.pending_local_details = Some(id);
+                } else {
+                    log::error!("Track details worker closed");
+                }
+            }
             #[cfg(target_os = "linux")]
             crate::library::TrackOrigin::Online(reference) => {
-                crate::online::inline_details(reference)
+                let details = crate::online::inline_details(reference);
+                self.enhance_details(track, details.cover.is_none(), details.lyrics.is_empty());
+                self.project_details(details, true, true);
             }
-        };
+        }
+    }
+
+    fn reload_details(&mut self) {
+        if self.pending_local_details.is_some() {
+            return;
+        }
+        if let Some((track, source)) =
+            self.state.track.as_ref().zip(self.state.cover_source.as_ref())
+        {
+            if self
+                .jobs
+                .details
+                .send(jobs::Details::Restore(track.id.clone(), source.clone()))
+                .is_err()
+            {
+                log::error!("Track details worker closed");
+            }
+        } else {
+            self.publish_details(
+                metadata::TrackDetails::default(),
+                Some(Arc::clone(&self.state.lyrics)),
+                true,
+            );
+        }
+    }
+
+    fn waiting_for_startup_track(&self) -> bool {
         #[cfg(target_os = "linux")]
-        self.enhance_details(t, &details);
-        self.project_details(&t.id, details, true);
+        if self.online.loading() {
+            return false;
+        }
+        self.state.track.is_none()
+    }
+
+    fn complete_media(&mut self, done: MediaDone) {
+        match done {
+            MediaDone::Scan(request, tracks) if request.id == self.scan_id => {
+                let waiting = self.waiting_for_startup_track();
+                let initial_playback = self.initial_playback.take().filter(|_| waiting);
+                let jobs::Scan {
+                    dir,
+                    startup,
+                    ..
+                } = request;
+                let result = match tracks {
+                    Ok(tracks) => self.apply_scan(dir, tracks, startup),
+                    Err(err) if startup && err.kind() == std::io::ErrorKind::NotFound => {
+                        self.apply_scan(dir, Vec::new(), true)
+                    }
+                    Err(err) => Err(format!("{}: {err}", dir.display())),
+                };
+                if let Err(err) = result {
+                    if startup {
+                        self.rebuild_order();
+                    }
+                    self.error(err);
+                }
+                #[cfg(target_os = "linux")]
+                if startup
+                    && self.state.track.is_none()
+                    && !self.online.loading()
+                    && self.cfg.current_online.is_some()
+                    && !self.restore_online()
+                {
+                    self.cfg.current_online = None;
+                    if let Err(err) = self.reset_and_restore_local(true) {
+                        self.error(err);
+                    }
+                }
+                match initial_playback {
+                    Some(Status::Playing) => {
+                        if let Err(err) = self.play() {
+                            self.error(err);
+                        }
+                    }
+                    Some(Status::Stopped) => self.stop(),
+                    _ => {}
+                }
+                self.broadcast();
+            }
+            MediaDone::LocalDetails(id, track_id, details)
+                if self.pending_local_details == Some(id)
+                    && self.state.track.as_ref().is_some_and(|track| track.id == track_id) =>
+            {
+                self.pending_local_details = None;
+                #[cfg(target_os = "linux")]
+                {
+                    let track = self.state.track.as_ref().unwrap().clone();
+                    self.enhance_details(
+                        &track,
+                        details.cover.is_none(),
+                        details.lyrics.is_empty(),
+                    );
+                }
+                self.project_details(details, true, true);
+                #[cfg(target_os = "linux")]
+                self.sync_stream();
+                self.broadcast();
+            }
+            MediaDone::RestoredCover(track, source, details)
+                if self.state.track.as_ref().is_some_and(|current| current.id == track)
+                    && self
+                        .state
+                        .cover_source
+                        .as_ref()
+                        .is_some_and(|current| Arc::ptr_eq(current, &source)) =>
+            {
+                self.publish_details(details, Some(Arc::clone(&self.state.lyrics)), true);
+            }
+            _ => {}
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -476,87 +581,57 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         if !self.state.track.as_ref().is_some_and(|t| &t.id == track_id) {
             return false;
         }
-        let cover_changed = incoming.cover.as_ref().is_some_and(|next| {
-            self.details.cover.as_ref().is_none_or(|current| {
-                prefer_incoming && !std::ptr::eq(current.pixels.as_slice(), next.pixels.as_slice())
-            })
-        });
+        let cover_changed =
+            incoming.cover.is_some() && (prefer_incoming || self.state.cover_source.is_none());
         let lyrics_changed = !incoming.lyrics.is_empty()
-            && (prefer_incoming || self.details.lyrics.is_empty())
-            && incoming.lyrics != self.details.lyrics;
+            && (prefer_incoming || self.state.lyrics.is_empty())
+            && incoming.lyrics.as_slice() != &*self.state.lyrics;
         if !cover_changed && !lyrics_changed {
             return false;
         }
-        let mut merged = std::mem::take(&mut self.details);
-        if cover_changed {
-            merged.cover = incoming.cover;
-            merged.ambient = incoming.ambient;
-            merged.palette = incoming.palette;
-            merged.raw_cover = incoming.raw_cover;
-        }
-        if lyrics_changed {
-            merged.lyrics = incoming.lyrics;
-        }
-        self.project_details(track_id, merged, cover_changed);
+        self.project_details(incoming, cover_changed, lyrics_changed);
         true
     }
 
     fn project_details(
         &mut self,
-        _id: &crate::library::TrackId,
+        mut details: metadata::TrackDetails,
+        cover_changed: bool,
+        lyrics_changed: bool,
+    ) {
+        let lyrics = if lyrics_changed {
+            self.state.lyrics = Arc::from(std::mem::take(&mut details.lyrics));
+            Some(Arc::clone(&self.state.lyrics))
+        } else {
+            details.lyrics.clear();
+            None
+        };
+        let source = details.cover_source.take();
+        if cover_changed {
+            self.state.cover_source = source;
+        } else {
+            details.cover = None;
+            details.ambient = None;
+            details.palette = None;
+        }
+        self.publish_details(details, lyrics, cover_changed);
+    }
+
+    fn publish_details(
+        &mut self,
         details: metadata::TrackDetails,
+        lyrics: Option<Arc<[crate::library::lyrics::LyricLine]>>,
         cover_changed: bool,
     ) {
-        #[cfg(target_os = "linux")]
-        {
-            self.details = details.clone();
-            if self.mpris_available.load(Ordering::Acquire) {
-                if cover_changed || (self.artwork.is_none() && details.cover.is_some()) {
-                    self.update_artwork(&details);
-                }
-                self.state.synced_lyrics =
-                    crate::integrations::mpris::encode_synced_lyrics(_id, &details.lyrics);
-            } else {
-                self.artwork = None;
-                self.state.art_url = None;
-                self.state.synced_lyrics = None;
-            }
-        }
         self.sample_position();
         (self.publish)(Event::Details {
             details,
+            lyrics,
             position: self.pending_seek.unwrap_or(self.state.position),
             cover_changed,
         });
     }
 
-    #[cfg(target_os = "linux")]
-    fn update_artwork(&mut self, details: &metadata::TrackDetails) {
-        self.artwork = if let Some(raw) = &details.raw_cover {
-            match crate::integrations::mpris::cache_cover_raw(&raw.bytes, raw.extension) {
-                Ok(f) => Some(f),
-                Err(e) => {
-                    log::warn!("Cover cache: {e}");
-                    None
-                }
-            }
-        } else {
-            details.cover.as_ref().and_then(|img| {
-                match crate::integrations::mpris::cache_cover(img) {
-                    Ok(f) => Some(f),
-                    Err(e) => {
-                        log::warn!("Cover cache: {e}");
-                        None
-                    }
-                }
-            })
-        };
-        self.state.art_url = self
-            .artwork
-            .as_ref()
-            .and_then(|f| url::Url::from_file_path(f.path()).ok())
-            .map(|u| Arc::<str>::from(u.as_str()));
-    }
     #[allow(clippy::too_many_arguments)]
     fn load(
         &mut self,
@@ -654,7 +729,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             self.player.play();
         }
         if changed || was_deferred {
-            self.details(&t);
+            self.details(&t, changed);
         }
     }
     fn stop(&mut self) {
@@ -733,6 +808,23 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         Ok(())
     }
     fn handle(&mut self, cmd: Cmd) -> Result<(), String> {
+        if self.initial_playback.is_some()
+            && self.waiting_for_startup_track()
+            && let Some(intent) = &mut self.initial_playback
+        {
+            let requested = match &cmd {
+                Cmd::Play => Some(Status::Playing),
+                Cmd::Pause => Some(Status::Paused),
+                Cmd::Stop => Some(Status::Stopped),
+                Cmd::TogglePlayPause if *intent == Status::Playing => Some(Status::Paused),
+                Cmd::TogglePlayPause => Some(Status::Playing),
+                _ => None,
+            };
+            if let Some(requested) = requested {
+                *intent = requested;
+                return Ok(());
+            }
+        }
         match cmd {
             Cmd::TogglePlayPause => {
                 let status = self.state.status;
@@ -836,9 +928,12 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                 }
             }
             Cmd::Refresh(dir) => {
-                let result = self.refresh(dir, false);
-                self.broadcast();
-                return result;
+                self.request_scan(dir, false);
+                return Ok(());
+            }
+            Cmd::MediaDone(done) => {
+                self.complete_media(done);
+                return Ok(());
             }
             Cmd::Sort(key, asc) => {
                 self.cfg.sort_key = key;
@@ -909,6 +1004,10 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                 self.results();
                 return Ok(());
             }
+            Cmd::ReloadDetails => {
+                self.reload_details();
+                return Ok(());
+            }
             #[cfg(target_os = "linux")]
             Cmd::Raise => {
                 (self.publish)(Event::Raise);
@@ -938,6 +1037,8 @@ mod tests {
 
     struct TestHarness {
         core: PlayerCore<Box<dyn FnMut(Event)>>,
+        _controls: command::Controls,
+        media_rx: mpsc::Receiver<command::Request>,
         events: Arc<Mutex<Vec<Event>>>,
         tracks: Vec<Arc<Track>>,
         temp_dir: Option<PathBuf>,
@@ -996,6 +1097,7 @@ mod tests {
             let events = Arc::new(Mutex::new(Vec::new()));
             let sink = events.clone();
             let publish: Box<dyn FnMut(Event)> = Box::new(move |ev| sink.lock().unwrap().push(ev));
+            let (controls, inbox) = command::Controls::channel();
             let mut core = PlayerCore {
                 cfg: Config::default(),
                 state: PlaybackState::default(),
@@ -1012,17 +1114,18 @@ mod tests {
                 mixer,
                 player,
                 publish,
-                #[cfg(target_os = "linux")]
-                mpris_available: Arc::new(AtomicBool::new(true)),
-                #[cfg(target_os = "linux")]
-                artwork: None,
-                #[cfg(target_os = "linux")]
-                details: metadata::TrackDetails::default(),
+                jobs: MediaJobs::new(inbox.sender),
+                scan_id: 0,
+                initial_playback: None,
+                local_details_id: 0,
+                pending_local_details: None,
             };
             core.rebuild_order();
 
             Self {
                 core,
+                _controls: controls,
+                media_rx: inbox.rx,
                 events,
                 tracks,
                 temp_dir,
@@ -1030,6 +1133,76 @@ mod tests {
                 audio: Some(audio),
             }
         }
+        fn finish_media(&mut self) -> bool {
+            let request = self.media_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let scan = matches!(&request.command, Cmd::MediaDone(MediaDone::Scan(request, _)) if request.id == self.core.scan_id);
+            self.core.handle(request.command).unwrap();
+            scan
+        }
+
+        #[cfg(target_os = "linux")]
+        fn refresh(&mut self, directory: PathBuf) {
+            self.core.handle(Cmd::Refresh(directory)).unwrap();
+            while !self.finish_media() {}
+        }
+    }
+
+    #[test]
+    fn startup_scan_preserves_play_intent_and_ignores_superseded_results() {
+        let mut h = TestHarness::new(2);
+        let dir = h.temp_dir.clone().unwrap();
+        h.core.tracks.clear();
+        h.core.rebuild_order();
+        h.core.initial_playback = Some(Status::Paused);
+
+        h.core.request_scan(dir.join("old"), true);
+        let stale_id = h.core.scan_id;
+        h.core.handle(Cmd::Refresh(dir.clone())).unwrap();
+        h.core.handle(Cmd::TogglePlayPause).unwrap();
+        h.core.handle(Cmd::Pause).unwrap();
+        h.core.handle(Cmd::Play).unwrap();
+        h.core.handle(Cmd::SetVolume(0.2)).unwrap();
+        assert_eq!(h.core.state.volume, 0.2);
+
+        h.core.complete_media(MediaDone::Scan(
+            jobs::Scan {
+                id: stale_id,
+                dir: dir.join("old"),
+                startup: true,
+            },
+            Ok(Vec::new()),
+        ));
+        assert!(h.core.state.track.is_none());
+        assert_eq!(h.core.initial_playback, Some(Status::Playing));
+
+        while !h.finish_media() {}
+        assert_eq!(h.core.cfg.song_dir, dir);
+        assert_eq!(h.core.state.status, Status::Playing);
+        assert_eq!(h.core.state.track.as_ref().unwrap().id, h.core.tracks[0].id);
+    }
+
+    #[test]
+    fn late_local_details_cannot_replace_the_new_track_details() {
+        let mut h = TestHarness::new(2);
+        let first = h.tracks[0].clone();
+        let second = h.tracks[1].clone();
+        h.core.handle(Cmd::PlayTrack(first.id.clone())).unwrap();
+        let stale_id = h.core.pending_local_details.unwrap();
+        h.core.handle(Cmd::PlayTrack(second.id.clone())).unwrap();
+        let latest_id = h.core.pending_local_details.unwrap();
+
+        h.events.lock().unwrap().clear();
+        let old_details = metadata::read_details(first.local_path().unwrap());
+        h.core.complete_media(MediaDone::LocalDetails(stale_id, first.id.clone(), old_details));
+        assert!(h.events.lock().unwrap().is_empty());
+        assert_eq!(h.core.pending_local_details, Some(latest_id));
+
+        while h.core.pending_local_details.is_some() {
+            h.finish_media();
+        }
+        assert_eq!(h.core.state.track.as_ref().unwrap().id, second.id);
+        assert!(h.core.state.cover_source.is_some());
+        assert!(!h.core.state.lyrics.is_empty());
     }
 
     #[test]
@@ -1235,12 +1408,12 @@ mod tests {
             script.local_actions.push("lyric".into());
             h.core.cfg.lx_script = Some(script);
             h.core.handle(Cmd::PlayTrack(first.id.clone())).unwrap();
-            // Both embedded fields exist, so this commit needed no worker.
+            h.finish_media();
+            // Both embedded fields exist, so no online enhancement is needed.
             assert!(h.core.online.details_id().is_none());
-            let missing = metadata::TrackDetails::default();
-            h.core.enhance_details(&first, &missing);
+            h.core.enhance_details(&first, true, true);
             let stale = h.core.online.details_id().unwrap();
-            h.core.enhance_details(&first, &missing);
+            h.core.enhance_details(&first, true, true);
             let latest = h.core.online.details_id().unwrap();
             let reply = |id, track: &Track| {
                 online::Completion::Details(id, track.id.clone(), Some(Default::default()))
@@ -1252,7 +1425,8 @@ mod tests {
             h.events.lock().unwrap().clear();
             h.core.complete_online(reply(latest, &first));
             assert!(h.events.lock().unwrap().is_empty());
-            assert!(h.core.state.synced_lyrics.is_some());
+            h.finish_media();
+            assert!(!h.core.state.lyrics.is_empty());
             assert_eq!(h.core.state.status, Status::Playing);
         }
 
@@ -1379,7 +1553,7 @@ mod tests {
             let empty_dir = std::env::temp_dir()
                 .join(format!("sealmusic_empty_refresh_{}", std::process::id()));
             let _ = std::fs::create_dir_all(&empty_dir);
-            h.core.handle(Cmd::Refresh(empty_dir.clone())).unwrap();
+            h.refresh(empty_dir.clone());
             let _ = std::fs::remove_dir_all(&empty_dir);
 
             assert_eq!(h.core.online.pending_id(), Some(pending_id));
@@ -1699,8 +1873,8 @@ mod tests {
             let online_b = h.core.state.track.clone().unwrap();
 
             // Sort descending and refresh local directory: online tracks, current track, and history stay intact.
-            h.core.handle(Cmd::Sort(crate::slint_types::SortKey::BySongName, false)).unwrap();
-            h.core.handle(Cmd::Refresh(dir)).unwrap();
+            h.core.handle(Cmd::Sort(crate::library::SortKey::Title, false)).unwrap();
+            h.refresh(dir);
             assert_eq!(h.core.state.track.as_ref().map(|t| &t.id), Some(&online_b.id));
             assert!(h.core.queue.get(&online_a.id).is_some());
             assert!(h.core.queue.get(&online_b.id).is_some());
@@ -1788,7 +1962,7 @@ mod tests {
             let empty_dir =
                 std::env::temp_dir().join(format!("sealmusic_empty_hist_{}", std::process::id()));
             let _ = std::fs::create_dir_all(&empty_dir);
-            h.core.handle(Cmd::Refresh(empty_dir.clone())).unwrap();
+            h.refresh(empty_dir.clone());
             let _ = std::fs::remove_dir_all(&empty_dir);
             assert!(h.core.state.track.is_none());
 
@@ -1888,16 +2062,13 @@ mod tests {
             let cover_img = image::RgbaImage::from_pixel(4, 4, image::Rgba([200, 60, 40, 255]));
             let expected_palette = metadata::extract_palette(&cover_img.clone().into());
             assert!(expected_palette.is_some());
-            let embedded_cover = metadata::TrackDetails {
-                cover: Some(cover_img.into()),
-                palette: expected_palette,
-                ..Default::default()
-            };
+            let mut png = std::io::Cursor::new(Vec::new());
+            cover_img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+            let embedded_cover = metadata::TrackDetails::from_cover_bytes(png.get_ref()).unwrap();
             assert!(h.core.merge_details(&track_id, embedded_cover, false));
-            assert_eq!(h.core.details.palette, expected_palette);
-            assert!(h.core.state.art_url.is_some());
-            assert!(h.core.state.synced_lyrics.is_none());
-            let cover_url = h.core.state.art_url.clone();
+            let cover_source = h.core.state.cover_source.clone().unwrap();
+            assert_eq!(cover_source.palette, expected_palette);
+            assert!(h.core.state.lyrics.is_empty());
 
             let api_lyrics = metadata::TrackDetails {
                 lyrics: vec![crate::library::lyrics::LyricLine {
@@ -1913,9 +2084,8 @@ mod tests {
                 track_id.clone(),
                 Some(api_lyrics),
             ));
-            // Both embedded cover/palette and API lyrics must be preserved together in state and MPRIS!
-            assert_eq!(h.core.details.palette, expected_palette);
-            assert_eq!(h.core.state.art_url, cover_url);
+            // The lyrics update must preserve the embedded artwork.
+            assert!(Arc::ptr_eq(h.core.state.cover_source.as_ref().unwrap(), &cover_source));
             assert!(
                 h.events
                     .lock()
@@ -1931,9 +2101,7 @@ mod tests {
                     })
                     .unwrap_or(false)
             );
-            assert!(
-                h.core.state.synced_lyrics.as_deref().is_some_and(|s| s.contains("Online lyric"))
-            );
+            assert_eq!(h.core.state.lyrics[0].text, "Online lyric");
 
             // A subsequent embedded fallback with different lyrics must NOT overwrite API lyrics.
             let late_embedded = metadata::TrackDetails {
@@ -1947,9 +2115,35 @@ mod tests {
                 ..Default::default()
             };
             assert!(!h.core.merge_details(&track_id, late_embedded, false));
-            assert!(
-                h.core.state.synced_lyrics.as_deref().is_some_and(|s| s.contains("Online lyric"))
-            );
+            assert_eq!(h.core.state.lyrics[0].text, "Online lyric");
+
+            // ReloadDetails restores artwork and lyrics without an MPRIS service.
+            h.events.lock().unwrap().clear();
+            h.core.handle(Cmd::ReloadDetails).unwrap();
+            h.finish_media();
+            let reloaded = h.events.lock().unwrap().iter().find_map(|event| match event {
+                Event::Details {
+                    cover_changed: true,
+                    details,
+                    lyrics: Some(lyrics),
+                    ..
+                } => {
+                    let cover = details.cover.as_ref()?;
+                    Some((
+                        cover.pixels.width(),
+                        cover.pixels.height(),
+                        details.palette,
+                        lyrics.clone(),
+                    ))
+                }
+                _ => None,
+            });
+            let (w, h_px, pal, reloaded_lyrics) =
+                reloaded.expect("ReloadDetails emits cover and lyrics");
+            assert_eq!((w, h_px), (4, 4));
+            assert_eq!(pal, expected_palette);
+            assert_eq!(reloaded_lyrics.len(), 1);
+            assert_eq!(reloaded_lyrics[0].text, "Online lyric");
 
             // Switching from a sought track to another track must emit Details at 0s, not the old position.
             let local = h.tracks[0].clone();

@@ -1,8 +1,10 @@
+pub mod crypto;
 mod http;
 mod utils;
 mod worker;
 use std::{
-    collections::HashMap, env, fs::File, io::Read, path::Path, process::Stdio, time::Duration,
+    collections::HashMap, fs::File, io::Read, path::Path, process::Stdio, sync::OnceLock,
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -137,7 +139,13 @@ impl Session {
         worker_arg: &str,
         on_alert: AlertHandler,
     ) -> Result<Self> {
-        let client = Client::builder().redirect(reqwest::redirect::Policy::none()).build()?;
+        static CLIENT: OnceLock<Client> = OnceLock::new();
+        let client = if let Some(client) = CLIENT.get() {
+            client.clone()
+        } else {
+            let built = Client::builder().redirect(reqwest::redirect::Policy::none()).build()?;
+            CLIENT.get_or_init(|| built).clone()
+        };
         Self::initialize_with_client(script, worker_arg, client, on_alert).await
     }
 
@@ -153,12 +161,18 @@ impl Session {
         client: Client,
         on_alert: AlertHandler,
     ) -> Result<Self> {
-        let mut child = Command::new(env::current_exe()?)
+        // Keep using the running executable even if a rebuild has replaced its path.
+        #[cfg(target_os = "linux")]
+        let worker = "/proc/self/exe";
+        #[cfg(not(target_os = "linux"))]
+        let worker = std::env::current_exe().context("locate LX worker executable")?;
+        let mut child = Command::new(worker)
             .arg(worker_arg)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .kill_on_drop(true)
-            .spawn()?;
+            .spawn()
+            .context("start LX worker")?;
         let codec = || LinesCodec::new_with_max_length(FRAME_LIMIT);
         let mut session = Self {
             input: FramedWrite::new(child.stdin.take().context("worker stdin")?, codec()),

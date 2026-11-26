@@ -7,8 +7,10 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -171,6 +173,24 @@ class Protocol(unittest.TestCase):
                 self.assertNotEqual(p.returncode, 0)
                 self.assertIn(error, p.stderr)
         self.assertEqual(self.results('minimal.js', [track])[-1]['url'], 'https://example.invalid/p0.flac')
+
+    @unittest.skipUnless(sys.platform == 'linux', 'requires Linux process executable paths')
+    def test_worker_starts_after_executable_replacement(self):
+        binary = Path(self.tmp.name) / 'lx-probe'
+        shutil.copy2(CONFIG.binary, binary)
+        replacement = binary.with_suffix('.new')
+        replacement.touch()
+        args = [binary, '--full-url', FIXTURES / 'minimal.js', '/dev/stdin']
+        with subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True) as probe:
+            try:
+                # The probe reads requests from stdin before starting its worker.
+                replacement.replace(binary)
+                stdout, stderr = probe.communicate(json.dumps([TRACKS[3]]), timeout=20)
+            finally:
+                probe.kill()
+        self.assertEqual(probe.returncode, 0, stderr + stdout)
+        self.assertEqual(json.loads(stdout.splitlines()[-1])['url'], 'https://example.invalid/p0.flac')
 
     def test_local_vectors(self):
         origin = self.server.origin

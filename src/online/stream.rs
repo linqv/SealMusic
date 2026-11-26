@@ -312,7 +312,7 @@ pub(super) async fn download_and_decode(
         if dest.progress.lock().unwrap().failure.is_none() {
             let cache = dest.clone();
             let probe_label = label.clone();
-            if tokio::task::spawn_blocking(move || cache.probe_complete_file(&probe_label))
+            if super::details::run_cover_decode(move || cache.probe_complete_file(&probe_label))
                 .await
                 .is_err()
             {

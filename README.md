@@ -30,6 +30,14 @@ The fork stores its configuration in `$XDG_CONFIG_HOME/sealmusic/config.toml`, d
 
 ![Settings](assets/settings-en.png)
 
+## Linux rendering
+
+SealMusic uses FemtoVG with OpenGL ES by default on Wayland. Set `SLINT_BACKEND=winit-femtovg` to select it explicitly. If OpenGL ES is unavailable, fully quit SealMusic and restart it with Slint's CPU renderer.
+
+```sh
+SLINT_BACKEND=winit-software ./target/release/sealmusic
+```
+
 ## Build and package
 
 Run `cargo run` for development. On Linux, `cargo release --locked` builds `target/release/sealmusic` for the build machine's CPU. Use `cargo build --locked --release` for the default target CPU when distributing the binary across machines. The packaging scripts use cargo-packager and write their output to `target/release`.

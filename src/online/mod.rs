@@ -29,14 +29,29 @@ use crate::{
 pub type Failure = (OnlineIssue, String);
 pub type Result<T> = std::result::Result<T, Failure>;
 
+const API_BODY_LIMIT: usize = 2 * 1024 * 1024;
+
+async fn read_bounded(mut response: reqwest::Response, limit: usize) -> Option<Vec<u8>> {
+    if response.content_length().is_some_and(|n| n > limit as u64) {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.ok()? {
+        if chunk.len() > limit - bytes.len() {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Some(bytes)
+}
+
 pub(super) fn api_client() -> Option<&'static reqwest::Client> {
     static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
     CLIENT
         .get_or_init(|| {
             reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .read_timeout(Duration::from_secs(15))
-                .timeout(Duration::from_secs(20))
+                .connect_timeout(Duration::from_secs(15))
+                .read_timeout(Duration::from_secs(30))
                 .build()
                 .map_err(|e| log::warn!("Could not build online HTTP client: {e}"))
                 .ok()
@@ -127,15 +142,96 @@ fn field_error(platform: &str, field: &str) -> Failure {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "SavedOnlineTrack")]
 pub struct OnlineTrack {
     // A JSON string keeps nulls, platform extensions and numeric IDs intact in TOML.
     music_info: String,
     pub quality: String,
+    #[serde(skip)]
+    fields: Option<Arc<OnlineTrackFields>>,
+}
+
+#[derive(Deserialize)]
+struct SavedOnlineTrack {
+    music_info: String,
+    quality: String,
+}
+
+#[derive(Debug, PartialEq)]
+struct OnlineTrackFields {
+    source: String,
+    id: TrackId,
+    qualities: Vec<String>,
+    title: String,
+    artist: String,
+    album: String,
+    duration: Duration,
+}
+
+impl OnlineTrackFields {
+    fn parse(info: &Value) -> Option<Self> {
+        let source = info["source"].as_str()?;
+        let key = match source {
+            "kg" => "hash",
+            "mg" => "copyrightId",
+            _ => "songmid",
+        };
+        let mut id = id_string(&info[key])?;
+        if source == "kg" {
+            id.make_ascii_lowercase();
+        }
+        let hash = Sha256::digest(format!("{source}\0{id}").as_bytes());
+        let duration = info["interval"]
+            .as_str()
+            .and_then(|s| s.split_once(':'))
+            .and_then(|(m, s)| m.parse::<u64>().ok()?.checked_mul(60)?.checked_add(s.parse().ok()?))
+            .unwrap_or_default();
+        Some(Self {
+            source: source.into(),
+            id: TrackId(format!("/dev/sealmusic/track/online_{hash:x}")),
+            qualities: info["_types"]
+                .as_object()
+                .into_iter()
+                .flat_map(|types| types.keys().cloned())
+                .collect(),
+            title: info["name"].as_str().unwrap_or_default().into(),
+            artist: info["singer"].as_str().unwrap_or_default().into(),
+            album: info["albumName"].as_str().unwrap_or_default().into(),
+            duration: Duration::from_secs(duration),
+        })
+    }
+
+    fn allocated_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.source.capacity()
+            + self.id.0.capacity()
+            + self.title.capacity()
+            + self.artist.capacity()
+            + self.album.capacity()
+            + self.qualities.capacity() * std::mem::size_of::<String>()
+            + self.qualities.iter().map(String::capacity).sum::<usize>()
+    }
+}
+
+impl From<SavedOnlineTrack> for OnlineTrack {
+    fn from(saved: SavedOnlineTrack) -> Self {
+        let fields = serde_json::from_str(&saved.music_info)
+            .ok()
+            .and_then(|info| OnlineTrackFields::parse(&info))
+            .map(Arc::new);
+        Self {
+            music_info: saved.music_info,
+            quality: saved.quality,
+            fields,
+        }
+    }
 }
 
 impl OnlineTrack {
     pub(crate) fn metadata_bytes(&self) -> usize {
-        self.music_info.capacity() + self.quality.capacity()
+        self.music_info.capacity()
+            + self.quality.capacity()
+            + self.fields.as_deref().map_or(0, OnlineTrackFields::allocated_bytes)
     }
 
     pub fn parse(link: &str) -> Result<Self> {
@@ -186,39 +282,24 @@ impl OnlineTrack {
             by_quality.insert(ty.into(), entry.clone());
         }
         info["_types"] = Value::Object(by_quality);
+        let fields = OnlineTrackFields::parse(&info).ok_or_else(|| field_error("LX", "data"))?;
         Ok(Self {
             music_info: info.to_string(),
             quality: String::new(),
+            fields: Some(Arc::new(fields)),
         })
     }
 
     pub fn track(&self) -> Result<Arc<Track>> {
-        let info: Value =
-            serde_json::from_str(&self.music_info).map_err(|_| field_error("LX", "data"))?;
-        let source = info["source"].as_str().ok_or_else(|| field_error("LX", "source"))?;
-        let key = match source {
-            "kg" => "hash",
-            "mg" => "copyrightId",
-            _ => "songmid",
-        };
-        let mut id = id_string(&info[key]).ok_or_else(|| field_error(source, key))?;
-        if source == "kg" {
-            id.make_ascii_lowercase();
-        }
-        let hash = Sha256::digest(format!("{source}\0{id}").as_bytes());
-        let duration = info["interval"]
-            .as_str()
-            .and_then(|s| s.split_once(':'))
-            .and_then(|(m, s)| m.parse::<u64>().ok()?.checked_mul(60)?.checked_add(s.parse().ok()?))
-            .unwrap_or_default();
+        let fields = self.fields.as_ref().ok_or_else(|| field_error("LX", "data"))?;
         let mut track = Track::new(
-            TrackId(format!("/dev/sealmusic/track/online_{hash:x}")),
+            fields.id.clone(),
             TrackOrigin::Online(self.clone()),
-            info["name"].as_str().unwrap_or_default().into(),
-            info["singer"].as_str().unwrap_or_default().into(),
-            Duration::from_secs(duration),
+            fields.title.clone(),
+            fields.artist.clone(),
+            fields.duration,
         );
-        track.album = info["albumName"].as_str().unwrap_or_default().into();
+        track.album = fields.album.clone();
         Ok(Arc::new(track))
     }
 
@@ -226,18 +307,20 @@ impl OnlineTrack {
         serde_json::from_str(&self.music_info).unwrap_or(Value::Null)
     }
 
-    pub fn source(&self) -> String {
-        self.info()["source"].as_str().unwrap_or_default().into()
+    pub fn source(&self) -> &str {
+        self.fields.as_ref().map_or("", |fields| fields.source.as_str())
     }
 
     pub fn qualities(&self, script: Option<&Script>) -> Vec<String> {
-        let info = self.info();
+        let Some(fields) = &self.fields else {
+            return Vec::new();
+        };
         script
             .filter(|s| s.enabled)
-            .and_then(|s| s.platforms.get(info["source"].as_str()?))
+            .and_then(|s| s.platforms.get(&fields.source))
             .into_iter()
             .flatten()
-            .filter(|q| info["_types"].get(q.as_str()).is_some())
+            .filter(|quality| fields.qualities.contains(quality))
             .cloned()
             .collect()
     }
@@ -342,7 +425,7 @@ impl Script {
 
     async fn initialize(raw: String, alert: lx_probe::AlertHandler) -> Result<lx_probe::Session> {
         lx_probe::Session::initialize_with_alert(raw, "--lx-worker", alert).await.map_err(|e| {
-            log::warn!("LX source initialization failed: {}", sanitize_log(&e.to_string()));
+            log::warn!("LX source initialization failed: {}", sanitize_log(&format!("{e:#}")));
             (OnlineIssue::Initialization, String::new())
         })
     }
@@ -491,6 +574,7 @@ mod tests {
                 "singer": "Artist",
                 "songmid": 1002,
                 "hash": "AABBCC",
+                "platformExtension": null,
                 "types": [{"type": "128k", "hash": "112233"}],
             }))
         ))
@@ -505,6 +589,15 @@ mod tests {
         })))
         .unwrap();
         assert_eq!(kg_upper.track().unwrap().id, kg_lower.track().unwrap().id);
+        let toml = toml::to_string(&kg_upper).unwrap();
+        let saved: toml::Table = toml.parse().unwrap();
+        assert_eq!(saved.len(), 2);
+        let restored: OnlineTrack = toml::from_str(&toml).unwrap();
+        assert_eq!(restored.source(), "kg");
+        assert_eq!(restored.track().unwrap().id, kg_upper.track().unwrap().id);
+        assert_eq!(restored.info()["songmid"], 1002);
+        assert_eq!(restored.info()["platformExtension"], Value::Null);
+        assert_eq!(restored.info(), kg_upper.info());
         assert!(kg_upper.track().unwrap().id.0.starts_with("/dev/sealmusic/track/online_"));
 
         // Missing platform-specific required fields report platform · field.

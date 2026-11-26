@@ -7,23 +7,36 @@ repository = "https://github.com/linqv/SealMusic"
 
 [dependencies]
 color-thief = "0.2"
-dark-light = "2"
 chrono = "0.4.42"
 env_logger = "0.11.8"
 home = "0.5.11"
-image = "0.25.8"
+image = { version = "0.25.8", default-features = false, features = [
+    "png",
+    "gif",
+    "webp",
+    "bmp",
+] }
+jpeg-decoder = { version = "0.3.2", default-features = false }
 lofty = "0.24.0"
 log = "0.4.28"
 rand = "0.9.2"
 rayon = "1.11.0"
 rfd = "0.15"
-rodio = "0.22.2"
+rodio = { version = "0.22.2", default-features = false, features = [
+    "playback",
+    "flac",
+    "mp3",
+    "mp4",
+    "vorbis",
+    "wav",
+] }
 serde = { version = "1.0.223", features = ["derive"] }
 single-instance = "0.3.3"
 slint = { version = "=1.19.0", default-features = false, features = [
     "backend-winit-wayland",
     "raw-window-handle-06",
-    "renderer-skia-software",
+    "renderer-femtovg",
+    "renderer-software",
     "system-tray",
     "accessibility",
     "compat-1-2",
@@ -32,21 +45,25 @@ slint = { version = "=1.19.0", default-features = false, features = [
 toml = "0.9.5"
 open = "5.4.0"
 
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+dark-light = "2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 base64 = "0.22"
 flate2 = "1"
 lx-probe = { path = "tools/lx-probe" }
-openssl = "0.10"
 serde_json = "1"
 sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 mpris-server = "0.9"
 futures-channel = "0.3"
 futures-lite = "2"
-slint = { version = "=1.19.0", default-features = false, features = ["renderer-skia-vulkan"] }
 url = "2"
 tempfile = "3"
+
+[dev-dependencies]
+image = { version = "0.25.8", default-features = false, features = ["jpeg"] }
 
 [build-dependencies]
 lucide-slint = "1.61.0"
@@ -56,7 +73,7 @@ slint-build = { version = "=1.19.0" }
 winresource = "0.1.17"
 
 [profile.release]
-opt-level = 3
+opt-level = "s"
 lto = "fat"
 codegen-units = 1
 incremental = false
