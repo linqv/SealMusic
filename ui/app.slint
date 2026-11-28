@@ -1,5 +1,5 @@
-import { CatalogRow, OnlineGlobal } from "online.slint";
-export { CatalogRow, OnlineGlobal }
+import { OnlineGlobal } from "online.slint";
+export { OnlineGlobal }
 import { CollectionPicker, CollectionsGlobal } from "collections.slint";
 export { CollectionsGlobal }
 import { Theme } from "theme.slint";
@@ -52,9 +52,15 @@ export global DisplayGlobal {
     in-out property <int> active_lyric_index: -1;
     in-out property <int> active_word_index: -1;
     in-out property <float> active_word_progress: 0;
-    in property <[SongInfo]> upcoming;
+    in-out property <string> active_karaoke_prefix;
+    in-out property <bool> active_karaoke_prefix_space;
+    in-out property <string> active_karaoke_word;
+    in-out property <bool> active_karaoke_word_space;
+    in-out property <string> active_karaoke_suffix;
+    in property <[SongInfo]> playlist;
     in property <image> album_image;
-    in property <image> ambient_image;
+    in property <image> ambient_dark_image;
+    in property <image> ambient_light_image;
     in property <bool> has_ambient_image;
     in-out property <string> song_dir;
 
@@ -133,7 +139,7 @@ export component MainWindow inherits Window {
     forward-focus: content-pane;
     callback toggle_play();
     callback play(SongInfo);
-    callback play_queued(string);
+    callback play_playlist_track(string);
     callback play_next();
     callback play_prev();
     callback change_progress(float);
@@ -149,11 +155,11 @@ export component MainWindow inherits Window {
     callback search_songs(string);
     pure callback format_duration(float) -> string;
     pure callback open_url_in_browser(string);
-    callback prev-lyric-time([LyricItem]) -> float;
-    callback next-lyric-time([LyricItem]) -> float;
+    callback prev-lyric-time() -> float;
+    callback next-lyric-time() -> float;
     callback page_changed(int);
     callback lyrics_visibility_changed();
-    callback queue_visibility_changed();
+    callback playlist_visibility_changed();
     callback now_playing_visibility_changed();
     callback now_playing_sliding_changed();
     in property <string> version;
@@ -174,9 +180,9 @@ export component MainWindow inherits Window {
     out property <bool> now-playing-visible: false;
     private property <bool> now-playing-resting-open: false;
     private property <bool> main-view-visible: true;
-    private property <bool> show-queue;
-    out property <bool> queue-visible: root.show-queue && root.now-playing-visible;
-    out property <bool> lyrics-visible: root.now-playing-open && !root.show-queue;
+    private property <bool> show-playlist;
+    out property <bool> playlist-visible: root.show-playlist && root.now-playing-visible;
+    out property <bool> lyrics-visible: root.now-playing-open && !root.show-playlist;
     private property <int> follow-lyrics-seq: 0;
     private property <color> palette-bg: Palette.background;
     private property <bool> palette-is-dark: root.palette-bg.to-hsv().value < 0.5;
@@ -219,7 +225,7 @@ export component MainWindow inherits Window {
     }
     function set-now-playing(open: bool) {
         root.close-collection-picker();
-        if open && root.now-playing-offset == 1 { root.show-queue = false; }
+        if open && root.now-playing-offset == 1 { root.show-playlist = false; }
         root.now-playing-open = open;
         root.sync-now-playing-flags();
         root.focus();
@@ -235,7 +241,7 @@ export component MainWindow inherits Window {
     changed raw-now-playing-visible => { root.sync-now-playing-flags(); }
     changed raw-main-view-visible => { root.sync-now-playing-flags(); }
     changed lyrics-visible => { root.lyrics_visibility_changed(); }
-    changed queue-visible => { root.queue_visibility_changed(); }
+    changed playlist-visible => { root.playlist_visibility_changed(); }
     changed now-playing-visible => { root.now_playing_visibility_changed(); }
     changed now-playing-sliding => { root.now_playing_sliding_changed(); }
     changed palette-is-dark => {
@@ -404,15 +410,21 @@ export component MainWindow inherits Window {
                     resting-open: root.now-playing-resting-open;
                     follow-seq: root.follow-lyrics-seq;
                     album-image: DisplayGlobal.album_image;
-                    ambient-image: DisplayGlobal.ambient_image;
+                    ambient-dark-image: DisplayGlobal.ambient_dark_image;
+                    ambient-light-image: DisplayGlobal.ambient_light_image;
                     has-ambient-image: DisplayGlobal.has_ambient_image;
                     current-song: DisplayGlobal.current_song;
-                    upcoming: DisplayGlobal.upcoming;
+                    playlist: DisplayGlobal.playlist;
                     lyrics: DisplayGlobal.lyrics;
                     active-lyric-index: DisplayGlobal.active_lyric_index;
                     active-word-index: DisplayGlobal.active_word_index;
                     active-word-progress: DisplayGlobal.active_word_progress;
-                    show-queue <=> root.show-queue;
+                    active-karaoke-prefix: DisplayGlobal.active_karaoke_prefix;
+                    active-karaoke-prefix-space: DisplayGlobal.active_karaoke_prefix_space;
+                    active-karaoke-word: DisplayGlobal.active_karaoke_word;
+                    active-karaoke-word-space: DisplayGlobal.active_karaoke_word_space;
+                    active-karaoke-suffix: DisplayGlobal.active_karaoke_suffix;
+                    show-playlist <=> root.show-playlist;
                     buffering-status: OnlineGlobal.buffering-status;
                     buffering-track: OnlineGlobal.loading;
                     can-seek: PlaybackGlobal.can-seek;
@@ -428,7 +440,7 @@ export component MainWindow inherits Window {
                     toggle-play => { root.toggle_play(); }
                     play-next => { root.play_next(); }
                     play-prev => { root.play_prev(); }
-                    play-queued(id) => { root.play_queued(id); }
+                    play-playlist-track(id) => { root.play_playlist_track(id); }
                     set-shuffle(value) => { root.set_shuffle(value); }
                     switch-mode(mode) => { root.switch_mode(mode); }
                     change-volume(value) => { root.change_volume(value); }
@@ -463,7 +475,7 @@ export component MainWindow inherits Window {
                 keys: @keys(RightArrow);
                 activated => {
                     if (root.lyrics-visible && DisplayGlobal.lyrics.length > 0) {
-                        root.change_progress(root.next-lyric-time(DisplayGlobal.lyrics));
+                        root.change_progress(root.next-lyric-time());
                     } else {
                         root.seek_relative(15);
                     }
@@ -480,7 +492,7 @@ export component MainWindow inherits Window {
                 keys: @keys(LeftArrow);
                 activated => {
                     if (root.lyrics-visible && DisplayGlobal.lyrics.length > 0) {
-                        root.change_progress(root.prev-lyric-time(DisplayGlobal.lyrics));
+                        root.change_progress(root.prev-lyric-time());
                     } else {
                         root.seek_relative(-15);
                     }
@@ -514,17 +526,13 @@ export component MainWindow inherits Window {
             }
         }
 
-        close-button := Rectangle {
-            property <color> button-surface: root.now-playing-open && Theme.cover-active
-                ? Theme.surface.mix(Theme.cover-color-0, 0.7)
-                : Theme.surface;
-
+        if !root.now-playing-open && !root.now-playing-visible: close-button := Rectangle {
             x: parent.width - self.width - 10px;
             y: 10px;
             width: 24px;
             height: self.width;
             border-radius: self.width / 2;
-            background: self.button-surface.mix(Theme.text, close-touch.pressed ? 0.76 : close-touch.has-hover ? 0.82 : 0.88);
+            background: Theme.text.with-alpha(close-touch.pressed ? 0.24 : close-touch.has-hover ? 0.18 : 0);
             border-width: close-focus.has-focus ? 1px : 0px;
             border-color: Theme.accent;
             animate background { duration: 150ms; }
@@ -548,6 +556,7 @@ export component MainWindow inherits Window {
             }
 
             close-focus := FocusScope {
+                focus-on-click: false;
                 key-pressed(event) => {
                     if event.text == Key.Space || event.text == Key.Return {
                         root.close();

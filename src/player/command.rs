@@ -13,8 +13,8 @@ pub enum PlayerCommand {
     TogglePlayPause,
     Stop,
     PlayTrack(TrackId),
-    PlayQueuedTrack(TrackId),
-    SetQueueVisible(bool),
+    PlayPlaylistTrack(TrackId),
+    SetPlaylistVisible(bool),
     PlayCollectionTrack(usize, TrackId, bool),
     SelectCollection(usize),
     CreateCollection(String),
@@ -55,13 +55,15 @@ pub enum PlayerCommand {
     #[cfg(target_os = "linux")]
     ImportScript(PathBuf),
     #[cfg(target_os = "linux")]
+    SelectScript(String),
+    #[cfg(target_os = "linux")]
+    RemoveScript(String),
+    #[cfg(target_os = "linux")]
     EnableScript(bool),
     #[cfg(target_os = "linux")]
     OnlineDone(super::online::Completion),
     #[cfg(target_os = "linux")]
     PlayLocalSource(TrackId),
-    #[cfg(target_os = "linux")]
-    PlayLink(String),
     #[cfg(target_os = "linux")]
     SetOnlineQuality(String),
     #[cfg(target_os = "linux")]

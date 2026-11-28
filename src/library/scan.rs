@@ -14,7 +14,9 @@ fn audio_paths(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
         .map(|e| e.path())
         .filter(|p| {
             p.extension().and_then(|e| e.to_str()).is_some_and(|e| {
-                ["mp3", "flac", "wav", "ogg"].iter().any(|format| e.eq_ignore_ascii_case(format))
+                ["mp3", "flac", "wav", "ogg", "m4a"]
+                    .iter()
+                    .any(|format| e.eq_ignore_ascii_case(format))
             })
         })
         .collect())

@@ -32,6 +32,7 @@ rodio = { version = "0.23.0", default-features = false, features = [
     "flac",
     "mp3",
     "mp4",
+    "symphonia-alac",
     "vorbis",
     "wav",
 ] }

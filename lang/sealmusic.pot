@@ -46,62 +46,52 @@ msgctxt "AppTray"
 msgid "Exit"
 msgstr ""
 
-#: ui/search_panel.slint:186
+#: ui/search_panel.slint:183
 msgctxt "SearchPanel"
-msgid "Search songs or artists..."
+msgid "Search songs…"
 msgstr ""
 
-#: ui/search_panel.slint:243 ui/search_panel.slint:310
+#: ui/search_panel.slint:216 ui/search_panel.slint:282
 msgctxt "SearchPanel"
 msgid "No results found"
 msgstr ""
 
-#: ui/search_panel.slint:311
+#: ui/search_panel.slint:283
 msgctxt "SearchPanel"
 msgid "{} result(s) found"
 msgstr ""
 
-#: ui/settings_panel.slint:78
+#: ui/settings_panel.slint:619
 msgctxt "SettingsPanel"
 msgid "Playback"
 msgstr ""
 
-#: ui/settings_panel.slint:94
+#: ui/settings_panel.slint:624
 msgctxt "SettingsPanel"
 msgid "Music directory"
 msgstr ""
 
-#: ui/settings_panel.slint:121
+#: ui/settings_panel.slint:629
 msgctxt "SettingsPanel"
 msgid "Browse..."
 msgstr ""
 
-#: ui/settings_panel.slint:255
+#: ui/settings_panel.slint:741
 msgctxt "SettingsPanel"
 msgid "Appearance"
 msgstr ""
 
-#: ui/settings_panel.slint:268
-msgctxt "SettingsPanel"
-msgid "Follow system theme"
-msgstr ""
-
-#: ui/settings_panel.slint:276
-msgctxt "SettingsPanel"
-msgid "Light theme"
-msgstr ""
-
-#: ui/settings_panel.slint:292
+#: ui/settings_panel.slint:795 ui/settings_panel.slint:799
 msgctxt "SettingsPanel"
 msgid "Language"
 msgstr ""
 
-#: ui/settings_panel.slint:312
+#: ui/settings_panel.slint:827
 msgctxt "SettingsPanel"
 msgid "SealMusic {} · GPL-3.0"
 msgstr ""
 
-#: ui/settings_panel.slint:317
+#: ui/settings_panel.slint:830
 msgctxt "SettingsPanel"
 msgid "Upstream project"
 msgstr ""
@@ -196,82 +186,77 @@ msgctxt "TransportButtons"
 msgid "Repeat playlist"
 msgstr ""
 
-#: ui/online.slint:61
-msgctxt "OnlineGlobal"
-msgid "Invalid LX link or missing field: {}"
-msgstr ""
-
 #: ui/online.slint:62
 msgctxt "OnlineGlobal"
-msgid "Enable an LX source in Settings."
+msgid "Invalid song data or missing field: {}"
 msgstr ""
 
 #: ui/online.slint:63
 msgctxt "OnlineGlobal"
-msgid "No compatible audio quality is available."
+msgid "Enable an LX source in Settings."
 msgstr ""
 
 #: ui/online.slint:64
 msgctxt "OnlineGlobal"
-msgid "Could not read or save the LX source."
+msgid "No compatible audio quality is available."
 msgstr ""
 
 #: ui/online.slint:65
 msgctxt "OnlineGlobal"
-msgid "The LX source failed to initialize."
-msgstr ""
-
-#: ui/online.slint:66
-msgctxt "OnlineGlobal"
-msgid "The source could not resolve the media URL ({})."
+msgid "Could not read or save the LX source."
 msgstr ""
 
 #: ui/online.slint:67
 msgctxt "OnlineGlobal"
-msgid "Media download failed ({})."
+msgid "The LX source failed to initialize."
 msgstr ""
 
 #: ui/online.slint:68
 msgctxt "OnlineGlobal"
+msgid "The source could not resolve the media URL ({})."
+msgstr ""
+
+#: ui/online.slint:69
+msgctxt "OnlineGlobal"
+msgid "Media download failed ({})."
+msgstr ""
+
+#: ui/online.slint:70
+msgctxt "OnlineGlobal"
 msgid "Audio decoding failed ({})."
 msgstr ""
 
-#: ui/online.slint:34
+#: ui/online.slint:32
 msgctxt "OnlineGlobal"
 msgid "Buffering paused"
 msgstr ""
 
-#: ui/online.slint:35
+#: ui/online.slint:33
 msgctxt "OnlineGlobal"
 msgid "Buffering"
 msgstr ""
 
-#: ui/app.slint:455
+#: ui/app.slint:529
 msgctxt "MainWindow"
 msgid "Close window"
 msgstr ""
 
-#: ui/search_panel.slint:186
-msgctxt "SearchPanel"
-msgid "Search songs or paste an LX track link"
-msgstr ""
-
-#: ui/settings_panel.slint:143
+#: ui/settings_panel.slint:648 ui/settings_panel.slint:654
 msgctxt "SettingsPanel"
 msgid "LX music source"
 msgstr ""
 
-#: ui/settings_panel.slint:159
+#: ui/settings_panel.slint:659 ui/settings_panel.slint:917
 msgctxt "SettingsPanel"
 msgid "Initializing…"
 msgstr ""
 
-#: ui/settings_panel.slint:159
+#: ui/settings_panel.slint:917
 msgctxt "SettingsPanel"
 msgid "Import JS source…"
 msgstr ""
 
-#: ui/settings_panel.slint:164
+#: ui/settings_panel.slint:671 ui/settings_panel.slint:677
 msgctxt "SettingsPanel"
 msgid "Enabled"
 msgstr ""
@@ -291,122 +276,117 @@ msgctxt "MainWindow"
 msgid "LX source update"
 msgstr ""
 
-#: ui/online.slint:52
+#: ui/online.slint:53
 msgctxt "OnlineGlobal"
 msgid "Kuwo"
 msgstr ""
 
-#: ui/online.slint:53
+#: ui/online.slint:54
 msgctxt "OnlineGlobal"
 msgid "Kugou"
 msgstr ""
 
-#: ui/online.slint:54
+#: ui/online.slint:55
 msgctxt "OnlineGlobal"
 msgid "QQ Music"
 msgstr ""
 
-#: ui/online.slint:55
+#: ui/online.slint:56
 msgctxt "OnlineGlobal"
 msgid "NetEase"
 msgstr ""
 
-#: ui/online.slint:56
+#: ui/online.slint:57
 msgctxt "OnlineGlobal"
 msgid "Migu"
 msgstr ""
 
-#: ui/search_panel.slint:204
+#: ui/search_panel.slint:201
 msgctxt "SearchPanel"
 msgid "Cancel"
 msgstr ""
 
-#: ui/search_panel.slint:204
+#: ui/search_panel.slint:201
 msgctxt "SearchPanel"
 msgid "Local library"
 msgstr ""
 
-#: ui/search_panel.slint:220
+#: ui/search_panel.slint:249
 msgctxt "SearchPanel"
 msgid "Previous page"
 msgstr ""
 
-#: ui/search_panel.slint:227
+#: ui/search_panel.slint:256
 msgctxt "SearchPanel"
-msgid "{} · Page {}"
+msgid "Page {}"
 msgstr ""
 
-#: ui/search_panel.slint:234
+#: ui/search_panel.slint:263
 msgctxt "SearchPanel"
 msgid "Next page"
 msgstr ""
 
-#: ui/search_panel.slint:242
+#: ui/search_panel.slint:215
 msgctxt "SearchPanel"
-msgid "Searching {}…"
+msgid "Searching…"
 msgstr ""
 
-#: ui/search_panel.slint:243
+#: ui/search_panel.slint:216
 msgctxt "SearchPanel"
-msgid "{} search failed."
+msgid "Search failed."
 msgstr ""
 
-#: ui/search_panel.slint:252
+#: ui/search_panel.slint:225
 msgctxt "SearchPanel"
 msgid "Retry"
 msgstr ""
 
-#: ui/online.slint:43
+#: ui/online.slint:44
 msgctxt "OnlineGlobal"
 msgid "Standard (128k)"
 msgstr ""
 
-#: ui/online.slint:44
+#: ui/online.slint:45
 msgctxt "OnlineGlobal"
 msgid "High (320k)"
 msgstr ""
 
-#: ui/online.slint:45
+#: ui/online.slint:46
 msgctxt "OnlineGlobal"
 msgid "Lossless (FLAC)"
 msgstr ""
 
-#: ui/online.slint:46
+#: ui/online.slint:47
 msgctxt "OnlineGlobal"
 msgid "Hi-Res (24-bit)"
 msgstr ""
 
-#: ui/search_panel.slint:289
-msgctxt "SearchPanel"
-msgid "Play"
-msgstr ""
-
-#: ui/settings_panel.slint:180
+#: ui/settings_panel.slint:685 ui/settings_panel.slint:689
 msgctxt "SettingsPanel"
 msgid "Preferred audio quality"
 msgstr ""
 
-#: ui/settings_panel.slint:199
+#: ui/settings_panel.slint:686
 msgctxt "SettingsPanel"
 msgid "Used first when playing online tracks; switches automatically if unavailable."
 msgstr ""
 
-#: ui/settings_panel.slint:219
+#: ui/settings_panel.slint:709 ui/settings_panel.slint:713
 msgctxt "SettingsPanel"
 msgid "Online search source"
 msgstr ""
 
-#: ui/online.slint:51
+#: ui/online.slint:52
 msgctxt "OnlineGlobal"
 msgid "All platforms"
 msgstr ""
 
-#: ui/search_panel.slint:199
+#: ui/search_panel.slint:196
 msgctxt "SearchPanel"
 msgid "Search online"
 msgstr ""
 
-#: ui/search_panel.slint:247
+#: ui/search_panel.slint:220
 msgctxt "SearchPanel"
 msgid "Some platforms could not be searched."
 msgstr ""
@@ -471,7 +451,7 @@ msgctxt "SongListView"
 msgid "Find songs"
 msgstr ""
 
-#: ui/search_panel.slint:332
+#: ui/search_panel.slint:304
 msgctxt "SearchPanel"
 msgid "No local songs found."
 msgstr ""
@@ -486,14 +466,19 @@ msgctxt "Sidebar"
 msgid "My playlists"
 msgstr ""
 
-#: ui/settings_panel.slint:284
+#: ui/settings_panel.slint:783 ui/settings_panel.slint:788
 msgctxt "SettingsPanel"
 msgid "Dynamic cover colors"
 msgstr ""
 
-#: ui/control_panel.slint:314
+#: ui/control_panel.slint:364
 msgctxt "ControlPanel"
-msgid "Open lyrics and play queue"
+msgid "Open lyrics and playlist"
+msgstr ""
+
+#: ui/lyrics_panel.slint:70
+msgctxt "PlaylistRow"
+msgid "Current track"
 msgstr ""
 
 #: ui/lyrics_panel.slint:145
@@ -516,9 +501,9 @@ msgctxt "AtmosphericVolumeBar"
 msgid "Max volume"
 msgstr ""
 
-#: ui/lyrics_panel.slint:669
+#: ui/lyrics_panel.slint:767
 msgctxt "NowPlaying"
-msgid "Close now playing"
+msgid "Collapse now playing"
 msgstr ""
 
 #: ui/lyrics_panel.slint:768
@@ -546,17 +531,137 @@ msgctxt "NowPlaying"
 msgid "Lyrics"
 msgstr ""
 
-#: ui/lyrics_panel.slint:715
+#: ui/lyrics_panel.slint:813
 msgctxt "NowPlaying"
-msgid "Play queue"
+msgid "Playlist"
 msgstr ""
 
-#: ui/lyrics_panel.slint:924
+#: ui/lyrics_panel.slint:1023
 msgctxt "NowPlaying"
-msgid "The play queue is empty"
+msgid "The playlist is empty"
 msgstr ""
 
 #: ui/lyrics_panel.slint:924
 msgctxt "NowPlaying"
 msgid "No lyrics available"
+msgstr ""
+
+#: ui/settings_panel.slint:608
+msgctxt "SettingsPanel"
+msgid "Settings"
+msgstr ""
+
+#: ui/settings_panel.slint:643
+msgctxt "SettingsPanel"
+msgid "Online"
+msgstr ""
+
+#: ui/settings_panel.slint:651
+msgctxt "SettingsPanel"
+msgid "Import a custom JS script for online playback."
+msgstr ""
+
+#: ui/settings_panel.slint:672
+msgctxt "SettingsPanel"
+msgid "Resolve and stream online tracks with the imported source."
+msgstr ""
+
+#: ui/settings_panel.slint:710
+msgctxt "SettingsPanel"
+msgid "Default platform used when searching online catalogs."
+msgstr ""
+
+#: ui/settings_panel.slint:746 ui/settings_panel.slint:750
+msgctxt "SettingsPanel"
+msgid "Theme"
+msgstr ""
+
+#: ui/settings_panel.slint:747
+msgctxt "SettingsPanel"
+msgid "Choose light, dark, or match the system appearance."
+msgstr ""
+
+#: ui/settings_panel.slint:753 ui/settings_panel.slint:761
+msgctxt "SettingsPanel"
+msgid "Follow system"
+msgstr ""
+
+#: ui/settings_panel.slint:754 ui/settings_panel.slint:762
+msgctxt "SettingsPanel"
+msgid "Light"
+msgstr ""
+
+#: ui/settings_panel.slint:755 ui/settings_panel.slint:762
+msgctxt "SettingsPanel"
+msgid "Dark"
+msgstr ""
+
+#: ui/settings_panel.slint:784
+msgctxt "SettingsPanel"
+msgid "Tint the now-playing view with colors extracted from album artwork."
+msgstr ""
+
+#: ui/settings_panel.slint:796
+msgctxt "SettingsPanel"
+msgid "Display language for the application interface."
+msgstr ""
+
+#: ui/settings_panel.slint:821
+msgctxt "SettingsPanel"
+msgid "About"
+msgstr ""
+
+#: ui/settings_panel.slint:577
+msgctxt "SettingsPanel"
+msgid "Unnamed source"
+msgstr ""
+
+#: ui/settings_panel.slint:660
+msgctxt "SettingsPanel"
+msgid "No source selected"
+msgstr ""
+
+#: ui/settings_panel.slint:847
+msgctxt "SettingsPanel"
+msgid "Imported sources"
+msgstr ""
+
+#: ui/settings_panel.slint:902
+msgctxt "SettingsPanel"
+msgid "No source details available."
+msgstr ""
+
+#: ui/settings_panel.slint:851
+msgctxt "SettingsPanel"
+msgid "Manage"
+msgstr ""
+
+#: ui/settings_panel.slint:851
+msgctxt "SettingsPanel"
+msgid "Done"
+msgstr ""
+
+#: ui/settings_panel.slint:877 ui/settings_panel.slint:977
+msgctxt "SettingsPanel"
+msgid "Delete"
+msgstr ""
+
+#: ui/settings_panel.slint:878
+msgctxt "SettingsPanel"
+msgid "Delete {}"
+msgstr ""
+
+#: ui/settings_panel.slint:960
+msgctxt "SettingsPanel"
+msgid "Delete “{}”?"
+msgstr ""
+
+#: ui/settings_panel.slint:973
+msgctxt "SettingsPanel"
+msgid "Cancel"
+msgstr ""
+
+#: ui/online.slint:66
+msgctxt "OnlineGlobal"
+msgid "Could not remove the LX source."
 msgstr ""

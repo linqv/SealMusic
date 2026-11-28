@@ -46,10 +46,7 @@ impl<F: FnMut(Event)> PlayerCore<F> {
             .or_else(|| {
                 #[cfg(target_os = "linux")]
                 {
-                    self.online.find_track(id).or_else(|| {
-                        let (_, track) = self.link_info(&self.query).ok()?;
-                        (&track.id == id).then_some(track)
-                    })
+                    self.online.find_track(id)
                 }
                 #[cfg(not(target_os = "linux"))]
                 None

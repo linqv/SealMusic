@@ -30,6 +30,9 @@ pub struct Config {
     #[cfg(target_os = "linux")]
     pub lx_script: Option<crate::online::Script>,
     #[cfg(target_os = "linux")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lx_saved_scripts: Vec<crate::online::Script>,
+    #[cfg(target_os = "linux")]
     pub online_quality: String,
     #[cfg(target_os = "linux")]
     pub online_search_source: String,
@@ -58,6 +61,8 @@ impl Default for Config {
             current_song_path: None,
             #[cfg(target_os = "linux")]
             lx_script: None,
+            #[cfg(target_os = "linux")]
+            lx_saved_scripts: Vec::new(),
             #[cfg(target_os = "linux")]
             online_quality: crate::online::DEFAULT_QUALITY.into(),
             #[cfg(target_os = "linux")]
@@ -139,6 +144,25 @@ impl Config {
     }
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         save_toml(&config_path(), self)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn save_lx_sources(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = config_path();
+        let mut table = match std::fs::read_to_string(&path) {
+            Ok(text) => toml::from_str::<toml::Table>(&text)?,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
+            Err(err) => return Err(err.into()),
+        };
+        table.remove("lx_script");
+        table.remove("lx_saved_scripts");
+        if let Some(script) = &self.lx_script {
+            table.insert("lx_script".into(), toml::Value::try_from(script)?);
+        }
+        if !self.lx_saved_scripts.is_empty() {
+            table.insert("lx_saved_scripts".into(), toml::Value::try_from(&self.lx_saved_scripts)?);
+        }
+        save_toml(&path, &table)
     }
 }
 

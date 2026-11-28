@@ -22,7 +22,9 @@ const MAX_COVER_DIMENSION: u32 = 320;
 const MAX_COVER_SOURCE_DIMENSION: u16 = 8192;
 const MAX_COVER_DECODE_BYTES: usize = 64 * 1024 * 1024;
 const AMBIENT_COVER_DIMENSION: u32 = 64;
-const AMBIENT_BLUR_SIGMA: f32 = 7.0;
+const AMBIENT_BLUR_SOURCE_DIMENSION: u32 = 32;
+const AMBIENT_BOX_BLUR_RADIUS: usize = 3;
+const AMBIENT_BOX_BLUR_PASSES: usize = 3;
 const PALETTE_COVER_DIMENSION: u32 = 384;
 const PALETTE_QUALITY: u8 = 5;
 const MAX_RAW_COVER_BYTES: usize = 512 * 1024;
@@ -90,10 +92,23 @@ impl CoverImage {
     }
 }
 
+#[derive(Clone)]
+pub struct AmbientCovers {
+    pub dark: slint::SharedPixelBuffer<slint::Rgb8Pixel>,
+    pub light: slint::SharedPixelBuffer<slint::Rgb8Pixel>,
+}
+
+impl AmbientCovers {
+    #[cfg(test)]
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.dark.width(), self.dark.height())
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct TrackDetails {
     pub cover: Option<CoverImage>,
-    pub ambient: Option<CoverImage>,
+    pub ambient: Option<AmbientCovers>,
     pub palette: Option<CoverPalette>,
     pub cover_source: Option<Arc<CoverSource>>,
     pub lyrics: Vec<LyricLine>,
@@ -168,7 +183,7 @@ impl CoverSource {
 
 struct DecodedCover {
     pub cover: CoverImage,
-    pub ambient: CoverImage,
+    pub ambient: AmbientCovers,
     pub palette: Option<CoverPalette>,
 }
 
@@ -333,14 +348,172 @@ pub(crate) fn decode_cover(bytes: &[u8]) -> Option<(CoverImage, Option<CoverPale
     decode_cover_full(bytes).map(|decoded| (decoded.cover, decoded.palette))
 }
 
-fn make_ambient_cover(img: &RgbaImage) -> CoverImage {
+fn box_blur_h(src: &[[u32; 4]], dst: &mut [[u32; 4]], size: usize, radius: usize) {
+    let diameter = (2 * radius + 1) as u32;
+    let half = diameter / 2;
+    for y in 0..size {
+        let row = &src[y * size..(y + 1) * size];
+        let out = &mut dst[y * size..(y + 1) * size];
+        let mut acc = [0u32; 4];
+        for k in 0..=radius {
+            for c in 0..4 {
+                acc[c] += row[0][c];
+            }
+            if k > 0 {
+                let rk = k.min(size - 1);
+                for c in 0..4 {
+                    acc[c] += row[rk][c];
+                }
+            }
+        }
+        for (x, pixel) in out.iter_mut().enumerate() {
+            for (dst_c, &acc_c) in pixel.iter_mut().zip(&acc) {
+                *dst_c = (acc_c + half) / diameter;
+            }
+            let remove_idx = x.saturating_sub(radius);
+            let add_idx = (x + radius + 1).min(size - 1);
+            for c in 0..4 {
+                acc[c] = acc[c] + row[add_idx][c] - row[remove_idx][c];
+            }
+        }
+    }
+}
+
+fn box_blur_v(src: &[[u32; 4]], dst: &mut [[u32; 4]], size: usize, radius: usize) {
+    let diameter = (2 * radius + 1) as u32;
+    let half = diameter / 2;
+    for x in 0..size {
+        let mut acc = [0u32; 4];
+        for k in 0..=radius {
+            for c in 0..4 {
+                acc[c] += src[x][c];
+            }
+            if k > 0 {
+                let rk = k.min(size - 1);
+                for c in 0..4 {
+                    acc[c] += src[rk * size + x][c];
+                }
+            }
+        }
+        for y in 0..size {
+            for c in 0..4 {
+                dst[y * size + x][c] = (acc[c] + half) / diameter;
+            }
+            let remove_idx = y.saturating_sub(radius);
+            let add_idx = (y + radius + 1).min(size - 1);
+            for c in 0..4 {
+                acc[c] = acc[c] + src[add_idx * size + x][c] - src[remove_idx * size + x][c];
+            }
+        }
+    }
+}
+
+fn lerp_stop(a: [u8; 4], b: [u8; 4], t: f32) -> [f32; 4] {
+    [
+        f32::from(a[0]) + (f32::from(b[0]) - f32::from(a[0])) * t,
+        f32::from(a[1]) + (f32::from(b[1]) - f32::from(a[1])) * t,
+        f32::from(a[2]) + (f32::from(b[2]) - f32::from(a[2])) * t,
+        (f32::from(a[3]) + (f32::from(b[3]) - f32::from(a[3])) * t) / 255.0,
+    ]
+}
+
+fn sample_scrim(stops: [[u8; 4]; 3], t: f32) -> [f32; 4] {
+    if t <= 0.55 {
+        lerp_stop(stops[0], stops[1], (t / 0.55).clamp(0.0, 1.0))
+    } else {
+        lerp_stop(stops[1], stops[2], ((t - 0.55) / 0.45).clamp(0.0, 1.0))
+    }
+}
+
+fn composite_ambient_pixel(rgba: [f32; 4], base: [u8; 3], scrim: [f32; 4]) -> slint::Rgb8Pixel {
+    let cover_a = (rgba[3] / 255.0).clamp(0.0, 1.0);
+    let scrim_a = scrim[3];
+    let blend = |ch: f32, b: u8, s: f32| -> u8 {
+        let over_base = ch * cover_a + f32::from(b) * (1.0 - cover_a);
+        (over_base * (1.0 - scrim_a) + s * scrim_a).round().clamp(0.0, 255.0) as u8
+    };
+    slint::Rgb8Pixel::new(
+        blend(rgba[0], base[0], scrim[0]),
+        blend(rgba[1], base[1], scrim[1]),
+        blend(rgba[2], base[2], scrim[2]),
+    )
+}
+
+fn make_ambient_cover(img: &RgbaImage) -> AmbientCovers {
+    const DARK_BASE: [u8; 3] = [0x18, 0x1c, 0x22];
+    const LIGHT_BASE: [u8; 3] = [0xee, 0xf1, 0xf7];
+    const DARK_SCRIM: [[u8; 4]; 3] =
+        [[0x16, 0x1a, 0x20, 0x94], [0x10, 0x13, 0x19, 0xb0], [0x0c, 0x0e, 0x13, 0xc4]];
+    const LIGHT_SCRIM: [[u8; 4]; 3] =
+        [[0xf4, 0xf6, 0xfa, 0xb8], [0xee, 0xf1, 0xf7, 0xcc], [0xe8, 0xec, 0xf4, 0xd8]];
+
+    let src_dim = AMBIENT_BLUR_SOURCE_DIMENSION as usize;
     let tiny = image::imageops::resize(
         img,
-        AMBIENT_COVER_DIMENSION,
-        AMBIENT_COVER_DIMENSION,
+        AMBIENT_BLUR_SOURCE_DIMENSION,
+        AMBIENT_BLUR_SOURCE_DIMENSION,
         image::imageops::FilterType::Triangle,
     );
-    image::imageops::blur(&tiny, AMBIENT_BLUR_SIGMA).into()
+    let mut buf: Vec<[u32; 4]> = tiny
+        .pixels()
+        .map(|p| [u32::from(p[0]), u32::from(p[1]), u32::from(p[2]), u32::from(p[3])])
+        .collect();
+    let mut scratch = vec![[0u32; 4]; src_dim * src_dim];
+    for _ in 0..AMBIENT_BOX_BLUR_PASSES {
+        box_blur_h(&buf, &mut scratch, src_dim, AMBIENT_BOX_BLUR_RADIUS);
+        box_blur_v(&scratch, &mut buf, src_dim, AMBIENT_BOX_BLUR_RADIUS);
+    }
+
+    let out_dim = AMBIENT_COVER_DIMENSION;
+    let mut dark = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(out_dim, out_dim);
+    let mut light = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(out_dim, out_dim);
+    let dark_slice = dark.make_mut_slice();
+    let light_slice = light.make_mut_slice();
+
+    // 155deg CSS/Slint linear-gradient direction vector: (sin 155°, -cos 155°).
+    let angle = 155.0_f32.to_radians();
+    let (dx, dy) = (angle.sin(), -angle.cos());
+    let span = dx.abs() + dy.abs();
+    let max_src = (src_dim - 1) as f32;
+
+    for y in 0..out_dim as usize {
+        let v = (y as f32 + 0.5) / out_dim as f32;
+        let sy = (v * src_dim as f32 - 0.5).clamp(0.0, max_src);
+        let y0 = sy.floor() as usize;
+        let y1 = (y0 + 1).min(src_dim - 1);
+        let wy = sy - y0 as f32;
+
+        for x in 0..out_dim as usize {
+            let u = (x as f32 + 0.5) / out_dim as f32;
+            let sx = (u * src_dim as f32 - 0.5).clamp(0.0, max_src);
+            let x0 = sx.floor() as usize;
+            let x1 = (x0 + 1).min(src_dim - 1);
+            let wx = sx - x0 as f32;
+
+            let p00 = buf[y0 * src_dim + x0];
+            let p10 = buf[y0 * src_dim + x1];
+            let p01 = buf[y1 * src_dim + x0];
+            let p11 = buf[y1 * src_dim + x1];
+            let mut rgba = [0.0f32; 4];
+            for c in 0..4 {
+                let top = p00[c] as f32 * (1.0 - wx) + p10[c] as f32 * wx;
+                let bot = p01[c] as f32 * (1.0 - wx) + p11[c] as f32 * wx;
+                rgba[c] = top * (1.0 - wy) + bot * wy;
+            }
+
+            let grad_t = (((u - 0.5) * dx + (v - 0.5) * dy) / span + 0.5).clamp(0.0, 1.0);
+            let idx = y * out_dim as usize + x;
+            dark_slice[idx] =
+                composite_ambient_pixel(rgba, DARK_BASE, sample_scrim(DARK_SCRIM, grad_t));
+            light_slice[idx] =
+                composite_ambient_pixel(rgba, LIGHT_BASE, sample_scrim(LIGHT_SCRIM, grad_t));
+        }
+    }
+
+    AmbientCovers {
+        dark,
+        light,
+    }
 }
 
 fn scale_cover(img: DynamicImage) -> DynamicImage {

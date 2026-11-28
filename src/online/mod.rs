@@ -59,10 +59,6 @@ pub(super) fn api_client() -> Option<&'static reqwest::Client> {
         .as_ref()
 }
 
-pub fn is_link(query: &str) -> bool {
-    query.trim_start().get(..10).is_some_and(|prefix| prefix.eq_ignore_ascii_case("lxmusic://"))
-}
-
 pub(crate) fn sanitize_log(msg: &str) -> String {
     let mut out = String::with_capacity(msg.len());
     let mut rest = msg;
@@ -138,7 +134,7 @@ fn quality_order(available: &[String], preferred: &str) -> Vec<String> {
 }
 
 fn field_error(platform: &str, field: &str) -> Failure {
-    (OnlineIssue::InvalidLink, format!("{platform} · {field}"))
+    (OnlineIssue::InvalidTrack, format!("{platform} · {field}"))
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -234,21 +230,7 @@ impl OnlineTrack {
             + self.fields.as_deref().map_or(0, OnlineTrackFields::allocated_bytes)
     }
 
-    pub fn parse(link: &str) -> Result<Self> {
-        let invalid = || field_error("LX", "music/play?data");
-        if link.len() > 256 * 1024 {
-            return Err(invalid());
-        }
-        let url = Url::parse(link.trim()).map_err(|_| invalid())?;
-        if url.scheme() != "lxmusic" || url.host_str() != Some("music") || url.path() != "/play" {
-            return Err(invalid());
-        }
-        let (_, data) = url.query_pairs().find(|(k, _)| k == "data").ok_or_else(invalid)?;
-        let info = serde_json::from_str(&data).map_err(|_| invalid())?;
-        Self::from_info(info)
-    }
-
-    fn from_info(mut info: Value) -> Result<Self> {
+    pub(crate) fn from_info(mut info: Value) -> Result<Self> {
         let source = info["source"].as_str().unwrap_or("");
         if !matches!(source, "kw" | "kg" | "tx" | "wy" | "mg") {
             return Err(field_error("LX", "source"));
@@ -305,10 +287,6 @@ impl OnlineTrack {
 
     pub(super) fn info(&self) -> Value {
         serde_json::from_str(&self.music_info).unwrap_or(Value::Null)
-    }
-
-    pub fn source(&self) -> &str {
-        self.fields.as_ref().map_or("", |fields| fields.source.as_str())
     }
 
     pub fn qualities(&self, script: Option<&Script>) -> Vec<String> {
@@ -437,16 +415,22 @@ impl Script {
         Ok(scripts_dir().join(format!("{}.js", self.id)))
     }
 
+    pub fn name(&self) -> &str {
+        self.metadata.get("name").map(|name| name.trim()).unwrap_or_default()
+    }
+
     pub fn summary(&self) -> String {
-        let mut lines = vec![
-            ["name", "version", "author"]
-                .iter()
-                .filter_map(|k| self.metadata.get(*k))
-                .filter(|v| !v.is_empty())
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(" · "),
-        ];
+        let version_and_author = ["version", "author"]
+            .iter()
+            .filter_map(|k| self.metadata.get(*k))
+            .filter(|v| !v.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let mut lines = Vec::new();
+        if !version_and_author.is_empty() {
+            lines.push(version_and_author);
+        }
         lines.extend(
             ["description", "homepage"]
                 .iter()
@@ -463,20 +447,33 @@ impl Script {
         lines.join("\n")
     }
 
-    pub async fn import(
+    pub async fn load(
         path: PathBuf,
+        saved: Option<Self>,
         alert: lx_probe::AlertHandler,
     ) -> Result<(Self, Option<lx_probe::Session>)> {
+        let fallback_name = match &saved {
+            Some(script) => script.name().to_owned(),
+            None => path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default().to_owned(),
+        };
         let raw =
             tokio::task::spawn_blocking(move || read_script(&path)).await.map_err(|e| {
                 log::warn!("LX source read task failed: {e}");
                 (OnlineIssue::ScriptFile, String::new())
             })??;
         let id = format!("{:x}", Sha256::digest(raw.as_bytes()));
+        if saved.as_ref().is_some_and(|script| script.id != id) {
+            log::warn!("Stored LX source content does not match its ID");
+            return Err((OnlineIssue::ScriptFile, String::new()));
+        }
         let session = Self::initialize(raw.clone(), alert).await?;
         let local_actions: Vec<String> =
             serde_json::from_value(session.sources["local"]["actions"].clone()).unwrap_or_default();
-        let metadata = serde_json::from_value(session.metadata.clone()).unwrap_or_default();
+        let mut metadata: BTreeMap<String, String> =
+            serde_json::from_value(session.metadata.clone()).unwrap_or_default();
+        if metadata.get("name").is_none_or(|name| name.trim().is_empty()) {
+            metadata.insert("name".into(), fallback_name);
+        }
         let mut platforms = BTreeMap::new();
         if let Some(sources) = session.sources.as_object() {
             for (key, value) in sources {
@@ -499,24 +496,26 @@ impl Script {
             platforms,
             local_actions,
         };
-        let target = script.path()?;
-        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-            let dir = scripts_dir();
-            std::fs::create_dir_all(&dir)?;
-            let mut file = tempfile::NamedTempFile::new_in(dir)?;
-            file.write_all(raw.as_bytes())?;
-            file.persist(target).map_err(|e| e.error)?;
-            Ok(())
-        })
-        .await
-        .map_err(|e| {
-            log::warn!("LX source save task failed: {e}");
-            (OnlineIssue::ScriptFile, String::new())
-        })?
-        .map_err(|e| {
-            log::warn!("Could not save LX source: {e}");
-            (OnlineIssue::ScriptFile, String::new())
-        })?;
+        if saved.is_none() {
+            let target = script.path()?;
+            tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+                let dir = scripts_dir();
+                std::fs::create_dir_all(&dir)?;
+                let mut file = tempfile::NamedTempFile::new_in(dir)?;
+                file.write_all(raw.as_bytes())?;
+                file.persist(target).map_err(|e| e.error)?;
+                Ok(())
+            })
+            .await
+            .map_err(|e| {
+                log::warn!("LX source save task failed: {e}");
+                (OnlineIssue::ScriptFile, String::new())
+            })?
+            .map_err(|e| {
+                log::warn!("Could not save LX source: {e}");
+                (OnlineIssue::ScriptFile, String::new())
+            })?;
+        }
         let drain = session.has_pending().then_some(session);
         Ok((script, drain))
     }
@@ -537,21 +536,6 @@ fn read_script(path: &std::path::Path) -> Result<String> {
 mod tests {
     use super::*;
 
-    fn link_for(payload: Value) -> String {
-        let mut url = Url::parse("lxmusic://music/play").unwrap();
-        url.query_pairs_mut().append_pair("data", &payload.to_string());
-        url.into()
-    }
-
-    #[test]
-    fn is_link_handles_whitespace_and_case() {
-        assert!(is_link("lxmusic://music/play?data={}"));
-        assert!(is_link("  \n\tLXMUSIC://music/play?data={}"));
-        assert!(!is_link("https://example.com"));
-        assert!(!is_link("lxmusic"));
-        assert!(!is_link("中文搜索"));
-    }
-
     #[test]
     fn sanitize_log_redacts_credentials_and_signed_queries() {
         let raw = "错误: https://user:secret@cdn.example.com/a/b.flac?token=xyz&expires=123, ok http://127.0.0.1:8080/song.mp3?sig=abc";
@@ -566,34 +550,31 @@ mod tests {
 
     #[test]
     fn parse_validates_platforms_and_normalizes_stable_ids() {
-        let kg_upper = OnlineTrack::parse(&format!(
-            "  {}  ",
-            link_for(json!({
-                "source": "kg",
-                "name": "Song",
-                "singer": "Artist",
-                "songmid": 1002,
-                "hash": "AABBCC",
-                "platformExtension": null,
-                "types": [{"type": "128k", "hash": "112233"}],
-            }))
-        ))
+        let kg_upper = OnlineTrack::from_info(json!({
+            "source": "kg",
+            "name": "Song",
+            "singer": "Artist",
+            "songmid": 1002,
+            "hash": "AABBCC",
+            "platformExtension": null,
+            "types": [{"type": "128k", "hash": "112233"}],
+        }))
         .unwrap();
-        let kg_lower = OnlineTrack::parse(&link_for(json!({
+        let kg_lower = OnlineTrack::from_info(json!({
             "source": "kg",
             "name": "Song Renamed",
             "singer": "Artist",
             "songmid": 9999,
             "hash": "aabbcc",
             "types": [{"type": "320k", "hash": "445566"}],
-        })))
+        }))
         .unwrap();
         assert_eq!(kg_upper.track().unwrap().id, kg_lower.track().unwrap().id);
         let toml = toml::to_string(&kg_upper).unwrap();
         let saved: toml::Table = toml.parse().unwrap();
         assert_eq!(saved.len(), 2);
         let restored: OnlineTrack = toml::from_str(&toml).unwrap();
-        assert_eq!(restored.source(), "kg");
+        assert_eq!(restored.info()["source"], "kg");
         assert_eq!(restored.track().unwrap().id, kg_upper.track().unwrap().id);
         assert_eq!(restored.info()["songmid"], 1002);
         assert_eq!(restored.info()["platformExtension"], Value::Null);
@@ -601,25 +582,25 @@ mod tests {
         assert!(kg_upper.track().unwrap().id.0.starts_with("/dev/sealmusic/track/online_"));
 
         // Missing platform-specific required fields report platform · field.
-        let missing_tx = OnlineTrack::parse(&link_for(json!({
+        let missing_tx = OnlineTrack::from_info(json!({
             "source": "tx",
             "name": "Song",
             "singer": "Artist",
             "songmid": "mid",
             "types": [{"type": "128k"}],
-        })))
+        }))
         .unwrap_err();
-        assert_eq!(missing_tx, (OnlineIssue::InvalidLink, "tx · strMediaMid".into()));
+        assert_eq!(missing_tx, (OnlineIssue::InvalidTrack, "tx · strMediaMid".into()));
 
-        let missing_mg = OnlineTrack::parse(&link_for(json!({
+        let missing_mg = OnlineTrack::from_info(json!({
             "source": "mg",
             "name": "Song",
             "singer": "Artist",
             "songmid": "mid",
             "types": [{"type": "128k"}],
-        })))
+        }))
         .unwrap_err();
-        assert_eq!(missing_mg, (OnlineIssue::InvalidLink, "mg · copyrightId".into()));
+        assert_eq!(missing_mg, (OnlineIssue::InvalidTrack, "mg · copyrightId".into()));
     }
 
     #[test]

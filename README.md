@@ -1,6 +1,6 @@
 # SealMusic
 
-A local music player built with Rust, Rodio and Slint. Choose a music directory in Settings to scan its MP3, FLAC, WAV and OGG files. Double-click a song in Collections or Search to play it. Metadata is read-only. The lyrics page supports embedded timed lyrics and UTF-8 sidecar files with the same basename and the extension `.lrc`.
+A local music player built with Rust, Rodio and Slint. Choose a music directory in Settings to scan its MP3, FLAC, WAV, OGG and M4A files. M4A playback supports DRM-free AAC-LC and ALAC. Double-click a song in Collections or Search to play it. Metadata is read-only. The lyrics page supports embedded timed lyrics and UTF-8 sidecar files with the same basename and the extension `.lrc`.
 
 SealMusic is a fork of [Zeedle](https://github.com/Jordan-Haidee/zeedle), licensed under GPL-3.0.
 
@@ -11,9 +11,9 @@ SealMusic is a fork of [Zeedle](https://github.com/Jordan-Haidee/zeedle), licens
 - Open Search to browse your local library or find songs. Click a song's heart to add it to My Likes. You can create named collections on the Collections page and add songs with the list-plus button.
 - Click a column heading to sort by title, artist or duration. Text uses ordinary string order. Sorting preserves the current track and playback history.
 - Repeat cycles through playlist, track and off. Shuffle can be enabled independently.
-- Click the cover in the playback bar to open Lyrics and the Play queue. Click a queued track to play it. Press Esc or click the down chevron to return.
+- Click the cover in the playback bar to open Lyrics and Playlist. The playlist shows all tracks in the active playback list and highlights the current track. Click any track to play it. Press Esc or click the down chevron to return.
 - Space toggles playback. Up and Down select the previous and next track. Left and Right seek 15 seconds, or jump between timed lines in Lyrics. F1, F2 and F4 open Collections, Search and Settings. F3 toggles the expanded player.
-- Closing the window keeps playback available through the tray or Linux desktop controls when available. Choose Exit from the tray or press Ctrl+Q to quit.
+- When the tray or Linux desktop media controls are available, closing the main window hides it and playback continues. Use the tray to reopen the window. Choose Exit from the tray or press Ctrl+Q to quit and save playback state.
 - Settings includes English and Simplified Chinese, automatic or manual theme selection, the version, license and upstream project.
 
 On Linux, MPRIS clients can control playback and query metadata. For example:

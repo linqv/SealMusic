@@ -11,8 +11,6 @@ component SearchResultRow inherits Rectangle {
     in property <int> number;
     in property <bool> playing;
     in property <bool> play-on-click;
-    in property <string> source;
-    private property <string> artist: root.source == "" ? root.info.singer : root.info.singer + " · " + root.source;
     private property <color> text-color: root.playing ? Theme.accent : Theme.text;
     private property <bool> show-actions: row-input.has-hover || CollectionsGlobal.picker-anchor.track == root.info.id;
     callback play();
@@ -26,7 +24,7 @@ component SearchResultRow inherits Rectangle {
     row-input := TouchArea {
         mouse-cursor: pointer;
         accessible-role: button;
-        accessible-label: root.info.song-name + " · " + root.artist;
+        accessible-label: root.info.song-name + " · " + root.info.singer;
         accessible-action-default => { root.play(); }
         clicked => {
             if root.play-on-click { root.play(); }
@@ -63,7 +61,7 @@ component SearchResultRow inherits Rectangle {
                         overflow: elide;
                     }
                     Text {
-                        text: root.artist;
+                        text: root.info.singer;
                         color: root.text-color;
                         vertical-alignment: center;
                         overflow: elide;
@@ -72,7 +70,7 @@ component SearchResultRow inherits Rectangle {
                 Tooltip {
                     SongDetails {
                         info: root.info;
-                        artist: root.artist;
+                        artist: root.info.singer;
                     }
                 }
             }
@@ -120,11 +118,10 @@ export component SearchPanel inherits Rectangle {
     in property <[SongInfo]> search-results;
     in property <[SongInfo]> library-songs;
     in property <SongInfo> current-song;
-    private property <bool> is-link: OnlineGlobal.available && OnlineGlobal.is-link(root.search-query);
     private property <bool> catalog: OnlineGlobal.catalog-page > 0
         && OnlineGlobal.catalog-query == root.search-query
         && OnlineGlobal.catalog-source == OnlineGlobal.search-source;
-    private property <bool> can-search-online: OnlineGlobal.available && !root.is-link
+    private property <bool> can-search-online: OnlineGlobal.available
         && !OnlineGlobal.is-blank(root.search-query) && !(root.catalog && OnlineGlobal.catalog-busy);
     callback search(string);
     callback play-song(SongInfo);
@@ -183,7 +180,7 @@ export component SearchPanel inherits Rectangle {
                     search-input := LineEdit {
                         horizontal-stretch: 1;
                         height: 100%;
-                        placeholder-text: OnlineGlobal.available ? @tr("Search songs or paste an LX track link") : @tr("Search songs or artists...");
+                        placeholder-text: @tr("Search songs…");
                         text <=> root.search-query;
                         font-size: 13px;
 
@@ -193,7 +190,7 @@ export component SearchPanel inherits Rectangle {
                         }
                         accepted => { root.search-online(); }
                     }
-                    if OnlineGlobal.available && !root.is-link: HorizontalLayout {
+                    if OnlineGlobal.available: HorizontalLayout {
                         spacing: 6px;
                         Button {
                             text: @tr("Search online");
@@ -214,33 +211,9 @@ export component SearchPanel inherits Rectangle {
                 vertical-stretch: 1;
                 spacing: 6px;
                 padding: 8px;
-                HorizontalLayout {
-                    spacing: 8px;
-                    Button {
-                        text: @tr("Previous page");
-                        enabled: !OnlineGlobal.catalog-busy && OnlineGlobal.catalog-page > 1;
-                        clicked => {
-                            OnlineGlobal.search-catalog(OnlineGlobal.catalog-source, root.search-query, OnlineGlobal.catalog-page - 1);
-                        }
-                    }
-                    Text {
-                        text: @tr("{} · Page {}", OnlineGlobal.source-name(OnlineGlobal.catalog-source), OnlineGlobal.catalog-page);
-                        color: Theme.text;
-                        vertical-alignment: center;
-                        horizontal-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    Button {
-                        text: @tr("Next page");
-                        enabled: !OnlineGlobal.catalog-busy && OnlineGlobal.catalog-next;
-                        clicked => {
-                            OnlineGlobal.search-catalog(OnlineGlobal.catalog-source, root.search-query, OnlineGlobal.catalog-page + 1);
-                        }
-                    }
-                }
                 if OnlineGlobal.catalog-busy || OnlineGlobal.catalog-failed || OnlineGlobal.catalog-rows.length == 0: Text {
-                    text: OnlineGlobal.catalog-busy ? @tr("Searching {}…", OnlineGlobal.source-name(OnlineGlobal.catalog-source))
-                        : OnlineGlobal.catalog-failed ? @tr("{} search failed.", OnlineGlobal.source-name(OnlineGlobal.catalog-source)) : @tr("No results found");
+                    text: OnlineGlobal.catalog-busy ? @tr("Searching…")
+                        : OnlineGlobal.catalog-failed ? @tr("Search failed.") : @tr("No results found");
                     color: Theme.text-secondary;
                 }
                 if OnlineGlobal.catalog-partial-failure: Text {
@@ -262,43 +235,42 @@ export component SearchPanel inherits Rectangle {
                 }
                 ListView {
                     vertical-stretch: 1;
-                    for row[index] in OnlineGlobal.catalog-rows: SearchResultRow {
-                        info: row.song;
+                    for song[index] in OnlineGlobal.catalog-rows: SearchResultRow {
+                        info: song;
                         number: index + 1;
-                        playing: row.song.id == root.current-song.id;
+                        playing: song.id == root.current-song.id;
                         play-on-click: true;
-                        source: OnlineGlobal.catalog-source == "all" ? OnlineGlobal.source-name(row.source) : "";
-                        play => { OnlineGlobal.play-catalog(row.song.id); }
+                        play => { OnlineGlobal.play-catalog(song.id); }
                     }
                 }
-            }
-
-            if root.is-link && OnlineGlobal.preview-query == root.search-query: VerticalLayout {
-                padding: 12px;
-                spacing: 8px;
-                Text {
-                    text: OnlineGlobal.preview-issue == OnlineIssue.None ? OnlineGlobal.preview-detail
-                        : OnlineGlobal.issue-text(OnlineGlobal.preview-issue, OnlineGlobal.preview-detail);
-                    color: Theme.text;
-                    wrap: word-wrap;
-                }
-                if OnlineGlobal.preview-issue == OnlineIssue.None: HorizontalLayout {
-                    alignment: start;
+                HorizontalLayout {
+                    spacing: 8px;
                     Button {
-                        primary: true;
-                        text: @tr("Play");
-                        clicked => { OnlineGlobal.play-link(root.search-query); }
+                        text: @tr("Previous page");
+                        enabled: !OnlineGlobal.catalog-busy && OnlineGlobal.catalog-page > 1;
+                        clicked => {
+                            OnlineGlobal.search-catalog(OnlineGlobal.catalog-source, root.search-query, OnlineGlobal.catalog-page - 1);
+                        }
                     }
-                    TrackActions {
-                        width: 64px;
-                        track: OnlineGlobal.preview-track;
+                    Text {
+                        text: @tr("Page {}", OnlineGlobal.catalog-page);
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Button {
+                        text: @tr("Next page");
+                        enabled: !OnlineGlobal.catalog-busy && OnlineGlobal.catalog-next;
+                        clicked => {
+                            OnlineGlobal.search-catalog(OnlineGlobal.catalog-source, root.search-query, OnlineGlobal.catalog-page + 1);
+                        }
                     }
                 }
             }
-            if root.is-link: Rectangle { vertical-stretch: 1; }
 
             // Results count label
-            if !root.catalog && !root.is-link && root.search-query != "": Rectangle {
+            if !root.catalog && root.search-query != "": Rectangle {
                 height: 26px;
                 width: 100%;
                 background: Theme.surface;
@@ -316,7 +288,7 @@ export component SearchPanel inherits Rectangle {
             }
 
             // Results list
-            if !root.catalog && !root.is-link && (root.search-query != "" || root.library-songs.length > 0): ListView {
+            if !root.catalog && (root.search-query != "" || root.library-songs.length > 0): ListView {
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
 

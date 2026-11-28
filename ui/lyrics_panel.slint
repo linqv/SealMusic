@@ -56,16 +56,18 @@ component ViewTab inherits Rectangle {
     }
 }
 
-component QueueRow inherits Rectangle {
+component PlaylistRow inherits Rectangle {
     in property <SongInfo> song;
     in property <int> number;
+    in property <bool> current;
     callback play();
 
     height: 56px;
     border-radius: 8px;
-    background: touch.has-hover ? Theme.text.with-alpha(0.08) : transparent;
+    background: Theme.text.with-alpha(root.current ? 0.14 : touch.has-hover ? 0.08 : 0);
     accessible-role: button;
     accessible-label: root.song.singer == "" ? root.song.song_name : "\{root.song.song_name} · \{root.song.singer}";
+    accessible-description: root.current ? @tr("Current track") : "";
     accessible-action-default => { root.play(); }
 
     HorizontalLayout {
@@ -76,17 +78,17 @@ component QueueRow inherits Rectangle {
         Rectangle {
             width: 28px;
             Text {
-                visible: !touch.has-hover;
+                visible: !touch.has-hover && !root.current;
                 text: "\{root.number}";
                 font-size: 12px;
                 color: Theme.text.with-alpha(0.62);
             }
             IconDisplay {
-                visible: touch.has-hover;
-                icon: IconSet.Play;
+                visible: touch.has-hover || root.current;
+                icon: touch.has-hover ? IconSet.Play : IconSet.Volume2;
                 size: 15px;
                 stroke: Theme.text;
-                stroke-fill: Theme.text;
+                stroke-fill: touch.has-hover ? Theme.text : transparent;
             }
         }
 
@@ -294,6 +296,7 @@ component KaraokeWord inherits HorizontalLayout {
     in property <int> active-word-index: -1;
     in property <float> active-word-progress: 0;
     in property <length> font-size;
+    in property <length> space-width;
     in property <color> sung-color;
     in property <color> unsung-color;
     in property <length> max-line-width;
@@ -308,7 +311,7 @@ component KaraokeWord inherits HorizontalLayout {
     private property <brush> sung-brush: root.sung-color;
     private property <brush> unsung-brush: root.unsung-color;
 
-    padding-right: root.word.space-after ? root.font-size * 0.27 : 0px;
+    padding-right: root.word.space-after ? root.space-width : 0px;
 
     Text {
         max-width: root.max-line-width;
@@ -327,22 +330,97 @@ component KaraokeWord inherits HorizontalLayout {
     }
 }
 
+component SingleLineKaraoke inherits HorizontalLayout {
+    in property <string> prefix;
+    in property <bool> prefix-space;
+    in property <string> active-word;
+    in property <bool> active-word-space;
+    in property <string> suffix;
+    in property <float> word-progress;
+    in property <length> font-size;
+    in property <length> space-width;
+    in property <color> sung-color;
+    in property <color> unsung-color;
+
+    private property <float> feather: 0.16;
+    private property <float> stop-hi: (root.word-progress * (1 + root.feather) - root.feather).clamp(0, 1);
+    private property <float> stop-lo: (root.word-progress * (1 + root.feather)).clamp(0, 1);
+    private property <brush> sung-brush: root.sung-color;
+    private property <brush> unsung-brush: root.unsung-color;
+
+    alignment: start;
+    spacing: 0px;
+
+    if root.prefix != "": Text {
+        text: root.prefix;
+        font-size: root.font-size;
+        font-weight: 700;
+        color: root.sung-brush;
+        wrap: no-wrap;
+        accessible-role: none;
+    }
+    if root.prefix != "" && root.prefix-space: Rectangle {
+        width: root.space-width;
+    }
+    if root.active-word != "": Text {
+        text: root.active-word;
+        font-size: root.font-size;
+        font-weight: 700;
+        wrap: no-wrap;
+        accessible-role: none;
+        color: root.word-progress <= 0.001 ? root.unsung-brush
+            : root.word-progress >= 0.999 ? root.sung-brush
+            : @linear-gradient(90deg,
+                root.sung-color 0%,
+                root.sung-color root.stop-hi,
+                root.unsung-color root.stop-lo,
+                root.unsung-color 100%);
+    }
+    if root.active-word != "" && root.active-word-space && root.suffix != "": Rectangle {
+        width: root.space-width;
+    }
+    if root.suffix != "": Text {
+        text: root.suffix;
+        font-size: root.font-size;
+        font-weight: 700;
+        color: root.unsung-brush;
+        wrap: no-wrap;
+        accessible-role: none;
+    }
+}
+
 component LyricsView inherits Flickable {
     in property <[LyricItem]> lyrics;
     in property <int> active-index: -1;
     in property <int> active-word-index: -1;
     in property <float> active-word-progress: 0;
+    in property <string> active-karaoke-prefix;
+    in property <bool> active-karaoke-prefix-space;
+    in property <string> active-karaoke-word;
+    in property <bool> active-karaoke-word-space;
+    in property <string> active-karaoke-suffix;
     in property <bool> can-seek;
     in property <bool> animate-follow;
     in property <length> font-size;
     in property <int> follow-seq;
     callback seek(float);
+    callback wake-chrome();
 
     private property <length> line-gap: (root.height * 0.036).clamp(18px, 32px);
     private property <length> inset-left: (root.width * 0.025).clamp(10px, 24px);
     private property <length> inset-right: (root.width * 0.04).clamp(14px, 44px);
     private property <length> anchor: root.height * 0.30;
     private property <length> fade-zone: max(56px, root.height * 0.17);
+    // Coarse scroll buckets avoid waking all offscreen rows on every 0.5px glide frame.
+    private property <length> cull-bucket: 96px;
+    private property <length> culled-scroll-y:
+        floor((-root.content-y) / root.cull-bucket) * root.cull-bucket;
+    private property <length> fade-scroll-y:
+        round((-root.content-y) / 2px) * 2px;
+    private property <length> space-width: max(
+        root.font-size * 0.20,
+        space-probe-pair.preferred-width - space-probe-tight.preferred-width
+    );
     private property <int> measured-index: -1;
     private property <length> active-top;
     // A new model can report the same offset and still needs to realign the viewport.
@@ -467,6 +545,26 @@ component LyricsView inherits Flickable {
         triggered => { root.follow-lyrics(); }
     }
 
+    space-probe-pair := Text {
+        visible: false;
+        x: 0px;
+        y: 0px;
+        text: "I I";
+        font-size: root.font-size;
+        font-weight: 700;
+        accessible-role: none;
+    }
+
+    space-probe-tight := Text {
+        visible: false;
+        x: 0px;
+        y: 0px;
+        text: "II";
+        font-size: root.font-size;
+        font-weight: 700;
+        accessible-role: none;
+    }
+
     lines := VerticalLayout {
         x: 0px;
         y: 0px;
@@ -477,19 +575,35 @@ component LyricsView inherits Flickable {
 
         for item[index] in root.lyrics: row := Rectangle {
             property <bool> active: index == root.active-index;
-            property <bool> use-karaoke: self.active && item.words.length > 0;
+            property <bool> has-words: item.words.length > 0;
+            property <bool> sweeping-karaoke: self.active
+                && self.has-words
+                && root.active-word-index >= 0
+                && root.active-word-index < item.words.length;
             property <bool> in-viewport: self.active
-                || (self.y + self.height + root.content-y >= -120px
-                    && self.y + root.content-y <= root.height + 120px);
+                || (self.y + self.height >= root.culled-scroll-y - 192px
+                    && self.y <= root.culled-scroll-y + root.height + 192px);
             property <length> active-line-top: self.active ? self.y : -1px;
             property <length> line-width: max(0px, root.width - root.inset-left - root.inset-right);
-            property <length> line-mid: self.in-viewport ? self.y + self.height / 2 + root.content-y : -1000px;
-            property <float> top-fade: (self.line-mid / root.fade-zone).clamp(0, 1);
-            property <float> bottom-fade: ((root.height - self.line-mid) / root.fade-zone).clamp(0, 1);
-            property <float> raw-edge: self.in-viewport ? min(self.top-fade, self.bottom-fade) : 0.0;
-            property <float> edge-alpha: lyric-touch.has-hover ? max(0.88, self.raw-edge) : self.raw-edge;
+            property <bool> wraps: base-text.preferred-width > self.line-width - 2px;
+            property <length> row-center-y: self.y + self.height / 2;
+            property <bool> near-edge: self.in-viewport
+                && (self.row-center-y < root.fade-scroll-y + root.fade-zone
+                    || self.row-center-y > root.fade-scroll-y + root.height - root.fade-zone);
+            property <float> raw-edge: !self.in-viewport ? 0.0
+                : !self.near-edge ? 1.0
+                : min(
+                    ((self.row-center-y - root.fade-scroll-y) / root.fade-zone).clamp(0, 1),
+                    ((root.fade-scroll-y + root.height - self.row-center-y) / root.fade-zone).clamp(0, 1)
+                );
+            property <bool> row-hovered: false;
+            property <float> edge-alpha: self.in-viewport && self.row-hovered
+                ? max(0.88, self.raw-edge)
+                : self.raw-edge;
             property <float> emphasis: self.active ? 1.0 : 0.0;
             property <float> base-alpha: 0.36 + 0.64 * self.emphasis;
+            property <color> sung-color: Theme.text.with-alpha(self.base-alpha * self.edge-alpha);
+            property <color> unsung-color: Theme.text.with-alpha(0.36 * self.edge-alpha);
             animate emphasis {
                 duration: 240ms;
                 easing: ease-out;
@@ -508,17 +622,36 @@ component LyricsView inherits Flickable {
 
             visible: self.in-viewport;
             height: content.preferred-height + root.line-gap;
-            border-radius: 10px;
-            background: lyric-touch.has-hover ? Theme.text.with-alpha(0.07) : transparent;
-            animate background {
-                duration: 150ms;
-                enabled: root.animate-follow;
-            }
             accessible-role: button;
-            accessible-label: item.translation == "" ? item.text : "\{item.text}\n\{item.translation}";
+            accessible-label: self.in-viewport && item.translation != ""
+                ? "\{item.text}\n\{item.translation}"
+                : item.text;
             accessible-enabled: root.can-seek;
             accessible-action-default => {
                 if root.can-seek { root.seek(item.time); }
+            }
+
+            if row.in-viewport: Rectangle {
+                width: 100%;
+                height: 100%;
+                border-radius: 10px;
+                background: lyric-touch.has-hover ? Theme.text.with-alpha(0.07) : transparent;
+                animate background {
+                    duration: 150ms;
+                    enabled: root.animate-follow;
+                }
+
+                lyric-touch := TouchArea {
+                    enabled: root.can-seek;
+                    mouse-cursor: pointer;
+                    init => { row.row-hovered = self.has-hover; }
+                    changed has-hover => { row.row-hovered = self.has-hover; }
+                    moved => { root.wake-chrome(); }
+                    clicked => {
+                        manual-scroll.stop();
+                        root.seek(item.time);
+                    }
+                }
             }
 
             content := VerticalLayout {
@@ -526,26 +659,55 @@ component LyricsView inherits Flickable {
                 y: root.line-gap / 2;
                 width: row.line-width;
                 height: self.preferred-height;
-                spacing: 6px;
+                spacing: 0px;
 
-                if !row.use-karaoke: Text {
+                Rectangle {
                     width: 100%;
-                    text: item.text;
-                    font-size: root.font-size;
-                    font-weight: 700;
-                    color: Theme.text.with-alpha(row.base-alpha * row.edge-alpha);
-                    horizontal-alignment: left;
-                    wrap: word-wrap;
-                    accessible-role: none;
+                    height: row.sweeping-karaoke && row.wraps ? 0px : base-text.preferred-height;
+
+                    base-text := Text {
+                        x: 0px;
+                        y: 0px;
+                        width: 100%;
+                        visible: !row.sweeping-karaoke;
+                        text: item.text;
+                        font-size: root.font-size;
+                        font-weight: 700;
+                        color: row.active && row.has-words && root.active-word-index < 0
+                            ? row.unsung-color
+                            : row.sung-color;
+                        horizontal-alignment: left;
+                        wrap: word-wrap;
+                        accessible-role: none;
+                    }
+
+                    // Single-line karaoke renders O(1) text spans at the exact base-text height.
+                    if row.sweeping-karaoke && !row.wraps: SingleLineKaraoke {
+                        x: 0px;
+                        y: 0px;
+                        width: 100%;
+                        height: parent.height;
+                        prefix: root.active-karaoke-prefix;
+                        prefix-space: root.active-karaoke-prefix-space;
+                        active-word: root.active-karaoke-word;
+                        active-word-space: root.active-karaoke-word-space;
+                        suffix: root.active-karaoke-suffix;
+                        word-progress: root.active-word-progress;
+                        font-size: root.font-size;
+                        space-width: root.space-width;
+                        sung-color: row.sung-color;
+                        unsung-color: row.unsung-color;
+                    }
                 }
 
-                // Mount word-level karaoke only on the active line when explicit word timings exist.
-                if row.use-karaoke: FlexboxLayout {
+                // Multi-line wrapped karaoke fallback preserves word-wrap across lines.
+                if row.sweeping-karaoke && row.wraps: FlexboxLayout {
                     width: 100%;
+                    min-height: base-text.preferred-height;
                     alignment: start;
                     cross-axis-alignment: start;
                     spacing-horizontal: 0px;
-                    spacing-vertical: 2px;
+                    spacing-vertical: 0px;
 
                     for word[word-index] in item.words: KaraokeWord {
                         word: word;
@@ -553,29 +715,25 @@ component LyricsView inherits Flickable {
                         active-word-index: root.active-word-index;
                         active-word-progress: root.active-word-progress;
                         font-size: root.font-size;
-                        sung-color: Theme.text.with-alpha(row.base-alpha * row.edge-alpha);
-                        unsung-color: Theme.text.with-alpha(0.36 * row.edge-alpha);
+                        space-width: root.space-width;
+                        sung-color: row.sung-color;
+                        unsung-color: row.unsung-color;
                         max-line-width: row.line-width;
                     }
                 }
 
-                if item.translation != "": Text {
-                    width: 100%;
-                    text: item.translation;
-                    font-size: round(max(13, root.font-size / 1px * 0.58)) * 1px;
-                    color: Theme.text.with-alpha((0.30 + 0.48 * row.emphasis) * row.edge-alpha);
-                    horizontal-alignment: left;
-                    wrap: word-wrap;
-                    accessible-role: none;
-                }
-            }
+                if item.translation != "": VerticalLayout {
+                    padding-top: 6px;
 
-            lyric-touch := TouchArea {
-                enabled: root.can-seek;
-                mouse-cursor: pointer;
-                clicked => {
-                    manual-scroll.stop();
-                    root.seek(item.time);
+                    Text {
+                        width: 100%;
+                        text: item.translation;
+                        font-size: round(max(13, root.font-size / 1px * 0.58)) * 1px;
+                        color: Theme.text.with-alpha((0.30 + 0.48 * row.emphasis) * row.edge-alpha);
+                        horizontal-alignment: left;
+                        wrap: word-wrap;
+                        accessible-role: none;
+                    }
                 }
             }
         }
@@ -584,15 +742,21 @@ component LyricsView inherits Flickable {
 
 export component NowPlaying inherits Rectangle {
     in property <image> album-image;
-    in property <image> ambient-image;
+    in property <image> ambient-dark-image;
+    in property <image> ambient-light-image;
     in property <bool> has-ambient-image;
     in property <SongInfo> current-song;
-    in property <[SongInfo]> upcoming;
+    in property <[SongInfo]> playlist;
     in property <[LyricItem]> lyrics;
     in property <int> active-lyric-index;
     in property <int> active-word-index: -1;
     in property <float> active-word-progress: 0;
-    in-out property <bool> show-queue;
+    in property <string> active-karaoke-prefix;
+    in property <bool> active-karaoke-prefix-space;
+    in property <string> active-karaoke-word;
+    in property <bool> active-karaoke-word-space;
+    in property <string> active-karaoke-suffix;
+    in-out property <bool> show-playlist;
     in property <bool> can-seek;
     in property <string> buffering-status;
     in property <string> buffering-track;
@@ -612,7 +776,7 @@ export component NowPlaying inherits Rectangle {
     callback toggle-play();
     callback play-next();
     callback play-prev();
-    callback play-queued(string);
+    callback play-playlist-track(string);
     callback set-shuffle(bool);
     callback switch-mode(LoopMode);
     callback change-volume(float);
@@ -640,9 +804,10 @@ export component NowPlaying inherits Rectangle {
         : root.current-song.singer != "" ? root.current-song.singer : root.current-song.album;
     private property <bool> show-remaining: true;
     private property <bool> pointer-active: true;
-    private property <bool> tabs-visible: root.show-queue || root.pointer-active
-        || tabs-hover.has-hover || lyrics-tab.hovered || queue-tab.hovered
-        || lyrics-tab.focused || queue-tab.focused;
+    private property <int> idle-ticks: 0;
+    private property <bool> tabs-visible: root.show-playlist || root.pointer-active
+        || tabs-hover.has-hover || lyrics-tab.hovered || playlist-tab.hovered
+        || lyrics-tab.focused || playlist-tab.focused;
     private property <float> cover-scale: root.paused ? 0.86 : 1.0;
     animate cover-scale {
         duration: 420ms;
@@ -651,10 +816,12 @@ export component NowPlaying inherits Rectangle {
     }
 
     function wake-chrome() {
-        root.pointer-active = true;
-        if root.resting-open && !root.paused && !root.show-queue {
+        root.idle-ticks = 0;
+        if !root.pointer-active {
+            root.pointer-active = true;
+        }
+        if root.resting-open && !root.paused && !root.show-playlist && !chrome-idle.running {
             chrome-idle.start();
-            chrome-idle.restart();
         }
     }
 
@@ -663,20 +830,22 @@ export component NowPlaying inherits Rectangle {
             root.wake-chrome();
         } else {
             chrome-idle.stop();
+            root.idle-ticks = 0;
         }
     }
     changed paused => {
-        if !root.paused && root.resting-open && !root.show-queue {
-            chrome-idle.start();
-            chrome-idle.restart();
+        if !root.paused && root.resting-open && !root.show-playlist {
+            root.wake-chrome();
         } else if root.paused {
             chrome-idle.stop();
+            root.idle-ticks = 0;
             root.pointer-active = true;
         }
     }
-    changed show-queue => {
-        if root.show-queue {
+    changed show-playlist => {
+        if root.show-playlist {
             chrome-idle.stop();
+            root.idle-ticks = 0;
             root.pointer-active = true;
         } else {
             root.wake-chrome();
@@ -684,11 +853,14 @@ export component NowPlaying inherits Rectangle {
     }
 
     chrome-idle := Timer {
-        interval: 2.5s;
+        interval: 500ms;
         running: false;
         triggered => {
-            self.stop();
-            root.pointer-active = false;
+            root.idle-ticks += 1;
+            if root.idle-ticks >= 5 {
+                self.stop();
+                root.pointer-active = false;
+            }
         }
     }
 
@@ -697,38 +869,31 @@ export component NowPlaying inherits Rectangle {
         height: 100%;
         clip: true;
 
-        if Theme.cover-recoloring && root.has-ambient-image: Rectangle {
+        // Pre-baked 64x64 opaque RGB ambient cover + 155deg scrim: single 1x draw pass, no alpha blend.
+        if Theme.cover-recoloring && root.has-ambient-image: Image {
             width: 100%;
             height: 100%;
-            background: Theme.is-dark ? #181c22 : #eef1f7;
-
-            Image {
-                width: 100%;
-                height: 100%;
-                source: root.ambient-image;
-                image-fit: cover;
-            }
-
-            Rectangle {
-                width: 100%;
-                height: 100%;
-                background: Theme.is-dark
-                    ? @linear-gradient(155deg, #161a2094 0%, #101319b0 55%, #0c0e13c4 100%)
-                    : @linear-gradient(155deg, #f4f6fab8 0%, #eef1f7cc 55%, #e8ecf4d8 100%);
-            }
+            source: Theme.is-dark ? root.ambient-dark-image : root.ambient-light-image;
+            image-fit: fill;
         }
 
         if !(Theme.cover-recoloring && root.has-ambient-image): Rectangle {
             width: 100%;
             height: 100%;
 
-            CoverBackdrop {
+            if Theme.cover-active: CoverBackdrop {
                 base-color: Theme.is-dark ? #18212d : #f0f3f9;
                 animate-colors: root.resting-open;
             }
 
             Rectangle {
-                background: @linear-gradient(180deg, Theme.surface.with-alpha(0.12) 0%, Theme.surface.with-alpha(0.42) 100%);
+                width: 100%;
+                height: 100%;
+                background: Theme.cover-active
+                    ? @linear-gradient(180deg, Theme.surface.with-alpha(0.12) 0%, Theme.surface.with-alpha(0.42) 100%)
+                    : @linear-gradient(180deg,
+                        Theme.surface.mix(Theme.is-dark ? #18212d : #f0f3f9, 0.12) 0%,
+                        Theme.surface.mix(Theme.is-dark ? #18212d : #f0f3f9, 0.42) 100%);
             }
         }
     }
@@ -762,7 +927,7 @@ export component NowPlaying inherits Rectangle {
             enabled: !root.sliding;
         }
         animate-transitions: !root.sliding;
-        label: @tr("Close now playing");
+        label: @tr("Collapse now playing");
         clicked => { root.dismiss(); }
     }
 
@@ -803,15 +968,15 @@ export component NowPlaying inherits Rectangle {
 
                     lyrics-tab := ViewTab {
                         label: @tr("Lyrics");
-                        selected: !root.show-queue;
+                        selected: !root.show-playlist;
                         animate-transitions: !root.sliding;
-                        clicked => { root.show-queue = false; }
+                        clicked => { root.show-playlist = false; }
                     }
-                    queue-tab := ViewTab {
-                        label: @tr("Play queue");
-                        selected: root.show-queue;
+                    playlist-tab := ViewTab {
+                        label: @tr("Playlist");
+                        selected: root.show-playlist;
                         animate-transitions: !root.sliding;
-                        clicked => { root.show-queue = true; }
+                        clicked => { root.show-playlist = true; }
                     }
                 }
             }
@@ -835,8 +1000,11 @@ export component NowPlaying inherits Rectangle {
                     transform-scale: root.cover-scale;
 
                     Rectangle {
+                        width: 100%;
+                        height: 100%;
                         border-radius: 12px;
                         clip: true;
+                        cache-rendering-hint: true;
                         Image {
                             width: 100%;
                             height: 100%;
@@ -984,7 +1152,7 @@ export component NowPlaying inherits Rectangle {
         Rectangle {
             horizontal-stretch: 1;
 
-            if !root.show-queue && root.lyrics.length > 0: LyricsView {
+            if !root.show-playlist && root.lyrics.length > 0: LyricsView {
                 x: 0px;
                 y: 0px;
                 width: parent.width;
@@ -993,31 +1161,38 @@ export component NowPlaying inherits Rectangle {
                 active-index: root.active-lyric-index;
                 active-word-index: root.active-word-index;
                 active-word-progress: root.active-word-progress;
+                active-karaoke-prefix: root.active-karaoke-prefix;
+                active-karaoke-prefix-space: root.active-karaoke-prefix-space;
+                active-karaoke-word: root.active-karaoke-word;
+                active-karaoke-word-space: root.active-karaoke-word-space;
+                active-karaoke-suffix: root.active-karaoke-suffix;
                 can-seek: root.can-seek;
-                animate-follow: root.resting-open && !root.show-queue;
+                animate-follow: root.resting-open && !root.show-playlist;
                 font-size: root.lyric-font-size;
                 follow-seq: root.follow-seq;
                 seek(pos) => { root.seek(pos); }
+                wake-chrome => { root.wake-chrome(); }
             }
 
-            if root.show-queue && root.upcoming.length > 0: ListView {
+            if root.show-playlist && root.playlist.length > 0: ListView {
                 x: 0px;
                 y: 12px;
                 width: parent.width;
                 height: max(0px, parent.height - 12px);
                 mouse-drag-pan-enabled: false;
 
-                for track[index] in root.upcoming: QueueRow {
+                for track[index] in root.playlist: PlaylistRow {
                     song: track;
                     number: index + 1;
-                    play => { root.play-queued(track.id); }
+                    current: track.id == root.current-song.id;
+                    play => { root.play-playlist-track(track.id); }
                 }
             }
 
-            if root.show-queue ? root.upcoming.length == 0 : root.lyrics.length == 0: Text {
+            if root.show-playlist ? root.playlist.length == 0 : root.lyrics.length == 0: Text {
                 width: 100%;
                 height: 100%;
-                text: root.show-queue ? @tr("The play queue is empty") : @tr("No lyrics available");
+                text: root.show-playlist ? @tr("The playlist is empty") : @tr("No lyrics available");
                 color: Theme.text.with-alpha(0.62);
                 font-size: 16px;
                 horizontal-alignment: center;

@@ -162,12 +162,13 @@ mod tests {
             "Artist".into(),
             Duration::from_secs(65),
         ));
-        let mut link = url::Url::parse("lxmusic://music/play").unwrap();
-        link.query_pairs_mut().append_pair(
-            "data",
-            r#"{"source":"kw","songmid":"42","name":"Online","singer":"Artist","types":[{"type":"128k"}]}"#,
-        );
-        let online = crate::online::OnlineTrack::parse(link.as_str()).unwrap().track().unwrap();
+        let online = crate::online::OnlineTrack::from_info(serde_json::json!({
+            "source": "kw", "songmid": "42", "name": "Online", "singer": "Artist",
+            "types": [{"type": "128k"}],
+        }))
+        .unwrap()
+        .track()
+        .unwrap();
         let mut collections = Collections::default();
         collections.likes.tracks.push(local.clone());
         collections.custom.push(Collection {

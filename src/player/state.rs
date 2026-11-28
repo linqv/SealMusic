@@ -73,7 +73,34 @@ impl Default for PlaybackState {
         }
     }
 }
-impl PlaybackState {
+#[derive(Clone, Debug)]
+pub struct PositionReader {
+    status: Status,
+    duration: Duration,
+    position: Duration,
+    sampled_at: Instant,
+    clock: Option<Arc<AudioClock>>,
+    sink_empty: bool,
+    deferred: bool,
+    input_seekable: bool,
+}
+
+impl Default for PositionReader {
+    fn default() -> Self {
+        Self {
+            status: Status::Stopped,
+            duration: Duration::ZERO,
+            position: Duration::ZERO,
+            sampled_at: Instant::now(),
+            clock: None,
+            sink_empty: false,
+            deferred: false,
+            input_seekable: true,
+        }
+    }
+}
+
+impl PositionReader {
     pub fn position_now(&self) -> Duration {
         if self.status != Status::Playing || self.sink_empty || self.deferred {
             return self.position;
@@ -93,6 +120,29 @@ impl PlaybackState {
             position.min(self.duration)
         }
     }
+
+    pub fn duration(&self) -> Duration {
+        self.duration
+    }
+}
+
+impl PlaybackState {
+    pub fn position_reader(&self) -> PositionReader {
+        PositionReader {
+            status: self.status,
+            duration: self.duration,
+            position: self.position,
+            sampled_at: self.sampled_at,
+            clock: self.clock.clone(),
+            sink_empty: self.sink_empty,
+            deferred: self.deferred,
+            input_seekable: self.input_seekable,
+        }
+    }
+
+    pub fn position_now(&self) -> Duration {
+        self.position_reader().position_now()
+    }
     pub fn can_seek(&self) -> bool {
         self.input_seekable
             && !self.deferred
@@ -111,7 +161,7 @@ pub type SharedState = Arc<RwLock<PlaybackState>>;
 
 pub enum PlaybackEvent {
     State(Arc<PlaybackState>, Option<Duration>),
-    Upcoming(Vec<Arc<Track>>),
+    Playlist(Vec<Arc<Track>>),
     Details {
         details: TrackDetails,
         lyrics: Option<Arc<[crate::library::lyrics::LyricLine]>>,
@@ -126,9 +176,7 @@ pub enum PlaybackEvent {
     #[cfg(target_os = "linux")]
     Catalog(super::online::CatalogView),
     #[cfg(target_os = "linux")]
-    Script(Option<crate::online::Script>, bool),
-    #[cfg(target_os = "linux")]
-    Link(String, String, crate::slint_types::OnlineIssue, Option<Arc<Track>>),
+    Script(Option<crate::online::Script>, Vec<crate::online::Script>, bool),
     #[cfg(target_os = "linux")]
     UpdateAlert(lx_probe::UpdateAlert),
     #[cfg(target_os = "linux")]
@@ -148,12 +196,12 @@ pub struct Queue {
     empty_tracks: HashSet<TrackId>,
     back: VecDeque<TrackId>,
     forward: VecDeque<TrackId>,
-    projected_upcoming: Option<(Option<usize>, bool)>,
+    playlist_projected: bool,
 }
 
 impl Queue {
     pub fn rebuild(&mut self, tracks: &[Arc<Track>], shuffle: bool, current: Option<&TrackId>) {
-        self.projected_upcoming = None;
+        self.invalidate_playlist();
         self.order = tracks.to_vec();
         if shuffle {
             self.order.shuffle(&mut rand::rng());
@@ -179,12 +227,12 @@ impl Queue {
             return;
         }
         self.order.retain(|track| !ids.contains(&track.id));
-        self.invalidate_upcoming();
+        self.invalidate_playlist();
         self.reindex();
     }
     #[cfg(target_os = "linux")]
     pub fn upsert(&mut self, track: Arc<Track>) {
-        self.projected_upcoming = None;
+        self.invalidate_playlist();
         if let Some(&i) = self.index_by_id.get(&track.id) {
             self.order[i] = track;
         } else {
@@ -207,33 +255,12 @@ impl Queue {
         self.empty_tracks.clear();
     }
 
-    pub fn invalidate_upcoming(&mut self) {
-        self.projected_upcoming = None;
+    pub fn invalidate_playlist(&mut self) {
+        self.playlist_projected = false;
     }
 
-    pub fn upcoming_if_changed(
-        &mut self,
-        current: Option<&TrackId>,
-        looping: LoopMode,
-    ) -> Option<Vec<Arc<Track>>> {
-        let current = current.and_then(|id| self.index_by_id.get(id).copied());
-        let wraps = looping != LoopMode::None;
-        let projection = Some((current, wraps));
-        if self.projected_upcoming == projection {
-            return None;
-        }
-        self.projected_upcoming = projection;
-
-        // Next consumes forward history before continuing through the queue order.
-        let mut upcoming: Vec<_> =
-            self.forward.iter().rev().filter_map(|id| self.get(id)).collect();
-        let anchor =
-            upcoming.last().and_then(|track| self.index_by_id.get(&track.id).copied()).or(current);
-        upcoming.extend(self.order[anchor.map_or(0, |i| i + 1)..].iter().cloned());
-        if wraps && let Some(i) = anchor {
-            upcoming.extend(self.order[..i].iter().cloned());
-        }
-        Some(upcoming)
+    pub fn playlist_if_changed(&mut self) -> Option<Vec<Arc<Track>>> {
+        (!std::mem::replace(&mut self.playlist_projected, true)).then(|| self.order.clone())
     }
 
     pub fn step(
@@ -302,7 +329,6 @@ impl Queue {
         if same_track && !from_history {
             return;
         }
-        self.projected_upcoming = None;
         let (source, dest) = if next == Some(false) {
             (&mut self.back, &mut self.forward)
         } else {
@@ -373,20 +399,18 @@ mod tests {
         assert_eq!(q.step(Some(&a.id), true, LoopMode::Playlist), Some(a));
     }
     #[test]
-    fn upcoming_follows_forward_history_then_queue_order() {
+    fn playlist_projects_full_order_independently_of_navigation() {
         let (a, b, c) = (track("a"), track("b"), track("c"));
         let mut q = Queue::default();
-        q.rebuild(&[a.clone(), b.clone(), c.clone()], false, Some(&a.id));
-        assert_eq!(
-            q.upcoming_if_changed(Some(&a.id), LoopMode::None),
-            Some(vec![b.clone(), c.clone()])
-        );
-        assert_eq!(q.upcoming_if_changed(Some(&a.id), LoopMode::None), None);
+        q.rebuild(&[a.clone(), b.clone(), c.clone()], false, Some(&b.id));
+        assert_eq!(q.playlist_if_changed(), Some(vec![a.clone(), b.clone(), c.clone()]));
 
         q.record(Some(a.clone()), &c.id, None);
         q.record(Some(c.clone()), &a.id, Some(false));
-        assert_eq!(q.upcoming_if_changed(Some(&a.id), LoopMode::None), Some(vec![c.clone()]));
-        assert_eq!(q.upcoming_if_changed(Some(&a.id), LoopMode::Playlist), Some(vec![c, a, b]));
+        assert_eq!(q.playlist_if_changed(), None);
+
+        q.rebuild(&[c.clone(), a.clone()], false, Some(&a.id));
+        assert_eq!(q.playlist_if_changed(), Some(vec![c, a]));
     }
     #[test]
     fn seek_rejects_stale_track_and_stopped_state() {

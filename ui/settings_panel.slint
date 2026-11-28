@@ -1,39 +1,562 @@
-import { OnlineGlobal } from "online.slint";
+import { OnlineGlobal, SelectOption } from "online.slint";
 import { Theme } from "theme.slint";
-import {
-    Button,
-    CheckBox,
-} from "std-widgets.slint";
+import { Palette } from "std-widgets.slint";
+import { Icon, IconDisplay, IconSet } from "@lucide";
 
-component ChoiceButton inherits Rectangle {
-    in property <string> value;
-    in property <string> current-value;
+component SettingsSectionHeader inherits HorizontalLayout {
     in property <string> text;
-    callback clicked(string);
-    border-radius: 4px;
+    padding-left: 4px;
+
+    Text {
+        text: root.text;
+        font-size: 12px;
+        font-weight: 600;
+        color: Theme.text.with-alpha(0.55);
+        letter-spacing: 0.4px;
+    }
+}
+
+component SettingsCard inherits Rectangle {
+    border-radius: 12px;
     border-width: 1px;
-    border-color: value == current-value ? Theme.accent : Theme.border;
-    background: value == current-value ? Theme.accent : Theme.hover;
+    background: Theme.is-dark ? Theme.panel : Theme.surface;
+    border-color: Theme.is-dark ? Theme.border.with-alpha(0.45) : Theme.border;
+
+    VerticalLayout {
+        @children
+    }
+}
+
+component SettingsDivider inherits Rectangle {
+    height: 1px;
+
+    Rectangle {
+        x: 20px;
+        width: parent.width - 40px;
+        height: 1px;
+        background: Theme.is-dark ? Theme.divider.with-alpha(0.35) : Theme.divider.with-alpha(0.75);
+    }
+}
+
+component SettingsRow inherits Rectangle {
+    in property <string> title;
+    in property <string> description;
+    in property <bool> elide-description: false;
 
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-        padding-top: 4px;
-        padding-bottom: 4px;
-        alignment: center;
-        Text {
-            text: root.text;
-            color: value == current-value ? Theme.surface : Theme.text;
-            font-size: 13px;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-            overflow: elide;
+        padding-left: 20px;
+        padding-right: 20px;
+        padding-top: 16px;
+        padding-bottom: 16px;
+        spacing: 24px;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            min-width: 0px;
+            alignment: center;
+            spacing: 4px;
+
+            Text {
+                text: root.title;
+                font-size: 14px;
+                font-weight: 500;
+                color: Theme.text;
+                wrap: word-wrap;
+            }
+
+            if root.description != "" && !root.elide-description: Text {
+                text: root.description;
+                font-size: 12px;
+                color: Theme.is-dark ? Theme.text.with-alpha(0.65) : Theme.text.with-alpha(0.58);
+                wrap: word-wrap;
+            }
+
+            if root.description != "" && root.elide-description: Rectangle {
+                height: elided-desc.preferred-height;
+
+                elided-desc := Text {
+                    width: 100%;
+                    text: root.description;
+                    font-size: 12px;
+                    color: Theme.is-dark ? Theme.text.with-alpha(0.65) : Theme.text.with-alpha(0.58);
+                    overflow: elide;
+                }
+
+                Tooltip {
+                    VerticalLayout {
+                        padding: 6px;
+                        Text {
+                            text: root.description;
+                            color: Theme.text;
+                            font-size: 12px;
+                        }
+                    }
+                }
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 0;
+            alignment: center;
+
+            HorizontalLayout {
+                spacing: 10px;
+                @children
+            }
+        }
+    }
+}
+
+component SettingsSelect inherits Rectangle {
+    in property <[SelectOption]> options;
+    in property <string> current-value;
+    in property <string> current-label;
+    in property <string> unnamed-label;
+    in property <bool> enabled: true;
+    in property <string> accessible-name;
+    in property <length> viewport-height: 0px;
+    callback selected(string);
+
+    private property <int> highlighted-index: -1;
+    private property <length> item-height: 34px;
+    private property <length> item-spacing: 2px;
+    private property <length> options-height: root.options.length * root.item-height
+        + max(0, root.options.length - 1) * root.item-spacing;
+    private property <length> menu-height: min(root.options-height, 8 * root.item-height + 7 * root.item-spacing) + 10px;
+    private property <bool> open-above: root.viewport-height > 0px
+        && (root.absolute-position.y + root.height + 6px + root.menu-height > root.viewport-height)
+        && (root.absolute-position.y >= root.menu-height + 6px);
+
+    width: 192px;
+    height: 36px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: 8px;
+    border-width: 1px;
+    background: !root.enabled
+        ? (Theme.is-dark ? Theme.hover.with-alpha(0.35) : Theme.panel.with-alpha(0.6))
+        : trigger-touch.pressed
+            ? Theme.press
+            : trigger-touch.has-hover || menu.is-open
+                ? Theme.hover
+                : (Theme.is-dark ? Theme.hover.with-alpha(0.65) : Theme.panel);
+    border-color: menu.is-open || trigger-focus.has-focus
+        ? Theme.accent
+        : trigger-touch.has-hover && root.enabled
+            ? (Theme.is-dark ? Theme.border.with-alpha(0.85) : Theme.text.with-alpha(0.28))
+            : (Theme.is-dark ? Theme.border.with-alpha(0.55) : Theme.border);
+    animate background, border-color { duration: 150ms; }
+
+    forward-focus: trigger-focus;
+    accessible-role: combobox;
+    accessible-enabled: root.enabled;
+    accessible-label: root.accessible-name;
+    accessible-value: root.current-label;
+    accessible-expandable: true;
+    accessible-expanded: menu.is-open;
+    accessible-action-expand => {
+        if root.enabled {
+            root.highlighted-index = -1;
+            menu.show();
         }
     }
 
-    TouchArea {
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 10px;
+        spacing: 8px;
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.current-label;
+            font-size: 13px;
+            color: root.enabled ? Theme.text : Theme.text.with-alpha(0.42);
+            vertical-alignment: center;
+            overflow: elide;
+            accessible-role: none;
+        }
+
+        Rectangle {
+            width: 16px;
+            IconDisplay {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                icon: menu.is-open ? IconSet.ChevronUp : IconSet.ChevronDown;
+                size: 15px;
+                stroke: root.enabled ? Theme.text.with-alpha(0.65) : Theme.text.with-alpha(0.35);
+                stroke-width: 1.8;
+            }
+        }
+    }
+
+    trigger-touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            root.highlighted-index = -1;
+            menu.show();
+        }
+    }
+
+    trigger-focus := FocusScope {
+        width: 0px;
+        focus-on-click: false;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == Key.Space || event.text == Key.DownArrow {
+                root.highlighted-index = 0;
+                menu.show();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    menu := PopupWindow {
+        x: 0px;
+        y: root.open-above ? -root.menu-height - 6px : root.height + 6px;
+        width: root.width;
+        height: root.menu-height;
+        close-policy: close-on-click-outside;
+        forward-focus: menu-focus;
+
+        menu-focus := FocusScope {
+            function reveal-highlighted-option() {
+                let top = root.highlighted-index * (root.item-height + root.item-spacing);
+                menu-items.content-y = menu-items.content-y.clamp(
+                    -top, menu-items.height - top - root.item-height);
+            }
+
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    menu.close();
+                    return accept;
+                }
+                if event.text == Key.DownArrow {
+                    if root.options.length > 0 {
+                        root.highlighted-index = root.highlighted-index < 0
+                            ? 0
+                            : min(root.highlighted-index + 1, root.options.length - 1);
+                        self.reveal-highlighted-option();
+                    }
+                    return accept;
+                }
+                if event.text == Key.UpArrow {
+                    if root.options.length > 0 {
+                        root.highlighted-index = root.highlighted-index < 0
+                            ? root.options.length - 1
+                            : max(root.highlighted-index - 1, 0);
+                        self.reveal-highlighted-option();
+                    }
+                    return accept;
+                }
+                if event.text == Key.Return || event.text == Key.Space {
+                    if root.highlighted-index >= 0 && root.highlighted-index < root.options.length {
+                        root.selected(root.options[root.highlighted-index].value);
+                    }
+                    menu.close();
+                    return accept;
+                }
+                return reject;
+            }
+
+            Rectangle {
+                width: 100%;
+                height: 100%;
+                border-radius: 10px;
+                background: Theme.is-dark ? Theme.panel : Theme.surface;
+                border-width: 1px;
+                border-color: Theme.is-dark ? Theme.border.with-alpha(0.7) : Theme.border;
+                drop-shadow-blur: 14px;
+                drop-shadow-offset-y: 4px;
+                drop-shadow-color: Theme.is-dark ? #00000060 : #0000001a;
+
+                menu-items := Flickable {
+                    x: 5px;
+                    y: 5px;
+                    width: parent.width - 10px;
+                    height: parent.height - 10px;
+                    content-width: self.width;
+                    content-height: root.options-height;
+                    interactive: root.options-height > self.height;
+
+                    VerticalLayout {
+                        x: 0px;
+                        y: 0px;
+                        width: menu-items.width;
+                        height: root.options-height;
+                        spacing: root.item-spacing;
+
+                        for opt[idx] in root.options: Rectangle {
+                            property <bool> is-current: opt.value == root.current-value;
+                            property <bool> is-active: item-touch.has-hover || idx == root.highlighted-index;
+
+                            height: root.item-height;
+                            border-radius: 6px;
+                            background: item-touch.pressed
+                                ? Theme.press
+                                : is-active
+                                    ? Theme.hover
+                                    : is-current
+                                        ? Theme.hover.with-alpha(0.5)
+                                        : transparent;
+                            animate background { duration: 100ms; }
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 8px;
+
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: opt.label == "" ? root.unnamed-label : opt.label;
+                                    font-size: 13px;
+                                    font-weight: is-current ? 600 : 400;
+                                    color: is-current ? Theme.accent : Theme.text;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    accessible-role: none;
+                                }
+
+                                if is-current: Rectangle {
+                                    width: 16px;
+                                    IconDisplay {
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                        icon: IconSet.Check;
+                                        size: 14px;
+                                        stroke: Theme.accent;
+                                        stroke-width: 2.2;
+                                    }
+                                }
+                            }
+
+                            item-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                accessible-role: list-item;
+                                accessible-label: opt.label == "" ? root.unnamed-label : opt.label;
+                                accessible-item-selectable: true;
+                                accessible-item-selected: is-current;
+                                accessible-item-index: idx;
+                                accessible-action-default => {
+                                    root.selected(opt.value);
+                                    menu.close();
+                                }
+                                clicked => {
+                                    root.selected(opt.value);
+                                    menu.close();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component SettingsSwitch inherits Rectangle {
+    in-out property <bool> checked;
+    in property <bool> enabled: true;
+    in property <string> accessible-name;
+    callback toggled();
+
+    function flip() {
+        if root.enabled {
+            root.checked = !root.checked;
+            root.toggled();
+        }
+    }
+
+    width: 42px;
+    height: 24px;
+    border-radius: 12px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-width: switch-focus.has-focus && root.enabled ? 2px : 0px;
+    border-color: Theme.text;
+    background: root.checked
+        ? (root.enabled ? Theme.accent : Theme.accent.with-alpha(0.4))
+        : switch-touch.has-hover && root.enabled
+            ? (Theme.is-dark ? Theme.border : Theme.text.with-alpha(0.24))
+            : (Theme.is-dark ? Theme.border.with-alpha(0.75) : Theme.text.with-alpha(0.18));
+    animate background { duration: 150ms; }
+
+    forward-focus: switch-focus;
+    accessible-role: switch;
+    accessible-enabled: root.enabled;
+    accessible-label: root.accessible-name;
+    accessible-checkable: true;
+    accessible-checked <=> root.checked;
+    accessible-action-default => { root.flip(); }
+
+    Rectangle {
+        x: root.checked ? parent.width - self.width - 3px : 3px;
+        y: (parent.height - self.height) / 2;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: root.checked
+            ? Palette.accent-foreground
+            : (Theme.is-dark ? Theme.text : Theme.surface);
+        animate x {
+            duration: 150ms;
+            easing: ease-out;
+        }
+    }
+
+    switch-touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.flip(); }
+    }
+
+    switch-focus := FocusScope {
+        width: 0px;
+        focus-on-click: false;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.flip();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+component SettingsButton inherits Rectangle {
+    in property <string> text;
+    in property <string> accessible-name: root.text;
+    in property <bool> enabled: true;
+    in property <bool> has-icon: false;
+    in property <Icon> icon: IconSet.FolderOpen;
+    callback clicked();
+
+    height: 36px;
+    min-width: max(96px, content.preferred-width);
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: 8px;
+    border-width: 1px;
+    background: !root.enabled
+        ? (Theme.is-dark ? Theme.hover.with-alpha(0.35) : Theme.panel.with-alpha(0.6))
+        : btn-touch.pressed
+            ? Theme.press
+            : btn-touch.has-hover
+                ? Theme.hover
+                : (Theme.is-dark ? Theme.hover.with-alpha(0.65) : Theme.panel);
+    border-color: btn-focus.has-focus && root.enabled
+        ? Theme.accent
+        : btn-touch.has-hover && root.enabled
+            ? (Theme.is-dark ? Theme.border.with-alpha(0.85) : Theme.text.with-alpha(0.28))
+            : (Theme.is-dark ? Theme.border.with-alpha(0.55) : Theme.border);
+    animate background, border-color { duration: 150ms; }
+
+    forward-focus: btn-focus;
+    accessible-role: button;
+    accessible-enabled: root.enabled;
+    accessible-label: root.accessible-name;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    content := HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 7px;
+        alignment: center;
+
+        if root.has-icon: Rectangle {
+            width: 15px;
+            IconDisplay {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                icon: root.icon;
+                size: 15px;
+                stroke: root.enabled ? Theme.text.with-alpha(0.72) : Theme.text.with-alpha(0.4);
+                stroke-width: 1.8;
+            }
+        }
+
+        Text {
+            text: root.text;
+            font-size: 13px;
+            font-weight: 500;
+            color: root.enabled ? Theme.text : Theme.text.with-alpha(0.42);
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+
+    btn-touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+
+    btn-focus := FocusScope {
+        width: 0px;
+        focus-on-click: false;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+component ImportedSourceRow inherits Rectangle {
+    in property <string> title;
+    in property <bool> expanded;
+    callback clicked();
+
+    preferred-height: content.preferred-height;
+    min-height: content.min-height;
+    border-radius: 8px;
+    background: row-touch.pressed ? Theme.press : row-touch.has-hover ? Theme.hover : transparent;
+    border-width: row-focus.has-focus ? 1px : 0px;
+    border-color: Theme.accent;
+    animate background { duration: 150ms; }
+
+    forward-focus: row-focus;
+    accessible-role: button;
+    accessible-label: root.title;
+    accessible-expandable: true;
+    accessible-expanded: root.expanded;
+    accessible-action-default => { root.clicked(); }
+
+    content := SettingsRow {
+        title: root.title;
+
+        IconDisplay {
+            icon: root.expanded ? IconSet.ChevronUp : IconSet.ChevronDown;
+            size: 16px;
+            stroke: Theme.text.with-alpha(0.65);
+            stroke-width: 1.8;
+        }
+    }
+
+    row-touch := TouchArea {
         mouse-cursor: pointer;
-        clicked => { root.clicked(value); }
+        clicked => { root.clicked(); }
+    }
+
+    row-focus := FocusScope {
+        width: 0px;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
     }
 }
 
@@ -49,186 +572,157 @@ export component SettingsPanel inherits Rectangle {
     in property <string> version;
     callback open-upstream();
     callback select_song_dir();
+
+    private property <string> expanded-script;
+    private property <string> unnamed-script-label: @tr("Unnamed source");
+    private property <bool> managing-sources;
+    private property <bool> has-sources: OnlineGlobal.scripts.length > 0;
+    private property <SelectOption> pending-removal;
+
+    changed has-sources => {
+        if !root.has-sources {
+            root.managing-sources = false;
+        }
+    }
+
     background: Theme.surface;
 
-    Flickable {
+    scroller := Flickable {
         width: 100%;
         height: 100%;
+        content-width: self.width;
         content-height: layout.preferred-height;
         interactive: true;
 
         layout := VerticalLayout {
-            width: 100%;
-            padding: 24px;
+            x: (scroller.width - self.width) / 2;
+            y: 0px;
+            width: min(scroller.width, 820px);
+            padding-top: 24px;
+            padding-bottom: 36px;
+            padding-left: 32px;
             padding-right: 48px;
             spacing: 20px;
 
+            Text {
+                text: @tr("Settings");
+                font-size: 20px;
+                font-weight: 600;
+                color: Theme.text;
+            }
+
             // --- Playback Section ---
-            Rectangle {
-                background: Theme.panel;
-                border-radius: 8px;
-                border-width: 1px;
-                border-color: Theme.border;
+            VerticalLayout {
+                spacing: 8px;
 
-                VerticalLayout {
-                    padding: 16px;
-                    spacing: 12px;
+                SettingsSectionHeader {
+                    text: @tr("Playback");
+                }
 
-                    Text {
-                        text: @tr("Playback");
-                        font-size: 12px;
-                        font-weight: 600;
-                        color: Theme.text-tertiary;
-                        letter-spacing: 0.3px;
-                    }
+                SettingsCard {
+                    SettingsRow {
+                        title: @tr("Music directory");
+                        description: root.song_dir;
+                        elide-description: true;
 
-                    Rectangle {
-                        height: 1px;
-                        background: Theme.divider;
-                    }
-
-                    // Music directory
-                    VerticalLayout {
-                        spacing: 6px;
-                        Text {
-                            text: @tr("Music directory");
-                            font-size: 13px;
-                            color: Theme.text-secondary;
-                        }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Rectangle {
-                                border-radius: 4px;
-                                border-width: 1px;
-                                border-color: Theme.border;
-                                background: Theme.hover;
-                                horizontal-stretch: 1;
-                                Text {
-                                    x: 12px;
-                                    width: parent.width - 24px;
-                                    height: 100%;
-                                    text: root.song_dir;
-                                    color: Theme.text-secondary;
-                                    font-size: 13px;
-                                    vertical-alignment: center;
-                                    overflow: elide;
-                                }
-                            }
-
-                            Button {
-                                text: @tr("Browse...");
-                                clicked => {
-                                    root.select_song_dir();
-                                }
-                            }
+                        SettingsButton {
+                            text: @tr("Browse...");
+                            has-icon: true;
+                            icon: IconSet.FolderOpen;
+                            clicked => { root.select_song_dir(); }
                         }
                     }
-
                 }
             }
 
-            if OnlineGlobal.available: Rectangle {
-                background: Theme.panel;
-                border-radius: 8px;
-                border-width: 1px;
-                border-color: Theme.border;
+            // --- Online Section ---
+            if OnlineGlobal.available: VerticalLayout {
+                spacing: 8px;
 
-                VerticalLayout {
-                    padding: 16px;
-                    spacing: 12px;
+                SettingsSectionHeader {
+                    text: @tr("Online");
+                }
 
-                    Text {
-                        text: @tr("LX music source");
-                        font-size: 12px;
-                        font-weight: 600;
-                        color: Theme.text-tertiary;
-                        letter-spacing: 0.3px;
-                    }
+                SettingsCard {
+                    SettingsRow {
+                        title: @tr("LX music source");
+                        description: root.has-sources
+                            ? ""
+                            : @tr("Import a custom JS script for online playback.");
 
-                    Rectangle {
-                        height: 1px;
-                        background: Theme.divider;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
-                        Button {
-                            text: OnlineGlobal.importing ? @tr("Initializing…") : @tr("Import JS source…");
-                            enabled: !OnlineGlobal.importing;
-                            clicked => { OnlineGlobal.import-script(); }
+                        SettingsSelect {
+                            accessible-name: @tr("LX music source");
+                            viewport-height: root.height;
+                            options: OnlineGlobal.scripts;
+                            current-value: OnlineGlobal.active-script;
+                            unnamed-label: root.unnamed-script-label;
+                            current-label: OnlineGlobal.importing ? @tr("Initializing…")
+                                : OnlineGlobal.active-script == "" ? @tr("No source selected")
+                                : OnlineGlobal.active-script-name == "" ? root.unnamed-script-label
+                                : OnlineGlobal.active-script-name;
+                            enabled: !OnlineGlobal.importing && OnlineGlobal.scripts.length > 0;
+                            selected(id) => { OnlineGlobal.select-script(id); }
                         }
-                        if OnlineGlobal.installed: CheckBox {
-                            text: @tr("Enabled");
+                    }
+
+                    if OnlineGlobal.active-script != "": SettingsDivider {}
+
+                    if OnlineGlobal.active-script != "": SettingsRow {
+                        title: @tr("Enabled");
+                        description: @tr("Resolve and stream online tracks with the imported source.");
+
+                        SettingsSwitch {
                             checked <=> OnlineGlobal.enabled;
                             enabled: !OnlineGlobal.importing;
+                            accessible-name: @tr("Enabled");
                             toggled => { OnlineGlobal.enable-script(self.checked); }
                         }
                     }
 
-                    if OnlineGlobal.installed: Text {
-                        text: OnlineGlobal.script-summary;
-                        color: Theme.text-secondary;
-                        wrap: word-wrap;
-                    }
+                    SettingsDivider {}
 
-                    VerticalLayout {
-                        spacing: 6px;
-                        Text {
-                            text: @tr("Preferred audio quality");
-                            font-size: 13px;
-                            color: Theme.text-secondary;
-                        }
+                    SettingsRow {
+                        title: @tr("Preferred audio quality");
+                        description: @tr("Used first when playing online tracks; switches automatically if unavailable.");
 
-                        HorizontalLayout {
-                            spacing: 8px;
-                            for q in ["128k", "320k", "flac", "flac24bit"]: ChoiceButton {
-                                value: q;
-                                current-value: OnlineGlobal.quality;
-                                text: OnlineGlobal.quality-name(q);
-                                clicked(code) => {
-                                    OnlineGlobal.quality = code;
-                                    OnlineGlobal.set-quality(code);
-                                }
+                        SettingsSelect {
+                            accessible-name: @tr("Preferred audio quality");
+                            viewport-height: root.height;
+                            options: [
+                                { value: "128k", label: OnlineGlobal.quality-name("128k") },
+                                { value: "320k", label: OnlineGlobal.quality-name("320k") },
+                                { value: "flac", label: OnlineGlobal.quality-name("flac") },
+                                { value: "flac24bit", label: OnlineGlobal.quality-name("flac24bit") },
+                            ];
+                            current-value: OnlineGlobal.quality;
+                            current-label: OnlineGlobal.quality-name(OnlineGlobal.quality);
+                            selected(code) => {
+                                OnlineGlobal.quality = code;
+                                OnlineGlobal.set-quality(code);
                             }
                         }
-
-                        Text {
-                            text: @tr("Used first when playing online tracks; switches automatically if unavailable.");
-                            font-size: 12px;
-                            color: Theme.text-tertiary;
-                            wrap: word-wrap;
-                        }
-                    }
-                }
-            }
-
-            if OnlineGlobal.available: Rectangle {
-                background: Theme.panel;
-                border-radius: 8px;
-                border-width: 1px;
-                border-color: Theme.border;
-
-                VerticalLayout {
-                    padding: 16px;
-                    spacing: 8px;
-
-                    Text {
-                        text: @tr("Online search source");
-                        font-size: 12px;
-                        font-weight: 600;
-                        color: Theme.text-tertiary;
-                        letter-spacing: 0.3px;
                     }
 
-                    HorizontalLayout {
-                        spacing: 8px;
-                        for source in ["kw", "kg", "tx", "wy", "mg", "all"]: ChoiceButton {
-                            value: source;
+                    SettingsDivider {}
+
+                    SettingsRow {
+                        title: @tr("Online search source");
+                        description: @tr("Default platform used when searching online catalogs.");
+
+                        SettingsSelect {
+                            accessible-name: @tr("Online search source");
+                            viewport-height: root.height;
+                            options: [
+                                { value: "kw", label: OnlineGlobal.source-name("kw") },
+                                { value: "kg", label: OnlineGlobal.source-name("kg") },
+                                { value: "tx", label: OnlineGlobal.source-name("tx") },
+                                { value: "wy", label: OnlineGlobal.source-name("wy") },
+                                { value: "mg", label: OnlineGlobal.source-name("mg") },
+                                { value: "all", label: OnlineGlobal.source-name("all") },
+                            ];
                             current-value: OnlineGlobal.search-source;
-                            text: OnlineGlobal.source-name(source);
-                            clicked(code) => {
+                            current-label: OnlineGlobal.source-name(OnlineGlobal.search-source);
+                            selected(code) => {
                                 if OnlineGlobal.search-source != code {
                                     OnlineGlobal.search-source = code;
                                     OnlineGlobal.cancel-catalog();
@@ -240,81 +734,257 @@ export component SettingsPanel inherits Rectangle {
             }
 
             // --- Appearance Section ---
-            Rectangle {
-                background: Theme.panel;
-                border-radius: 8px;
-                border-width: 1px;
-                border-color: Theme.border;
+            VerticalLayout {
+                spacing: 8px;
 
-                VerticalLayout {
-                    padding: 16px;
-                    spacing: 12px;
+                SettingsSectionHeader {
+                    text: @tr("Appearance");
+                }
 
-                    Text {
-                        text: @tr("Appearance");
-                        font-size: 12px;
-                        font-weight: 600;
-                        color: Theme.text-tertiary;
-                        letter-spacing: 0.3px;
-                    }
+                SettingsCard {
+                    SettingsRow {
+                        title: @tr("Theme");
+                        description: @tr("Choose light, dark, or match the system appearance.");
 
-                    Rectangle {
-                        height: 1px;
-                        background: Theme.divider;
-                    }
-
-                    CheckBox {
-                        text: @tr("Follow system theme");
-                        checked <=> root.follow_system_theme;
-                        toggled => {
-                            root.set_follow_system_theme(self.checked);
+                        SettingsSelect {
+                            accessible-name: @tr("Theme");
+                            viewport-height: root.height;
+                            options: [
+                                { value: "system", label: @tr("Follow system") },
+                                { value: "light", label: @tr("Light") },
+                                { value: "dark", label: @tr("Dark") },
+                            ];
+                            current-value: root.follow_system_theme
+                                ? "system"
+                                : root.light_ui ? "light" : "dark";
+                            current-label: root.follow_system_theme
+                                ? @tr("Follow system")
+                                : root.light_ui ? @tr("Light") : @tr("Dark");
+                            selected(mode) => {
+                                if mode == "system" {
+                                    root.follow_system_theme = true;
+                                    root.set_follow_system_theme(true);
+                                } else if mode == "light" {
+                                    root.follow_system_theme = false;
+                                    root.set_light_theme(true);
+                                    root.set_follow_system_theme(false);
+                                } else {
+                                    root.follow_system_theme = false;
+                                    root.set_light_theme(false);
+                                    root.set_follow_system_theme(false);
+                                }
+                            }
                         }
                     }
 
-                    CheckBox {
-                        text: @tr("Light theme");
-                        enabled: !root.follow_system_theme;
-                        checked <=> root.light_ui;
-                        toggled => { root.set_light_theme(self.checked); }
-                    }
+                    SettingsDivider {}
 
-                    // Cover art recoloring
-                    CheckBox {
-                        text: @tr("Dynamic cover colors");
-                        checked <=> root.cover_recoloring;
-                    }
+                    SettingsRow {
+                        title: @tr("Dynamic cover colors");
+                        description: @tr("Tint the now-playing view with colors extracted from album artwork.");
 
-                    // Language
-                    VerticalLayout {
-                        spacing: 6px;
-                        Text {
-                            text: @tr("Language");
-                            font-size: 13px;
-                            color: Theme.text-secondary;
+                        SettingsSwitch {
+                            checked <=> root.cover_recoloring;
+                            accessible-name: @tr("Dynamic cover colors");
                         }
+                    }
 
-                        HorizontalLayout {
-                            spacing: 8px;
-                            for lc in ["", "zh_CN"]: ChoiceButton {
-                                value: lc;
-                                current-value: root.lang;
-                                text: lc == "" ? "English" : "中文";
-                                clicked(code) => { root.lang = code; root.set_lang(code); }
+                    SettingsDivider {}
+
+                    SettingsRow {
+                        title: @tr("Language");
+                        description: @tr("Display language for the application interface.");
+
+                        SettingsSelect {
+                            accessible-name: @tr("Language");
+                            viewport-height: root.height;
+                            options: [
+                                { value: "", label: "English" },
+                                { value: "zh_CN", label: "简体中文" },
+                            ];
+                            current-value: root.lang;
+                            current-label: root.lang == "zh_CN" ? "简体中文" : "English";
+                            selected(code) => {
+                                root.lang = code;
+                                root.set_lang(code);
                             }
                         }
                     }
                 }
             }
-            HorizontalLayout {
-                spacing: 12px;
-                Text {
-                    text: @tr("SealMusic {} · GPL-3.0", root.version);
-                    color: Theme.text-secondary;
-                    vertical-alignment: center;
+
+            // --- About Section ---
+            VerticalLayout {
+                spacing: 8px;
+
+                SettingsSectionHeader {
+                    text: @tr("About");
                 }
-                Button {
-                    text: @tr("Upstream project");
-                    clicked => { root.open-upstream(); }
+
+                SettingsCard {
+                    SettingsRow {
+                        title: "SealMusic";
+                        description: @tr("SealMusic {} · GPL-3.0", root.version);
+
+                        SettingsButton {
+                            text: @tr("Upstream project");
+                            has-icon: true;
+                            icon: IconSet.ExternalLink;
+                            clicked => { root.open-upstream(); }
+                        }
+                    }
+                }
+            }
+
+            if OnlineGlobal.available: VerticalLayout {
+                spacing: 8px;
+
+                HorizontalLayout {
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        SettingsSectionHeader {
+                            text: @tr("Imported sources");
+                        }
+                    }
+                    if root.has-sources: SettingsButton {
+                        text: root.managing-sources ? @tr("Done") : @tr("Manage");
+                        enabled: !OnlineGlobal.importing;
+                        clicked => { root.managing-sources = !root.managing-sources; }
+                    }
+                }
+
+                for script in OnlineGlobal.scripts: VerticalLayout {
+                    property <string> script-name: script.label == "" ? root.unnamed-script-label : script.label;
+                    spacing: 8px;
+
+                    SettingsCard {
+                        HorizontalLayout {
+                            ImportedSourceRow {
+                                title: script-name;
+                                expanded: root.expanded-script == script.value;
+                                clicked => {
+                                    root.expanded-script = self.expanded ? "" : script.value;
+                                }
+                            }
+
+                            if root.managing-sources: VerticalLayout {
+                                horizontal-stretch: 0;
+                                alignment: center;
+                                padding-right: 20px;
+
+                                SettingsButton {
+                                    text: @tr("Delete");
+                                    accessible-name: @tr("Delete {}", script-name);
+                                    enabled: !OnlineGlobal.importing;
+                                    has-icon: true;
+                                    icon: IconSet.Trash2;
+                                    clicked => {
+                                        root.pending-removal = { value: script.value, label: script-name };
+                                        delete-confirmation.show();
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.expanded-script == script.value: VerticalLayout {
+                        padding-left: 20px;
+                        padding-right: 20px;
+
+                        SettingsCard {
+                            background: Theme.is-dark ? Theme.surface : Theme.panel;
+
+                            VerticalLayout {
+                                padding: 14px;
+
+                                Text {
+                                    text: script.details == "" ? @tr("No source details available.") : script.details;
+                                    font-size: 12px;
+                                    color: Theme.text-secondary;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    padding-top: 4px;
+                    alignment: end;
+
+                    SettingsButton {
+                        text: OnlineGlobal.importing ? @tr("Initializing…") : @tr("Import JS source…");
+                        enabled: !OnlineGlobal.importing;
+                        has-icon: true;
+                        icon: IconSet.Upload;
+                        clicked => { OnlineGlobal.import-script(); }
+                    }
+                }
+            }
+        }
+    }
+
+    delete-anchor := Rectangle {
+        x: (root.width - 380px) / 2;
+        y: (root.height - 124px) / 2;
+        width: 1px;
+        height: 1px;
+
+        delete-confirmation := PopupWindow {
+            width: 380px;
+            height: 124px;
+            close-policy: close-on-click-outside;
+            forward-focus: confirmation-focus;
+
+            confirmation-focus := FocusScope {
+                forward-focus: cancel-removal;
+                key-pressed(event) => {
+                    if event.text == Key.Escape {
+                        delete-confirmation.close();
+                        return accept;
+                    }
+                    return reject;
+                }
+
+                SettingsCard {
+                    drop-shadow-blur: 16px;
+                    drop-shadow-offset-y: 4px;
+                    drop-shadow-color: #00000038;
+
+                    VerticalLayout {
+                        padding: 18px;
+                        spacing: 12px;
+
+                        Text {
+                            text: @tr("Delete “{}”?", root.pending-removal.label);
+                            font-size: 16px;
+                            font-weight: 600;
+                            color: Theme.text;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+
+                        HorizontalLayout {
+                            alignment: end;
+                            spacing: 8px;
+
+                            cancel-removal := SettingsButton {
+                                text: @tr("Cancel");
+                                clicked => { delete-confirmation.close(); }
+                            }
+                            SettingsButton {
+                                text: @tr("Delete");
+                                clicked => {
+                                    delete-confirmation.close();
+                                    if root.expanded-script == root.pending-removal.value {
+                                        root.expanded-script = "";
+                                    }
+                                    OnlineGlobal.remove-script(root.pending-removal.value);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

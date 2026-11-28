@@ -1,8 +1,9 @@
 import { OnlineIssue, SongInfo } from "types.slint";
 
-export struct CatalogRow {
-    song: SongInfo,
-    source: string,
+export struct SelectOption {
+    value: string,
+    label: string,
+    details: string,
 }
 
 export global OnlineGlobal {
@@ -15,31 +16,28 @@ export global OnlineGlobal {
     in property <bool> catalog-failed;
     in property <bool> catalog-next;
     in property <bool> catalog-partial-failure;
-    in property <[CatalogRow]> catalog-rows;
+    in property <[SongInfo]> catalog-rows;
     callback search-catalog(string, string, int);
     callback cancel-catalog();
     callback play-catalog(string);
-    in property <bool> installed;
+    in property <string> active-script;
+    in property <string> active-script-name;
+    in property <[SelectOption]> scripts;
     in-out property <bool> enabled;
     in-out property <string> quality: "320k";
     in property <bool> importing;
-    in property <string> script-summary;
-    in property <string> preview-query;
-    in property <OnlineIssue> preview-issue;
-    in property <string> preview-detail;
-    in property <string> preview-track;
     in property <string> loading;
     in property <bool> loading-paused;
     out property <string> buffering-status: root.loading == "" ? ""
         : root.loading-paused ? @tr("Buffering paused")
         : @tr("Buffering");
-    pure callback is-link(string) -> bool;
     pure callback is-blank(string) -> bool;
     in property <bool> local-playback;
     callback play-local-source(string);
     callback import-script();
+    callback select-script(string);
+    callback remove-script(string);
     callback enable-script(bool);
-    callback play-link(string);
     callback set-quality(string);
 
     public pure function quality-name(quality: string) -> string {
@@ -61,10 +59,11 @@ export global OnlineGlobal {
     }
 
     public pure function issue-text(issue: OnlineIssue, detail: string) -> string {
-        if issue == OnlineIssue.InvalidLink { return @tr("Invalid LX link or missing field: {}", detail); }
+        if issue == OnlineIssue.InvalidTrack { return @tr("Invalid song data or missing field: {}", detail); }
         if issue == OnlineIssue.NoScript { return @tr("Enable an LX source in Settings."); }
         if issue == OnlineIssue.NoQuality { return @tr("No compatible audio quality is available."); }
         if issue == OnlineIssue.ScriptFile { return @tr("Could not read or save the LX source."); }
+        if issue == OnlineIssue.ScriptRemoval { return @tr("Could not remove the LX source."); }
         if issue == OnlineIssue.Initialization { return @tr("The LX source failed to initialize."); }
         if issue == OnlineIssue.Resolve { return @tr("The source could not resolve the media URL ({}).", detail); }
         if issue == OnlineIssue.Transfer { return @tr("Media download failed ({}).", detail); }

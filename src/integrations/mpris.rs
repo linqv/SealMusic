@@ -721,9 +721,7 @@ mod tests {
             "interval": "03:20",
             "types": [{"type": "128k"}],
         });
-        let mut url = url::Url::parse("lxmusic://music/play").unwrap();
-        url.query_pairs_mut().append_pair("data", &payload.to_string());
-        let mut reference = crate::online::OnlineTrack::parse(url.as_str()).unwrap();
+        let mut reference = crate::online::OnlineTrack::from_info(payload).unwrap();
         reference.quality = "128k".into();
         reference
     }

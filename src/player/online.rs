@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     library::{Track, TrackId, TrackOrigin, metadata::TrackDetails},
-    online::{self, OnlineTrack, Script},
+    online::{self, Script},
     slint_types::OnlineIssue,
 };
 
@@ -162,6 +162,10 @@ impl Online {
     pub(super) fn search_id(&self) -> Option<u64> {
         self.search.as_ref().map(|j| j.id)
     }
+    #[cfg(test)]
+    pub(super) fn set_catalog_rows(&mut self, tracks: Vec<Arc<Track>>) {
+        self.catalog.rows = tracks;
+    }
     pub fn nav_context(&self, next: bool) -> (Option<&Arc<Track>>, usize) {
         let Some(p) = &self.pending else {
             return (None, 0);
@@ -254,16 +258,24 @@ impl<F: FnMut(Event)> PlayerCore<F> {
     }
 
     pub(super) fn script_event(&mut self) {
-        (self.publish)(Event::Script(self.cfg.lx_script.clone(), self.online.import.is_some()));
+        (self.publish)(Event::Script(
+            self.cfg.lx_script.clone(),
+            self.cfg.lx_saved_scripts.clone(),
+            self.online.import.is_some(),
+        ));
     }
 
     pub(super) fn import_script(&mut self, path: PathBuf) {
+        self.load_script(path, None);
+    }
+
+    fn load_script(&mut self, path: PathBuf, saved: Option<Script>) {
         self.online.seq += 1;
         let id = self.online.seq;
         let tx = self.online.tx.clone();
         let alert = self.online.alert_handler(id);
         let handle = self.online.runtime().spawn(async move {
-            match Script::import(path, alert).await {
+            match Script::load(path, saved, alert).await {
                 Ok((script, drain)) => {
                     Completion::Imported(id, Ok(script)).send(tx.clone());
                     if let Some(mut session) = drain
@@ -287,17 +299,69 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         self.script_event();
     }
 
+    pub(super) fn select_script(&mut self, id: &str) {
+        if self.online.import.is_none()
+            && let Some(script) = self.cfg.lx_saved_scripts.iter().find(|script| script.id == id)
+        {
+            self.load_saved_script(script.clone());
+        }
+    }
+
+    pub(super) fn remove_script(&mut self, id: &str) {
+        if self.online.import.is_some() {
+            return;
+        }
+        let active = self.cfg.lx_script.as_ref().filter(|script| script.id == id);
+        let Some(script) =
+            active.or_else(|| self.cfg.lx_saved_scripts.iter().find(|script| script.id == id))
+        else {
+            return;
+        };
+        let path = script.path().ok();
+        let removed_active = active.is_some();
+        let mut cfg = self.cfg.clone();
+        if removed_active {
+            cfg.lx_script = None;
+        }
+        cfg.lx_saved_scripts.retain(|script| script.id != id);
+
+        if let Err(err) = cfg.save_lx_sources() {
+            log::warn!("Could not save LX source removal: {err}");
+            self.online_failure((OnlineIssue::ScriptRemoval, String::new()));
+            return;
+        }
+        self.cfg = cfg;
+
+        if removed_active {
+            self.cancel_load();
+            self.stop_if_drained();
+            self.script_changed();
+        } else {
+            self.script_event();
+        }
+        if let Some(path) = path
+            && let Err(err) = std::fs::remove_file(path)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            log::warn!("Could not remove the cached LX script: {err}");
+        }
+    }
+
+    fn load_saved_script(&mut self, script: Script) {
+        match script.path() {
+            Ok(path) => self.load_script(path, Some(script)),
+            Err(err) => {
+                self.script_event();
+                self.online_failure(err);
+            }
+        }
+    }
+
     pub(super) fn enable_script(&mut self, enabled: bool) {
         self.online.import.take();
         if enabled {
-            if let Some(script) = &self.cfg.lx_script {
-                match script.path() {
-                    Ok(path) => self.import_script(path),
-                    Err(err) => {
-                        self.script_event();
-                        self.online_failure(err);
-                    }
-                }
+            if let Some(script) = self.cfg.lx_script.clone() {
+                self.load_saved_script(script);
             } else {
                 self.script_event();
             }
@@ -375,28 +439,9 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         }
     }
 
-    pub(super) fn link_info(&self, query: &str) -> online::Result<(OnlineTrack, Arc<Track>)> {
-        let reference = OnlineTrack::parse(query)?;
-        let track = reference.track()?;
-        let script = self
-            .cfg
-            .lx_script
-            .as_ref()
-            .filter(|s| s.enabled)
-            .ok_or((OnlineIssue::NoScript, track.title.clone()))?;
-        if reference.qualities(Some(script)).is_empty() {
-            return Err((OnlineIssue::NoQuality, track.title.clone()));
-        }
-        Ok((reference, track))
-    }
-
     pub(super) fn search_catalog(&mut self, source: String, query: String, page: u32) {
         self.online.search.take();
-        if page == 0
-            || !online::is_search_source(&source)
-            || query.trim().is_empty()
-            || online::is_link(&query)
-        {
+        if page == 0 || !online::is_search_source(&source) || query.trim().is_empty() {
             self.cancel_catalog();
             return;
         }
@@ -439,21 +484,6 @@ impl<F: FnMut(Event)> PlayerCore<F> {
         let Some(track) = self.online.catalog.rows.iter().find(|t| t.id == id).cloned() else {
             return Ok(());
         };
-        self.begin_online(track, Status::Playing, None, 0, false, false, Duration::ZERO)?;
-        self.online.set_pending_queue(QueueSource::Library);
-        Ok(())
-    }
-
-    pub(super) fn preview_link(&mut self) {
-        let (title, issue, track) = match self.link_info(&self.query) {
-            Ok((_, t)) => (format!("{} · {}", t.title, t.artist), OnlineIssue::None, Some(t)),
-            Err((issue, detail)) => (detail, issue, None),
-        };
-        (self.publish)(Event::Link(self.query.clone(), title, issue, track));
-    }
-
-    pub(super) fn play_link(&mut self, query: String) -> online::Result<()> {
-        let (_, track) = self.link_info(&query)?;
         self.begin_online(track, Status::Playing, None, 0, false, false, Duration::ZERO)?;
         self.online.set_pending_queue(QueueSource::Library);
         Ok(())
@@ -658,7 +688,17 @@ impl<F: FnMut(Event)> PlayerCore<F> {
                     Ok(script) => {
                         self.cancel_load();
                         self.stop_if_drained();
-                        self.cfg.lx_script = Some(script);
+                        self.cfg.lx_saved_scripts.retain(|saved| saved.id != script.id);
+                        let changed_source = self
+                            .cfg
+                            .lx_script
+                            .as_ref()
+                            .is_some_and(|active| active.id != script.id);
+                        if let Some(previous) = self.cfg.lx_script.replace(script)
+                            && changed_source
+                        {
+                            self.cfg.lx_saved_scripts.push(previous);
+                        }
                         self.script_changed();
                         if let Some(alert) = self.online.import_alert.take() {
                             self.show_update(alert);
@@ -817,12 +857,10 @@ mod tests {
 
     #[test]
     fn session_budget_evicts_metadata_before_reaching_the_track_limit() {
-        let mut url = url::Url::parse("lxmusic://music/play").unwrap();
-        url.query_pairs_mut().append_pair(
-            "data",
-            r#"{"source":"wy","songmid":1,"name":"Title","singer":"Artist","types":[]}"#,
-        );
-        let reference = OnlineTrack::parse(url.as_str()).unwrap();
+        let reference = online::OnlineTrack::from_info(serde_json::json!({
+            "source": "wy", "songmid": 1, "name": "Title", "singer": "Artist", "types": [],
+        }))
+        .unwrap();
         let mut online = Online::new(Weak::new());
         assert!(online.runtime.is_none());
 
